@@ -58,10 +58,11 @@ const Index = () => {
           <div className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
             <Wrench className="w-5 h-5 text-primary" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground tracking-tight">RV-10 Build Tracker</h1>
             <p className="text-xs text-muted-foreground">Van's Aircraft — Time & Progress Log</p>
           </div>
+          <ExportDialog sessions={sessions} />
         </div>
       </header>
 
