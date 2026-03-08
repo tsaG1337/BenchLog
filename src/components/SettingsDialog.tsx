@@ -24,7 +24,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     brokerUrl: 'mqtt://localhost:1883',
     username: '',
     password: '',
-    topicPrefix: 'rv10/stats',
+    topicPrefix: 'mybuild/stats',
   });
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
