@@ -94,7 +94,7 @@ const Index = () => {
     const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
 
     const session: WorkSession = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       section: entry.section,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
