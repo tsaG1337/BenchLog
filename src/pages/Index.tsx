@@ -168,7 +168,7 @@ const Index = () => {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="dashboard" className="mt-4">
-            <Dashboard sessions={sessions} />
+            <Dashboard sessions={sessions} targetHours={targetHours} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
             <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />
