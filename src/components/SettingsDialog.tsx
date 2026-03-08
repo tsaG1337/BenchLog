@@ -22,6 +22,7 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
+  const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
