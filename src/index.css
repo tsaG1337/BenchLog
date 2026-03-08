@@ -115,16 +115,16 @@
   }
 
   .glow-amber {
-    box-shadow: 0 0 20px hsl(38 92% 50% / 0.15), 0 0 40px hsl(38 92% 50% / 0.05);
+    box-shadow: 0 0 20px hsl(var(--timer-glow) / 0.15), 0 0 40px hsl(var(--timer-glow) / 0.05);
   }
 
   .glow-amber-strong {
-    box-shadow: 0 0 20px hsl(38 92% 50% / 0.3), 0 0 60px hsl(38 92% 50% / 0.1);
+    box-shadow: 0 0 20px hsl(var(--timer-glow) / 0.3), 0 0 60px hsl(var(--timer-glow) / 0.1);
   }
 
   .timer-display {
     font-family: 'JetBrains Mono', monospace;
     letter-spacing: 0.05em;
-    text-shadow: 0 0 10px hsl(38 92% 50% / 0.5);
+    text-shadow: 0 0 10px hsl(var(--timer-glow) / 0.5);
   }
 }
