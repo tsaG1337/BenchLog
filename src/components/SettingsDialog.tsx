@@ -61,6 +61,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: Set
         updateSections(sections),
       ]);
       onProjectNameChange?.(general.projectName);
+      onTargetHoursChange?.(general.targetHours);
       await reloadSections();
       toast.success('Settings saved');
     } catch (err: any) {
