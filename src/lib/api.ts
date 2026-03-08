@@ -128,3 +128,31 @@ export async function updateSections(sections: SectionConfig[]): Promise<void> {
     body: JSON.stringify(sections),
   });
 }
+
+// ─── Import / Export ────────────────────────────────────────────────
+export async function exportData(includeSettings: boolean, includeSessions: boolean): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (includeSettings) params.set('settings', '1');
+  if (includeSessions) params.set('sessions', '1');
+
+  const res = await fetch(`${API_URL}/api/export?${params.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.blob();
+}
+
+export interface ImportResult {
+  ok: boolean;
+  settingsImported: boolean;
+  sessionsImported: number;
+  imagesImported: number;
+}
+
+export async function importData(data: object): Promise<ImportResult> {
+  return request<ImportResult>('/api/import', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
