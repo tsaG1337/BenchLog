@@ -21,7 +21,7 @@ interface SettingsDialogProps {
   onTargetHoursChange?: (hours: number) => void;
 }
 
-export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
+export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
