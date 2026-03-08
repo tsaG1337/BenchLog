@@ -388,11 +388,55 @@ app.put('/api/settings/mqtt', (req, res) => {
 });
 
 app.post('/api/settings/mqtt/test', (req, res) => {
-  if (!mqttClient || !mqttClient.connected) {
-    return res.status(400).json({ error: 'MQTT not connected' });
+  const { brokerUrl, username, password } = req.body;
+  if (!brokerUrl) {
+    return res.status(400).json({ error: 'Missing brokerUrl' });
   }
-  publishMqttStats();
-  res.json({ ok: true, message: 'Stats published' });
+
+  const url = brokerUrl.startsWith('mqtt://') || brokerUrl.startsWith('mqtts://') || brokerUrl.startsWith('ws://') || brokerUrl.startsWith('wss://')
+    ? brokerUrl
+    : `mqtt://${brokerUrl}`;
+
+  let responded = false;
+  const timeout = setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      try { testClient.end(true); } catch (e) {}
+      res.status(500).json({ error: 'Connection timed out after 5 seconds' });
+    }
+  }, 5000);
+
+  try {
+    const opts = { connectTimeout: 5000 };
+    if (username) opts.username = username;
+    if (password) opts.password = password;
+
+    const testClient = mqtt.connect(url, opts);
+
+    testClient.on('connect', () => {
+      if (!responded) {
+        responded = true;
+        clearTimeout(timeout);
+        testClient.end();
+        res.json({ success: true });
+      }
+    });
+
+    testClient.on('error', (err) => {
+      if (!responded) {
+        responded = true;
+        clearTimeout(timeout);
+        testClient.end();
+        res.status(500).json({ error: err.message });
+      }
+    });
+  } catch (err) {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timeout);
+      res.status(500).json({ error: err.message });
+    }
+  }
 });
 
 // ─── Sections API ───────────────────────────────────────────────────
