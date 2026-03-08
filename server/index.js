@@ -20,6 +20,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'rv10.db');
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Serve frontend build
+app.use(express.static(path.join(__dirname, "../dist")));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ─── SQLite setup ───────────────────────────────────────────────────
@@ -176,6 +178,9 @@ app.delete('/api/upload', async (req, res) => {
 });
 
 // ─── Start ──────────────────────────────────────────────────────────
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../dist/index.html"));
+});
 app.listen(PORT, () => {
   console.log(`RV-10 Build Tracker API running on port ${PORT}`);
   console.log(`MinIO: ${MINIO_ENDPOINT}:${MINIO_PORT} bucket=${MINIO_BUCKET}`);
