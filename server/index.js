@@ -80,9 +80,7 @@ const minio = new MinioClient({
 
 // ─── Helper: build public URL for MinIO object ─────────────────────
 function getPublicUrl(objectName) {
-  const protocol = MINIO_USE_SSL ? 'https' : 'http';
-  const portStr = (MINIO_USE_SSL && MINIO_PORT === 443) || (!MINIO_USE_SSL && MINIO_PORT === 80) ? '' : `:${MINIO_PORT}`;
-  return `${protocol}://${MINIO_ENDPOINT}${portStr}/${MINIO_BUCKET}/${objectName}`;
+  return `/files/${objectName}`;
 }
 
 // ─── API Routes ─────────────────────────────────────────────────────
@@ -174,6 +172,22 @@ app.delete('/api/upload', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Proxy MinIO files ──────────────────────────────────────────────
+app.get('/files/*', async (req, res) => {
+  const key = req.params[0];
+  try {
+    const stat = await minio.statObject(MINIO_BUCKET, key);
+    if (stat.metaData && stat.metaData['content-type']) {
+      res.setHeader('Content-Type', stat.metaData['content-type']);
+    }
+    const stream = await minio.getObject(MINIO_BUCKET, key);
+    stream.pipe(res);
+  } catch (err) {
+    console.error('File proxy error:', err.message);
+    res.status(404).send('File not found');
   }
 });
 
