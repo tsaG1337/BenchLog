@@ -18,6 +18,7 @@ import {
 
 interface SettingsDialogProps {
   onProjectNameChange?: (name: string) => void;
+  onTargetHoursChange?: (hours: number) => void;
 }
 
 export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
