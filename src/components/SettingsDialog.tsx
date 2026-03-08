@@ -20,7 +20,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
-  const { reload: reloadSections } = useSections();
+  const sectionsCtx = useSections();
   const [open, setOpen] = useState(false);
   const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
