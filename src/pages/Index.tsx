@@ -50,6 +50,11 @@ const Index = () => {
     setSessions(getSessions());
   };
 
+  const handleUpdate = (id: string, updates: Partial<WorkSession>) => {
+    updateSession(id, updates);
+    setSessions(getSessions());
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
