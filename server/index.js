@@ -178,6 +178,9 @@ app.delete('/api/upload', async (req, res) => {
 });
 
 // ─── Start ──────────────────────────────────────────────────────────
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../dist/index.html"));
+});
 app.listen(PORT, () => {
   console.log(`RV-10 Build Tracker API running on port ${PORT}`);
   console.log(`MinIO: ${MINIO_ENDPOINT}:${MINIO_PORT} bucket=${MINIO_BUCKET}`);
