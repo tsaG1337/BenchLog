@@ -175,6 +175,22 @@ app.delete('/api/upload', async (req, res) => {
   }
 });
 
+// ─── Proxy MinIO files ──────────────────────────────────────────────
+app.get('/files/*', async (req, res) => {
+  const key = req.params[0];
+  try {
+    const stat = await minio.statObject(MINIO_BUCKET, key);
+    if (stat.metaData && stat.metaData['content-type']) {
+      res.setHeader('Content-Type', stat.metaData['content-type']);
+    }
+    const stream = await minio.getObject(MINIO_BUCKET, key);
+    stream.pipe(res);
+  } catch (err) {
+    console.error('File proxy error:', err.message);
+    res.status(404).send('File not found');
+  }
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
