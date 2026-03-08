@@ -169,7 +169,7 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
     model: 'MQTT Stats',
   };
 
-  function publishSensor(objectId, name, stateTopic, unit, icon) {
+  function publishSensor(objectId, name, stateTopic, unit, icon, stateClass) {
     const uniqueId = `${deviceId}_${objectId}`;
     const configTopic = `${discoveryPrefix}/sensor/${uniqueId}/config`;
     const payload = {
@@ -179,7 +179,9 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
       object_id: uniqueId,
       device,
       icon,
+      value_template: '{{ value }}',
       ...(unit ? { unit_of_measurement: unit } : {}),
+      ...(stateClass ? { state_class: stateClass } : {}),
     };
     mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
   }
