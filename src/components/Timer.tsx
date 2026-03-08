@@ -17,9 +17,10 @@ export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
 
   useEffect(() => {
     if (isRunning) {
-      startRef.current = new Date();
+      const now = new Date();
+      startRef.current = now;
       intervalRef.current = setInterval(() => {
-        setElapsed(pausedElapsed.current + Math.floor((Date.now() - startRef.current!.getTime()) / 1000));
+        setElapsed(pausedElapsed.current + Math.floor((Date.now() - now.getTime()) / 1000));
       }, 1000);
     } else if (intervalRef.current) {
       clearInterval(intervalRef.current);
