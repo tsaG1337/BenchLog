@@ -1,42 +1,39 @@
-export type AssemblySection =
-  | 'empennage'
-  | 'wings'
-  | 'fuselage'
-  | 'finishing-kit'
-  | 'engine'
-  | 'avionics'
-  | 'paint'
-  | 'other';
+export interface SectionConfig {
+  id: string;
+  label: string;
+  icon: string;
+}
 
 export interface WorkSession {
   id: string;
-  section: AssemblySection;
+  section: string;
   startTime: string;
   endTime: string;
   durationMinutes: number;
   notes: string;
-  plansReference?: string; // e.g. "Page 8, Section 5, Step 3"
-  imageUrls?: string[]; // URLs to images stored in Cloud storage
+  plansReference?: string;
+  imageUrls?: string[];
 }
 
-export const SECTION_LABELS: Record<AssemblySection, string> = {
-  empennage: 'Empennage',
-  wings: 'Wings',
-  fuselage: 'Fuselage',
-  'finishing-kit': 'Finishing Kit',
-  engine: 'Engine',
-  avionics: 'Avionics',
-  paint: 'Paint & Finish',
-  other: 'Other',
-};
+// Default sections used as fallback
+export const DEFAULT_SECTIONS: SectionConfig[] = [
+  { id: 'empennage', label: 'Empennage', icon: '🔺' },
+  { id: 'wings', label: 'Wings', icon: '✈️' },
+  { id: 'fuselage', label: 'Fuselage', icon: '🛩️' },
+  { id: 'finishing-kit', label: 'Finishing Kit', icon: '🔧' },
+  { id: 'engine', label: 'Engine', icon: '⚙️' },
+  { id: 'avionics', label: 'Avionics', icon: '📡' },
+  { id: 'paint', label: 'Paint & Finish', icon: '🎨' },
+  { id: 'other', label: 'Other', icon: '📋' },
+];
 
-export const SECTION_ICONS: Record<AssemblySection, string> = {
-  empennage: '🔺',
-  wings: '✈️',
-  fuselage: '🛩️',
-  'finishing-kit': '🔧',
-  engine: '⚙️',
-  avionics: '📡',
-  paint: '🎨',
-  other: '📋',
-};
+// Helper to build lookup maps from section configs
+export function buildSectionMaps(sections: SectionConfig[]) {
+  const labels: Record<string, string> = {};
+  const icons: Record<string, string> = {};
+  for (const s of sections) {
+    labels[s.id] = s.label;
+    icons[s.id] = s.icon;
+  }
+  return { labels, icons };
+}

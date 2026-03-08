@@ -1,4 +1,5 @@
-import { WorkSession, SECTION_LABELS, SECTION_ICONS } from '@/lib/types';
+import { WorkSession } from '@/lib/types';
+import { useSections } from '@/contexts/SectionsContext';
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
@@ -11,6 +12,8 @@ interface SessionHistoryProps {
 }
 
 export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryProps) {
+  const { labels, icons } = useSections();
+
   const formatDuration = (minutes: number) => {
     const h = Math.floor(minutes / 60);
     const m = Math.round(minutes % 60);
@@ -49,8 +52,8 @@ export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryP
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <span>{SECTION_ICONS[session.section]}</span>
-                      <span className="font-medium text-foreground">{SECTION_LABELS[session.section]}</span>
+                      <span>{icons[session.section] || '📋'}</span>
+                      <span className="font-medium text-foreground">{labels[session.section] || session.section}</span>
                       <span className="font-mono text-sm text-primary font-semibold">{formatDuration(session.durationMinutes)}</span>
                     </div>
                     {session.plansReference && (

@@ -345,6 +345,30 @@ app.post('/api/settings/mqtt/test', (req, res) => {
   res.json({ ok: true, message: 'Stats published' });
 });
 
+// ─── Sections API ───────────────────────────────────────────────────
+const DEFAULT_SECTIONS = [
+  { id: 'empennage', label: 'Empennage', icon: '🔺' },
+  { id: 'wings', label: 'Wings', icon: '✈️' },
+  { id: 'fuselage', label: 'Fuselage', icon: '🛩️' },
+  { id: 'finishing-kit', label: 'Finishing Kit', icon: '🔧' },
+  { id: 'engine', label: 'Engine', icon: '⚙️' },
+  { id: 'avionics', label: 'Avionics', icon: '📡' },
+  { id: 'paint', label: 'Paint & Finish', icon: '🎨' },
+  { id: 'other', label: 'Other', icon: '📋' },
+];
+
+app.get('/api/sections', (req, res) => {
+  const sections = getSetting('sections', DEFAULT_SECTIONS);
+  res.json(sections);
+});
+
+app.put('/api/sections', (req, res) => {
+  const sections = req.body;
+  if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
+  setSetting('sections', sections);
+  res.json({ ok: true });
+});
+
 // ─── Proxy MinIO files ──────────────────────────────────────────────
 app.get('/files/*', async (req, res) => {
   const key = req.params[0];

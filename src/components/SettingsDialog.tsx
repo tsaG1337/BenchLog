@@ -5,11 +5,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, WifiOff, Send, Type } from 'lucide-react';
+import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, GripVertical } from 'lucide-react';
 import { toast } from 'sonner';
+import { SectionConfig } from '@/lib/types';
+import { useSections } from '@/contexts/SectionsContext';
 import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
+  fetchSections, updateSections,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -17,6 +20,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
+  const { reload: reloadSections } = useSections();
   const [open, setOpen] = useState(false);
   const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
@@ -26,6 +30,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     password: '',
     topicPrefix: 'mybuild/stats',
   });
+  const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -33,6 +38,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     if (open) {
       fetchGeneralSettings().then(setGeneral).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
+      fetchSections().then(setSections).catch(() => {});
     }
   }, [open]);
 
@@ -42,8 +48,10 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
       await Promise.all([
         updateGeneralSettings(general),
         updateMqttSettings(mqtt),
+        updateSections(sections),
       ]);
       onProjectNameChange?.(general.projectName);
+      await reloadSections();
       toast.success('Settings saved');
     } catch (err: any) {
       toast.error('Failed to save: ' + err.message);
@@ -62,6 +70,32 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     setTesting(false);
   };
 
+  const addSection = () => {
+    setSections([...sections, { id: `section-${Date.now()}`, label: '', icon: '📋' }]);
+  };
+
+  const updateSection = (index: number, field: keyof SectionConfig, value: string) => {
+    const updated = [...sections];
+    updated[index] = { ...updated[index], [field]: value };
+    // Auto-generate id from label if it's a new section
+    if (field === 'label' && updated[index].id.startsWith('section-')) {
+      updated[index].id = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || updated[index].id;
+    }
+    setSections(updated);
+  };
+
+  const removeSection = (index: number) => {
+    setSections(sections.filter((_, i) => i !== index));
+  };
+
+  const moveSection = (index: number, direction: -1 | 1) => {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= sections.length) return;
+    const updated = [...sections];
+    [updated[index], updated[newIndex]] = [updated[newIndex], updated[index]];
+    setSections(updated);
+  };
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -69,7 +103,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
           <Settings className="w-4 h-4" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Settings className="w-5 h-5" /> Settings
@@ -91,6 +125,66 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
                 onChange={(e) => setGeneral({ ...general, projectName: e.target.value })}
                 className="bg-secondary border-border text-sm"
               />
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Assembly Sections */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-muted-foreground" />
+                <Label className="text-sm font-medium">Assembly Sections</Label>
+              </div>
+              <Button variant="outline" size="sm" onClick={addSection} className="gap-1 h-7 text-xs">
+                <Plus className="w-3 h-3" /> Add
+              </Button>
+            </div>
+            <div className="space-y-2 pl-6 border-l-2 border-border">
+              {sections.map((sec, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <button
+                      onClick={() => moveSection(i, -1)}
+                      disabled={i === 0}
+                      className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      onClick={() => moveSection(i, 1)}
+                      disabled={i === sections.length - 1}
+                      className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none"
+                    >
+                      ▼
+                    </button>
+                  </div>
+                  <Input
+                    value={sec.icon}
+                    onChange={(e) => updateSection(i, 'icon', e.target.value)}
+                    className="w-12 bg-secondary border-border text-center text-sm px-1"
+                    maxLength={4}
+                  />
+                  <Input
+                    value={sec.label}
+                    onChange={(e) => updateSection(i, 'label', e.target.value)}
+                    placeholder="Section name"
+                    className="flex-1 bg-secondary border-border text-sm"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeSection(i)}
+                    className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              ))}
+              {sections.length === 0 && (
+                <p className="text-xs text-muted-foreground/60 py-2">No sections defined. Click "Add" to create one.</p>
+              )}
             </div>
           </div>
 
