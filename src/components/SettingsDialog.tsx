@@ -24,7 +24,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     brokerUrl: 'mqtt://localhost:1883',
     username: '',
     password: '',
-    topicPrefix: 'rv10/stats',
+    topicPrefix: 'mybuild/stats',
   });
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -148,13 +148,13 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1 block">Topic Prefix</Label>
                   <Input
-                    placeholder="rv10/stats"
+                    placeholder="mybuild/stats"
                     value={mqtt.topicPrefix}
                     onChange={(e) => setMqtt({ ...mqtt, topicPrefix: e.target.value })}
                     className="bg-secondary border-border font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground/60 mt-1">
-                    Topics: {mqtt.topicPrefix || 'rv10/stats'}/total_hours, …/fuselage, …/wings, etc.
+                    Topics: {mqtt.topicPrefix || 'mybuild/stats'}/total_hours, …/fuselage, …/wings, etc.
                   </p>
                 </div>
               </div>
