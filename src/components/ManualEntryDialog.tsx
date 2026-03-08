@@ -127,12 +127,12 @@ export function ManualEntryDialog({ onAdd }: ManualEntryDialogProps) {
             <Label className="text-sm text-muted-foreground mb-2 block">Plans Reference</Label>
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
-                <Input placeholder="e.g. 8" value={plansPage} onChange={(e) => setPlansPage(e.target.value)} className="bg-secondary border-border font-mono" />
-              </div>
-              <div>
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Section</Label>
                 <Input placeholder="e.g. 5" value={plansSection} onChange={(e) => setPlansSection(e.target.value)} className="bg-secondary border-border font-mono" />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
+                <Input placeholder="e.g. 8" value={plansPage} onChange={(e) => setPlansPage(e.target.value)} className="bg-secondary border-border font-mono" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Step</Label>
