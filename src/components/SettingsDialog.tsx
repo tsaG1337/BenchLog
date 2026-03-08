@@ -139,6 +139,34 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
 
           <Separator />
 
+          {/* Theme Section */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Sun className="w-4 h-4 text-muted-foreground" />
+              <Label className="text-sm font-medium">Theme</Label>
+            </div>
+            <div className="pl-6 border-l-2 border-border flex gap-2">
+              {([
+                { value: 'light' as const, icon: Sun, label: 'Light' },
+                { value: 'dark' as const, icon: Moon, label: 'Dark' },
+                { value: 'system' as const, icon: Monitor, label: 'Auto' },
+              ]).map(({ value, icon: Icon, label }) => (
+                <Button
+                  key={value}
+                  variant={theme === value ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setTheme(value)}
+                  className="gap-1.5 flex-1"
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
           {/* Assembly Sections */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
