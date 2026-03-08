@@ -2,10 +2,9 @@ import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
 import { CalendarCheck } from 'lucide-react';
 
-const TARGET_HOURS = 2500;
-
 interface DashboardProps {
   sessions: WorkSession[];
+  targetHours?: number;
 }
 
 export function Dashboard({ sessions }: DashboardProps) {
