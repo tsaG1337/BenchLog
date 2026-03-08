@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
