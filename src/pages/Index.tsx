@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
@@ -44,7 +45,7 @@ const Index = () => {
       .join(', ');
 
     const session: WorkSession = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       section,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
@@ -93,7 +94,7 @@ const Index = () => {
     const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
 
     const session: WorkSession = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       section: entry.section,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
