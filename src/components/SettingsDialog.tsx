@@ -29,6 +29,8 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     username: '',
     password: '',
     topicPrefix: 'mybuild/stats',
+    haDiscovery: false,
+    haDiscoveryPrefix: 'homeassistant',
   });
   const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);

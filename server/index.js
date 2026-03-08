@@ -119,7 +119,7 @@ function publishMqttStats() {
   const settings = getMqttSettings();
   if (!settings.enabled || !mqttClient || !mqttClient.connected) return;
 
-  const prefix = settings.topicPrefix || 'rv10/stats';
+  const prefix = settings.topicPrefix || 'mybuild/stats';
 
   // Compute stats from DB
   const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
@@ -140,14 +140,59 @@ function publishMqttStats() {
   mqttClient.publish(`${prefix}/total_hours`, totalHours, { retain: true });
   mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), { retain: true });
 
-  // Publish per section
-  const allSections = ['empennage', 'wings', 'fuselage', 'finishing-kit', 'engine', 'avionics', 'paint', 'other'];
-  for (const sec of allSections) {
-    const hours = ((sectionTotals[sec] || 0) / 60).toFixed(1);
-    mqttClient.publish(`${prefix}/${sec}`, hours, { retain: true });
+  // Publish per section using dynamic sections
+  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+  for (const sec of sectionConfigs) {
+    const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
+    mqttClient.publish(`${prefix}/${sec.id}`, hours, { retain: true });
+  }
+
+  // Publish HA discovery if enabled
+  if (settings.haDiscovery) {
+    publishHaDiscovery(settings, sectionConfigs, prefix);
   }
 
   console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
+}
+
+function publishHaDiscovery(settings, sectionConfigs, prefix) {
+  if (!mqttClient || !mqttClient.connected) return;
+
+  const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
+  const deviceId = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
+  const deviceName = getSetting('general', { projectName: 'Build Tracker' }).projectName || 'Build Tracker';
+
+  const device = {
+    identifiers: [deviceId],
+    name: deviceName,
+    manufacturer: 'Build Tracker',
+    model: 'MQTT Stats',
+  };
+
+  function publishSensor(objectId, name, stateTopic, unit, icon) {
+    const uniqueId = `${deviceId}_${objectId}`;
+    const configTopic = `${discoveryPrefix}/sensor/${uniqueId}/config`;
+    const payload = {
+      name,
+      state_topic: stateTopic,
+      unique_id: uniqueId,
+      object_id: uniqueId,
+      device,
+      icon,
+      ...(unit ? { unit_of_measurement: unit } : {}),
+    };
+    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
+  }
+
+  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline');
+  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, '', 'mdi:counter');
+
+  for (const sec of sectionConfigs) {
+    const label = sec.label || sec.id;
+    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools');
+  }
+
+  console.log(`MQTT: published HA discovery configs to ${discoveryPrefix}/sensor/...`);
 }
 
 // Connect on startup
