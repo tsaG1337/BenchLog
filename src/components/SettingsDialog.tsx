@@ -20,7 +20,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
-  const sectionsCtx = useSections();
+  const { sections: contextSections, reload: reloadSections } = useSections();
   const [open, setOpen] = useState(false);
   const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
@@ -30,7 +30,6 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     password: '',
     topicPrefix: 'mybuild/stats',
   });
-  const { sections: currentSections, reload: reloadSections } = useSections();
   const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -39,9 +38,14 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     if (open) {
       fetchGeneralSettings().then(setGeneral).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
-      fetchSections().then(setSections).catch(() => {});
+      fetchSections()
+        .then(setSections)
+        .catch(() => {
+          // Fallback to context sections (which include defaults)
+          setSections([...contextSections]);
+        });
     }
-  }, [open]);
+  }, [open, contextSections]);
 
   const handleSave = async () => {
     setSaving(true);
