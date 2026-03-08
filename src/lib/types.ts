@@ -16,6 +16,7 @@ export interface WorkSession {
   durationMinutes: number;
   notes: string;
   plansReference?: string; // e.g. "Page 8, Section 5, Step 3"
+  imageUrls?: string[]; // URLs to images stored in Cloud storage
 }
 
 export const SECTION_LABELS: Record<AssemblySection, string> = {

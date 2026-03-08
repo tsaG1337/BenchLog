@@ -21,3 +21,10 @@ export function deleteSession(id: string) {
   const sessions = getSessions().filter(s => s.id !== id);
   saveSessions(sessions);
 }
+
+export function updateSession(id: string, updates: Partial<WorkSession>) {
+  const sessions = getSessions().map(s =>
+    s.id === id ? { ...s, ...updates } : s
+  );
+  saveSessions(sessions);
+}

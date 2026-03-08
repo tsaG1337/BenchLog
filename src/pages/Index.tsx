@@ -4,7 +4,7 @@ import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { AssemblySection, WorkSession } from '@/lib/types';
-import { getSessions, addSession, deleteSession } from '@/lib/storage';
+import { getSessions, addSession, deleteSession, updateSession } from '@/lib/storage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
@@ -47,6 +47,11 @@ const Index = () => {
 
   const handleDelete = (id: string) => {
     deleteSession(id);
+    setSessions(getSessions());
+  };
+
+  const handleUpdate = (id: string, updates: Partial<WorkSession>) => {
+    updateSession(id, updates);
     setSessions(getSessions());
   };
 
@@ -107,7 +112,7 @@ const Index = () => {
             <Dashboard sessions={sessions} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
-            <SessionHistory sessions={sessions} onDelete={handleDelete} />
+            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />
           </TabsContent>
         </Tabs>
       </main>
