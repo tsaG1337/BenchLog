@@ -1,6 +1,7 @@
 import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
-import { CalendarCheck } from 'lucide-react';
+import { CalendarCheck, HelpCircle } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface DashboardProps {
   sessions: WorkSession[];
