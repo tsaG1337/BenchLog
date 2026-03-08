@@ -5,7 +5,7 @@ import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { AssemblySection, WorkSession } from '@/lib/types';
-import { fetchSessions, createSession, deleteSessionApi, updateSessionApi } from '@/lib/api';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
@@ -22,6 +22,7 @@ const Index = () => {
   const [plansSection, setPlansSection] = useState('');
   const [plansStep, setPlansStep] = useState('');
   const [notes, setNotes] = useState('');
+  const [projectName, setProjectName] = useState('RV-10 Build Tracker');
 
   const loadSessions = useCallback(async () => {
     try {
@@ -35,6 +36,7 @@ const Index = () => {
 
   useEffect(() => {
     loadSessions();
+    fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
   }, [loadSessions]);
 
   const handleStart = () => setIsRunning(true);
@@ -121,10 +123,9 @@ const Index = () => {
             <Wrench className="w-5 h-5 text-primary" />
           </div>
           <div className="flex-1">
-            <h1 className="text-lg font-bold text-foreground tracking-tight">RV-10 Build Tracker</h1>
-            <p className="text-xs text-muted-foreground">Van's Aircraft — Time & Progress Log</p>
+            <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
           </div>
-          <SettingsDialog />
+          <SettingsDialog onProjectNameChange={setProjectName} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>

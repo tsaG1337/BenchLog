@@ -297,10 +297,25 @@ app.delete('/api/upload', async (req, res) => {
   }
 });
 
+// ─── General Settings API ────────────────────────────────────────────
+app.get('/api/settings/general', (req, res) => {
+  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker' });
+  res.json(settings);
+});
+
+app.put('/api/settings/general', (req, res) => {
+  const current = getSetting('general', { projectName: 'RV-10 Build Tracker' });
+  const updates = req.body;
+  const newSettings = {
+    projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
+  };
+  setSetting('general', newSettings);
+  res.json({ ok: true });
+});
+
 // ─── MQTT Settings API ──────────────────────────────────────────────
 app.get('/api/settings/mqtt', (req, res) => {
   const settings = getMqttSettings();
-  // Don't send password in plain text — send masked indicator
   res.json({
     ...settings,
     password: settings.password ? '••••••••' : '',
@@ -310,22 +325,18 @@ app.get('/api/settings/mqtt', (req, res) => {
 app.put('/api/settings/mqtt', (req, res) => {
   const current = getMqttSettings();
   const updates = req.body;
-
   const newSettings = {
     enabled: updates.enabled !== undefined ? updates.enabled : current.enabled,
     brokerUrl: updates.brokerUrl !== undefined ? updates.brokerUrl : current.brokerUrl,
     username: updates.username !== undefined ? updates.username : current.username,
     topicPrefix: updates.topicPrefix !== undefined ? updates.topicPrefix : current.topicPrefix,
-    // Only update password if it's not the masked value
     password: (updates.password && updates.password !== '••••••••') ? updates.password : current.password,
   };
-
   setSetting('mqtt', newSettings);
   connectMqtt();
   res.json({ ok: true });
 });
 
-// POST /api/settings/mqtt/test — test publish
 app.post('/api/settings/mqtt/test', (req, res) => {
   if (!mqttClient || !mqttClient.connected) {
     return res.status(400).json({ error: 'MQTT not connected' });
