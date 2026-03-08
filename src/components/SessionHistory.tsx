@@ -2,13 +2,15 @@ import { WorkSession, SECTION_LABELS, SECTION_ICONS } from '@/lib/types';
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
+import { SessionImages } from '@/components/SessionImages';
 
 interface SessionHistoryProps {
   sessions: WorkSession[];
   onDelete: (id: string) => void;
+  onUpdate: (id: string, updates: Partial<WorkSession>) => void;
 }
 
-export function SessionHistory({ sessions, onDelete }: SessionHistoryProps) {
+export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryProps) {
   const formatDuration = (minutes: number) => {
     const h = Math.floor(minutes / 60);
     const m = Math.round(minutes % 60);
@@ -24,7 +26,6 @@ export function SessionHistory({ sessions, onDelete }: SessionHistoryProps) {
     );
   }
 
-  // Group by date
   const grouped = sessions.reduce<Record<string, WorkSession[]>>((acc, s) => {
     const date = format(new Date(s.startTime), 'yyyy-MM-dd');
     if (!acc[date]) acc[date] = [];
@@ -61,6 +62,11 @@ export function SessionHistory({ sessions, onDelete }: SessionHistoryProps) {
                     <p className="text-xs text-muted-foreground/50 mt-2">
                       {format(new Date(session.startTime), 'h:mm a')} – {format(new Date(session.endTime), 'h:mm a')}
                     </p>
+                    <SessionImages
+                      sessionId={session.id}
+                      imageUrls={session.imageUrls || []}
+                      onImagesChange={(urls) => onUpdate(session.id, { imageUrls: urls })}
+                    />
                   </div>
                   <Button
                     variant="ghost"
