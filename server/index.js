@@ -504,6 +504,147 @@ app.get('/files/*', async (req, res) => {
   }
 });
 
+// ─── Export / Import ────────────────────────────────────────────────
+
+// GET /api/export?settings=1&sessions=1
+app.get('/api/export', async (req, res) => {
+  const includeSettings = req.query.settings === '1';
+  const includeSessions = req.query.sessions === '1';
+
+  if (!includeSettings && !includeSessions) {
+    return res.status(400).json({ error: 'Nothing selected for export' });
+  }
+
+  const exportData = { version: 1, exportedAt: new Date().toISOString() };
+
+  if (includeSettings) {
+    exportData.settings = {
+      general: getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 }),
+      mqtt: getMqttSettings(),
+      sections: getSetting('sections', DEFAULT_SECTIONS),
+    };
+    // Mask MQTT password in export
+    if (exportData.settings.mqtt.password) {
+      exportData.settings.mqtt.password = '';
+    }
+  }
+
+  if (includeSessions) {
+    const rows = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all();
+    const sessions = [];
+
+    for (const row of rows) {
+      const session = {
+        id: row.id,
+        section: row.section,
+        startTime: row.start_time,
+        endTime: row.end_time,
+        durationMinutes: row.duration_minutes,
+        notes: row.notes,
+        plansReference: row.plans_reference,
+        imageUrls: JSON.parse(row.image_urls || '[]'),
+        images: [],
+      };
+
+      // Embed images as base64
+      for (const url of session.imageUrls) {
+        try {
+          const objectName = url.replace(/^\/files\//, '');
+          if (objectName) {
+            const chunks = [];
+            const stream = await minio.getObject(MINIO_BUCKET, objectName);
+            for await (const chunk of stream) {
+              chunks.push(chunk);
+            }
+            const buffer = Buffer.concat(chunks);
+            const stat = await minio.statObject(MINIO_BUCKET, objectName);
+            const contentType = (stat.metaData && stat.metaData['content-type']) || 'image/jpeg';
+            session.images.push({
+              objectName,
+              contentType,
+              data: buffer.toString('base64'),
+            });
+          }
+        } catch (err) {
+          console.error(`Export: failed to read image ${url}:`, err.message);
+        }
+      }
+
+      sessions.push(session);
+    }
+
+    exportData.sessions = sessions;
+  }
+
+  const filename = `build-tracker-export-${new Date().toISOString().slice(0, 10)}.json`;
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', 'application/json');
+  res.json(exportData);
+});
+
+// POST /api/import
+app.post('/api/import', express.json({ limit: '200mb' }), async (req, res) => {
+  const { settings, sessions } = req.body;
+  const results = { settingsImported: false, sessionsImported: 0, imagesImported: 0 };
+
+  try {
+    if (settings) {
+      if (settings.general) setSetting('general', settings.general);
+      if (settings.mqtt) {
+        const currentMqtt = getMqttSettings();
+        // Don't overwrite password if empty in import
+        const newMqtt = { ...settings.mqtt };
+        if (!newMqtt.password) newMqtt.password = currentMqtt.password;
+        setSetting('mqtt', newMqtt);
+      }
+      if (settings.sections) setSetting('sections', settings.sections);
+      results.settingsImported = true;
+      connectMqtt();
+    }
+
+    if (sessions && Array.isArray(sessions)) {
+      for (const session of sessions) {
+        // Check if session already exists
+        const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
+        
+        // Re-upload images
+        const imageUrls = [];
+        if (session.images && Array.isArray(session.images)) {
+          for (const img of session.images) {
+            try {
+              const buffer = Buffer.from(img.data, 'base64');
+              await minio.putObject(MINIO_BUCKET, img.objectName, buffer, buffer.length, {
+                'Content-Type': img.contentType || 'image/jpeg',
+              });
+              imageUrls.push(`/files/${img.objectName}`);
+              results.imagesImported++;
+            } catch (err) {
+              console.error(`Import: failed to upload image ${img.objectName}:`, err.message);
+            }
+          }
+        }
+
+        const finalImageUrls = imageUrls.length > 0 ? imageUrls : (session.imageUrls || []);
+
+        if (existing) {
+          // Update existing session
+          db.prepare(`UPDATE sessions SET section=?, start_time=?, end_time=?, duration_minutes=?, notes=?, plans_reference=?, image_urls=? WHERE id=?`)
+            .run(session.section, session.startTime, session.endTime, session.durationMinutes, session.notes || '', session.plansReference || null, JSON.stringify(finalImageUrls), session.id);
+        } else {
+          db.prepare(`INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(session.id, session.section, session.startTime, session.endTime, session.durationMinutes, session.notes || '', session.plansReference || null, JSON.stringify(finalImageUrls));
+        }
+        results.sessionsImported++;
+      }
+      publishMqttStats();
+    }
+
+    res.json({ ok: true, ...results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
