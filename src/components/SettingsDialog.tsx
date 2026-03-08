@@ -29,6 +29,8 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     username: '',
     password: '',
     topicPrefix: 'mybuild/stats',
+    haDiscovery: false,
+    haDiscoveryPrefix: 'homeassistant',
   });
   const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);
@@ -256,6 +258,36 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
                     Topics: {mqtt.topicPrefix || 'mybuild/stats'}/total_hours, …/fuselage, …/wings, etc.
                   </p>
                 </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm">Home Assistant Auto-Discovery</Label>
+                    <p className="text-xs text-muted-foreground/60">
+                      Publishes discovery configs so sensors appear automatically in HA
+                    </p>
+                  </div>
+                  <Switch
+                    checked={mqtt.haDiscovery}
+                    onCheckedChange={(checked) => setMqtt({ ...mqtt, haDiscovery: checked })}
+                  />
+                </div>
+
+                {mqtt.haDiscovery && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-1 block">Discovery Prefix</Label>
+                    <Input
+                      placeholder="homeassistant"
+                      value={mqtt.haDiscoveryPrefix}
+                      onChange={(e) => setMqtt({ ...mqtt, haDiscoveryPrefix: e.target.value })}
+                      className="bg-secondary border-border font-mono text-sm"
+                    />
+                    <p className="text-xs text-muted-foreground/60 mt-1">
+                      Default is "homeassistant". Only change if you customized HA's discovery prefix.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>
