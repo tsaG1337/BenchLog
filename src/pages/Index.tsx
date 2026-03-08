@@ -36,6 +36,7 @@ const Index = () => {
 
   useEffect(() => {
     loadSessions();
+    fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
   }, [loadSessions]);
 
   const handleStart = () => setIsRunning(true);
