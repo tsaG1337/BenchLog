@@ -8,6 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
+import { ImportExportSection } from '@/components/ImportExportSection';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import {
