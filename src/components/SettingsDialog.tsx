@@ -134,7 +134,17 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
                 onChange={(e) => setGeneral({ ...general, projectName: e.target.value })}
                 className="bg-secondary border-border text-sm"
               />
-            </div>
+              <Label className="text-xs text-muted-foreground mb-1 block mt-3">Target Build Hours</Label>
+              <Input
+                type="number"
+                placeholder="2500"
+                value={general.targetHours}
+                onChange={(e) => setGeneral({ ...general, targetHours: Number(e.target.value) || 0 })}
+                className="bg-secondary border-border text-sm"
+              />
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Manufacturer-specified hours to complete the build (default: 2500)
+              </p>
           </div>
 
           <Separator />

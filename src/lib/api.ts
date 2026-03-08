@@ -72,6 +72,7 @@ export async function deleteImage(url: string): Promise<void> {
 // ─── General Settings ───────────────────────────────────────────────
 export interface GeneralSettings {
   projectName: string;
+  targetHours: number;
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
