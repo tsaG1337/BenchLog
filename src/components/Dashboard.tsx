@@ -8,6 +8,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
+  const { labels, icons } = useSections();
   const TARGET_HOURS = targetHours;
 
   const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
