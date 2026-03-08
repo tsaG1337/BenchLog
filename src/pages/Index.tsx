@@ -57,6 +57,26 @@ const Index = () => {
     setSessions(getSessions());
   };
 
+  const handleManualAdd = (entry: { section: AssemblySection; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
+    const durationMinutes = entry.hours * 60 + entry.minutes;
+    const startTime = new Date(entry.date);
+    startTime.setHours(12, 0, 0, 0);
+    const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+    const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
+
+    const session: WorkSession = {
+      id: crypto.randomUUID(),
+      section: entry.section,
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      durationMinutes,
+      notes: entry.notes,
+      plansReference: plansRef || undefined,
+    };
+    addSession(session);
+    setSessions(getSessions());
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
