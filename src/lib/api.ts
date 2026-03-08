@@ -108,8 +108,11 @@ export async function updateMqttSettings(settings: MqttSettings): Promise<void> 
   });
 }
 
-export async function testMqttPublish(): Promise<void> {
-  await request('/api/settings/mqtt/test', { method: 'POST' });
+export async function testMqttPublish(settings: Pick<MqttSettings, 'brokerUrl' | 'username' | 'password' | 'topicPrefix'>): Promise<void> {
+  await request('/api/settings/mqtt/test', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  });
 }
 
 // ─── Sections ───────────────────────────────────────────────────────

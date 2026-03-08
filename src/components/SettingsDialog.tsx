@@ -73,8 +73,8 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: Set
   const handleTest = async () => {
     setTesting(true);
     try {
-      await testMqttPublish();
-      toast.success('Stats published to MQTT');
+      await testMqttPublish({ brokerUrl: mqtt.brokerUrl, username: mqtt.username, password: mqtt.password, topicPrefix: mqtt.topicPrefix });
+      toast.success('MQTT connection successful');
     } catch (err: any) {
       toast.error('MQTT publish failed: ' + err.message);
     }
