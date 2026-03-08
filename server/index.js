@@ -186,12 +186,12 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
     mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
   }
 
-  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline');
-  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, '', 'mdi:counter');
+  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
+  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter', 'measurement');
 
   for (const sec of sectionConfigs) {
     const label = sec.label || sec.id;
-    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools');
+    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools', 'measurement');
   }
 
   console.log(`MQTT: published HA discovery configs to ${discoveryPrefix}/sensor/...`);
