@@ -108,3 +108,17 @@ export async function updateMqttSettings(settings: MqttSettings): Promise<void> 
 export async function testMqttPublish(): Promise<void> {
   await request('/api/settings/mqtt/test', { method: 'POST' });
 }
+
+// ─── Sections ───────────────────────────────────────────────────────
+import { SectionConfig } from './types';
+
+export async function fetchSections(): Promise<SectionConfig[]> {
+  return request<SectionConfig[]>('/api/sections');
+}
+
+export async function updateSections(sections: SectionConfig[]): Promise<void> {
+  await request('/api/sections', {
+    method: 'PUT',
+    body: JSON.stringify(sections),
+  });
+}

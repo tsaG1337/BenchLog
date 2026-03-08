@@ -1,12 +1,11 @@
-import { useState } from 'react';
-import { AssemblySection, SECTION_LABELS, SECTION_ICONS } from '@/lib/types';
+import { useSections } from '@/contexts/SectionsContext';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 
 interface SessionFormProps {
-  section: AssemblySection;
-  onSectionChange: (s: AssemblySection) => void;
+  section: string;
+  onSectionChange: (s: string) => void;
   plansPage: string;
   onPlansPageChange: (v: string) => void;
   plansSection: string;
@@ -24,32 +23,30 @@ export function SessionForm({
   plansStep, onPlansStepChange,
   notes, onNotesChange,
 }: SessionFormProps) {
-  const sections = Object.keys(SECTION_LABELS) as AssemblySection[];
+  const { sections } = useSections();
 
   return (
     <div className="space-y-6">
-      {/* Section selector */}
       <div>
         <Label className="text-sm text-muted-foreground mb-3 block">Assembly Section</Label>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {sections.map((s) => (
             <button
-              key={s}
-              onClick={() => onSectionChange(s)}
+              key={s.id}
+              onClick={() => onSectionChange(s.id)}
               className={`flex items-center gap-2 px-3 py-2.5 rounded-md text-sm font-medium transition-all border ${
-                section === s
+                section === s.id
                   ? 'bg-primary/15 border-primary text-primary glow-amber'
                   : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'
               }`}
             >
-              <span>{SECTION_ICONS[s]}</span>
-              <span>{SECTION_LABELS[s]}</span>
+              <span>{s.icon}</span>
+              <span>{s.label}</span>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Plans reference */}
       <div>
         <Label className="text-sm text-muted-foreground mb-3 block">Plans Reference</Label>
         <div className="grid grid-cols-3 gap-3">
@@ -83,7 +80,6 @@ export function SessionForm({
         </div>
       </div>
 
-      {/* Notes */}
       <div>
         <Label className="text-sm text-muted-foreground mb-2 block">Session Notes</Label>
         <Textarea

@@ -1,10 +1,13 @@
-import { WorkSession, AssemblySection, SECTION_LABELS, SECTION_ICONS } from '@/lib/types';
+import { WorkSession } from '@/lib/types';
+import { useSections } from '@/contexts/SectionsContext';
 
 interface DashboardProps {
   sessions: WorkSession[];
 }
 
 export function Dashboard({ sessions }: DashboardProps) {
+  const { labels, icons } = useSections();
+
   const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
   const totalHours = totalMinutes / 60;
 
@@ -24,14 +27,12 @@ export function Dashboard({ sessions }: DashboardProps) {
 
   return (
     <div className="space-y-6">
-      {/* Total hours */}
       <div className="bg-card border border-border rounded-lg p-6 text-center glow-amber">
         <p className="text-sm text-muted-foreground mb-1">Total Build Time</p>
         <p className="font-mono text-4xl font-bold text-primary">{totalHours.toFixed(1)}</p>
         <p className="text-sm text-muted-foreground">hours</p>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-card border border-border rounded-lg p-4 text-center">
           <p className="text-2xl font-bold text-foreground font-mono">{sessions.length}</p>
@@ -45,7 +46,6 @@ export function Dashboard({ sessions }: DashboardProps) {
         </div>
       </div>
 
-      {/* Section breakdown */}
       <div className="bg-card border border-border rounded-lg p-5">
         <h3 className="text-sm font-medium text-muted-foreground mb-4">Hours by Section</h3>
         <div className="space-y-3">
@@ -56,7 +56,7 @@ export function Dashboard({ sessions }: DashboardProps) {
             <div key={section}>
               <div className="flex justify-between text-sm mb-1">
                 <span className="text-foreground">
-                  {SECTION_ICONS[section as AssemblySection]} {SECTION_LABELS[section as AssemblySection]}
+                  {icons[section] || '📋'} {labels[section] || section}
                 </span>
                 <span className="font-mono text-muted-foreground">{formatTime(minutes)}</span>
               </div>

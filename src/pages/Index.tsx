@@ -4,7 +4,7 @@ import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
-import { AssemblySection, WorkSession } from '@/lib/types';
+import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
@@ -13,11 +13,10 @@ import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { toast } from 'sonner';
 
-
 const Index = () => {
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [section, setSection] = useState<AssemblySection>('fuselage');
+  const [section, setSection] = useState('fuselage');
   const [plansPage, setPlansPage] = useState('');
   const [plansSection, setPlansSection] = useState('');
   const [plansStep, setPlansStep] = useState('');
@@ -89,7 +88,7 @@ const Index = () => {
     }
   };
 
-  const handleManualAdd = async (entry: { section: AssemblySection; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
+  const handleManualAdd = async (entry: { section: string; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
     const durationMinutes = entry.hours * 60 + entry.minutes;
     const startTime = new Date(entry.date);
     startTime.setHours(12, 0, 0, 0);
@@ -116,7 +115,6 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <header className="border-b border-border bg-card/50">
         <div className="container max-w-4xl py-4 flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
@@ -132,7 +130,6 @@ const Index = () => {
       </header>
 
       <main className="container max-w-4xl py-6 space-y-6">
-        {/* Timer */}
         <div className="bg-card border border-border rounded-xl p-8">
           <Timer
             isRunning={isRunning}
@@ -142,7 +139,6 @@ const Index = () => {
           />
         </div>
 
-        {/* Session form */}
         <div className="bg-card border border-border rounded-xl p-6">
           <SessionForm
             section={section}
@@ -158,7 +154,6 @@ const Index = () => {
           />
         </div>
 
-        {/* Tabs for Dashboard / History */}
         <Tabs defaultValue="dashboard" className="w-full">
           <TabsList className="w-full bg-card border border-border">
             <TabsTrigger value="dashboard" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
