@@ -68,3 +68,27 @@ export async function deleteImage(url: string): Promise<void> {
     body: JSON.stringify({ url }),
   });
 }
+
+// ─── MQTT Settings ──────────────────────────────────────────────────
+export interface MqttSettings {
+  enabled: boolean;
+  brokerUrl: string;
+  username: string;
+  password: string;
+  topicPrefix: string;
+}
+
+export async function fetchMqttSettings(): Promise<MqttSettings> {
+  return request<MqttSettings>('/api/settings/mqtt');
+}
+
+export async function updateMqttSettings(settings: MqttSettings): Promise<void> {
+  await request('/api/settings/mqtt', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function testMqttPublish(): Promise<void> {
+  await request('/api/settings/mqtt/test', { method: 'POST' });
+}

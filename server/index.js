@@ -5,6 +5,7 @@ const multer = require('multer');
 const { Client: MinioClient } = require('minio');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const mqtt = require('mqtt');
 
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
@@ -45,6 +46,111 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+`);
+
+// ─── Settings helpers ───────────────────────────────────────────────
+function getSetting(key, defaultValue = null) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? JSON.parse(row.value) : defaultValue;
+}
+
+function setSetting(key, value) {
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
+}
+
+// ─── MQTT setup ─────────────────────────────────────────────────────
+let mqttClient = null;
+
+function getMqttSettings() {
+  return getSetting('mqtt', {
+    enabled: false,
+    brokerUrl: 'mqtt://localhost:1883',
+    username: '',
+    password: '',
+    topicPrefix: 'rv10/stats',
+  });
+}
+
+function connectMqtt() {
+  // Disconnect existing client
+  if (mqttClient) {
+    try { mqttClient.end(true); } catch (e) {}
+    mqttClient = null;
+  }
+
+  const settings = getMqttSettings();
+  if (!settings.enabled || !settings.brokerUrl) {
+    console.log('MQTT: disabled or no broker configured');
+    return;
+  }
+
+  const opts = {};
+  if (settings.username) opts.username = settings.username;
+  if (settings.password) opts.password = settings.password;
+  opts.reconnectPeriod = 5000;
+  opts.connectTimeout = 10000;
+
+  console.log(`MQTT: connecting to ${settings.brokerUrl}...`);
+  mqttClient = mqtt.connect(settings.brokerUrl, opts);
+
+  mqttClient.on('connect', () => {
+    console.log('MQTT: connected');
+    // Publish initial stats on connect
+    publishMqttStats();
+  });
+
+  mqttClient.on('error', (err) => {
+    console.error('MQTT error:', err.message);
+  });
+
+  mqttClient.on('offline', () => {
+    console.log('MQTT: offline');
+  });
+}
+
+function publishMqttStats() {
+  const settings = getMqttSettings();
+  if (!settings.enabled || !mqttClient || !mqttClient.connected) return;
+
+  const prefix = settings.topicPrefix || 'rv10/stats';
+
+  // Compute stats from DB
+  const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
+  const sectionTotals = {};
+  let totalMinutes = 0;
+
+  for (const row of rows) {
+    const sec = row.section;
+    if (!sectionTotals[sec]) sectionTotals[sec] = 0;
+    sectionTotals[sec] += row.duration_minutes;
+    totalMinutes += row.duration_minutes;
+  }
+
+  const totalHours = (totalMinutes / 60).toFixed(1);
+  const sessionCount = rows.length;
+
+  // Publish total
+  mqttClient.publish(`${prefix}/total_hours`, totalHours, { retain: true });
+  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), { retain: true });
+
+  // Publish per section
+  const allSections = ['empennage', 'wings', 'fuselage', 'finishing-kit', 'engine', 'avionics', 'paint', 'other'];
+  for (const sec of allSections) {
+    const hours = ((sectionTotals[sec] || 0) / 60).toFixed(1);
+    mqttClient.publish(`${prefix}/${sec}`, hours, { retain: true });
+  }
+
+  console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
+}
+
+// Connect on startup
+connectMqtt();
+
 // ─── MinIO setup ────────────────────────────────────────────────────
 const minio = new MinioClient({
   endPoint: MINIO_ENDPOINT,
@@ -60,7 +166,6 @@ const minio = new MinioClient({
     const exists = await minio.bucketExists(MINIO_BUCKET);
     if (!exists) {
       await minio.makeBucket(MINIO_BUCKET);
-      // Set bucket policy to public read
       const policy = {
         Version: '2012-10-17',
         Statement: [{
@@ -108,6 +213,7 @@ app.post('/api/sessions', (req, res) => {
     INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, section, startTime, endTime, durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || []));
+  publishMqttStats();
   res.json({ ok: true });
 });
 
@@ -116,7 +222,6 @@ app.put('/api/sessions/:id', (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
-  // Build dynamic SET clause
   const fields = [];
   const values = [];
   if (updates.section !== undefined) { fields.push('section = ?'); values.push(updates.section); }
@@ -131,6 +236,7 @@ app.put('/api/sessions/:id', (req, res) => {
     values.push(id);
     db.prepare(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
   }
+  publishMqttStats();
   res.json({ ok: true });
 });
 
@@ -138,13 +244,11 @@ app.put('/api/sessions/:id', (req, res) => {
 app.delete('/api/sessions/:id', async (req, res) => {
   const { id } = req.params;
 
-  // Fetch image URLs before deleting
   const row = db.prepare('SELECT image_urls FROM sessions WHERE id = ?').get(id);
   if (row) {
     const imageUrls = JSON.parse(row.image_urls || '[]');
     for (const url of imageUrls) {
       try {
-        // URLs are like /files/<objectName>
         const objectName = url.replace(/^\/files\//, '');
         if (objectName) await minio.removeObject(MINIO_BUCKET, objectName);
       } catch (err) {
@@ -154,6 +258,7 @@ app.delete('/api/sessions/:id', async (req, res) => {
   }
 
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  publishMqttStats();
   res.json({ ok: true });
 });
 
@@ -190,6 +295,43 @@ app.delete('/api/upload', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── MQTT Settings API ──────────────────────────────────────────────
+app.get('/api/settings/mqtt', (req, res) => {
+  const settings = getMqttSettings();
+  // Don't send password in plain text — send masked indicator
+  res.json({
+    ...settings,
+    password: settings.password ? '••••••••' : '',
+  });
+});
+
+app.put('/api/settings/mqtt', (req, res) => {
+  const current = getMqttSettings();
+  const updates = req.body;
+
+  const newSettings = {
+    enabled: updates.enabled !== undefined ? updates.enabled : current.enabled,
+    brokerUrl: updates.brokerUrl !== undefined ? updates.brokerUrl : current.brokerUrl,
+    username: updates.username !== undefined ? updates.username : current.username,
+    topicPrefix: updates.topicPrefix !== undefined ? updates.topicPrefix : current.topicPrefix,
+    // Only update password if it's not the masked value
+    password: (updates.password && updates.password !== '••••••••') ? updates.password : current.password,
+  };
+
+  setSetting('mqtt', newSettings);
+  connectMqtt();
+  res.json({ ok: true });
+});
+
+// POST /api/settings/mqtt/test — test publish
+app.post('/api/settings/mqtt/test', (req, res) => {
+  if (!mqttClient || !mqttClient.connected) {
+    return res.status(400).json({ error: 'MQTT not connected' });
+  }
+  publishMqttStats();
+  res.json({ ok: true, message: 'Stats published' });
 });
 
 // ─── Proxy MinIO files ──────────────────────────────────────────────
