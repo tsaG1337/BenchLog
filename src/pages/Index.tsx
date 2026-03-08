@@ -45,7 +45,7 @@ const Index = () => {
       .join(', ');
 
     const session: WorkSession = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       section,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
