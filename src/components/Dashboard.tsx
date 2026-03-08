@@ -1,5 +1,8 @@
 import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
+import { CalendarCheck } from 'lucide-react';
+
+const TARGET_HOURS = 2500;
 
 interface DashboardProps {
   sessions: WorkSession[];
@@ -25,12 +28,67 @@ export function Dashboard({ sessions }: DashboardProps) {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   };
 
+  // Estimate finish date based on average hours per week
+  const estimateFinishDate = () => {
+    if (sessions.length < 2) return null;
+
+    const sorted = [...sessions].sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    const firstDate = new Date(sorted[0].startTime);
+    const lastDate = new Date(sorted[sorted.length - 1].startTime);
+    const spanMs = lastDate.getTime() - firstDate.getTime();
+    const spanWeeks = spanMs / (7 * 24 * 60 * 60 * 1000);
+
+    if (spanWeeks < 0.5) return null; // not enough data
+
+    const hoursPerWeek = totalHours / spanWeeks;
+    const remainingHours = TARGET_HOURS - totalHours;
+
+    if (remainingHours <= 0) return { date: null, hoursPerWeek, done: true };
+
+    const remainingWeeks = remainingHours / hoursPerWeek;
+    const finishDate = new Date(Date.now() + remainingWeeks * 7 * 24 * 60 * 60 * 1000);
+
+    return { date: finishDate, hoursPerWeek, done: false };
+  };
+
+  const estimate = estimateFinishDate();
+  const progressPct = Math.min((totalHours / TARGET_HOURS) * 100, 100);
+
   return (
     <div className="space-y-6">
       <div className="bg-card border border-border rounded-lg p-6 text-center glow-amber">
         <p className="text-sm text-muted-foreground mb-1">Total Build Time</p>
         <p className="font-mono text-4xl font-bold text-primary">{totalHours.toFixed(1)}</p>
         <p className="text-sm text-muted-foreground">hours</p>
+      </div>
+
+      {/* Estimated Finish Date */}
+      <div className="bg-card border border-border rounded-lg p-5 text-center">
+        <div className="flex items-center justify-center gap-2 mb-2">
+          <CalendarCheck className="w-4 h-4 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">Estimated Finish Date</p>
+        </div>
+        {estimate?.done ? (
+          <p className="font-mono text-2xl font-bold text-primary">🎉 Complete!</p>
+        ) : estimate?.date ? (
+          <>
+            <p className="font-mono text-2xl font-bold text-foreground">
+              {estimate.date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Based on {estimate.hoursPerWeek.toFixed(1)} hrs/week avg · {(TARGET_HOURS - totalHours).toFixed(0)}h remaining of {TARGET_HOURS}h
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground/60">Need more session data to estimate</p>
+        )}
+        <div className="mt-3 h-2 bg-secondary rounded-full overflow-hidden">
+          <div
+            className="h-full bg-primary rounded-full transition-all"
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">{progressPct.toFixed(1)}% complete</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
