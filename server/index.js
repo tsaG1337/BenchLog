@@ -134,9 +134,26 @@ app.put('/api/sessions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/sessions/:id — delete a session
-app.delete('/api/sessions/:id', (req, res) => {
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(req.params.id);
+// DELETE /api/sessions/:id — delete a session and its images
+app.delete('/api/sessions/:id', async (req, res) => {
+  const { id } = req.params;
+
+  // Fetch image URLs before deleting
+  const row = db.prepare('SELECT image_urls FROM sessions WHERE id = ?').get(id);
+  if (row) {
+    const imageUrls = JSON.parse(row.image_urls || '[]');
+    for (const url of imageUrls) {
+      try {
+        // URLs are like /files/<objectName>
+        const objectName = url.replace(/^\/files\//, '');
+        if (objectName) await minio.removeObject(MINIO_BUCKET, objectName);
+      } catch (err) {
+        console.error('Failed to delete image from MinIO:', err.message);
+      }
+    }
+  }
+
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   res.json({ ok: true });
 });
 
