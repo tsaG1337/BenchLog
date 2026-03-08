@@ -5,10 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, GripVertical } from 'lucide-react';
+import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
+import { useTheme } from '@/contexts/ThemeContext';
 import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
