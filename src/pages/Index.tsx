@@ -89,6 +89,7 @@ const Index = () => {
             <h1 className="text-lg font-bold text-foreground tracking-tight">RV-10 Build Tracker</h1>
             <p className="text-xs text-muted-foreground">Van's Aircraft — Time & Progress Log</p>
           </div>
+          <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>
       </header>
