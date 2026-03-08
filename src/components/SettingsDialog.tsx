@@ -30,6 +30,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
     password: '',
     topicPrefix: 'mybuild/stats',
   });
+  const { sections: currentSections, reload: reloadSections } = useSections();
   const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
