@@ -127,7 +127,7 @@ const Index = () => {
           <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
           </div>
-          <SettingsDialog onProjectNameChange={setProjectName} />
+          <SettingsDialog onProjectNameChange={setProjectName} onTargetHoursChange={setTargetHours} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>
