@@ -331,6 +331,8 @@ app.put('/api/settings/mqtt', (req, res) => {
     username: updates.username !== undefined ? updates.username : current.username,
     topicPrefix: updates.topicPrefix !== undefined ? updates.topicPrefix : current.topicPrefix,
     password: (updates.password && updates.password !== '••••••••') ? updates.password : current.password,
+    haDiscovery: updates.haDiscovery !== undefined ? updates.haDiscovery : current.haDiscovery,
+    haDiscoveryPrefix: updates.haDiscoveryPrefix !== undefined ? updates.haDiscoveryPrefix : current.haDiscoveryPrefix,
   };
   setSetting('mqtt', newSettings);
   connectMqtt();
