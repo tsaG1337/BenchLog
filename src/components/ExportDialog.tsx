@@ -186,7 +186,7 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
             doc.setFontSize(9);
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(80);
-            doc.text(`📖 Plans: ${s.plansReference}`, margin + 4, y);
+            doc.text(`Plans: ${s.plansReference}`, margin + 4, y);
             doc.setTextColor(0);
             y += 5;
           }
