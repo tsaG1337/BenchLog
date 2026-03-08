@@ -22,6 +22,7 @@ const Index = () => {
   const [plansSection, setPlansSection] = useState('');
   const [plansStep, setPlansStep] = useState('');
   const [notes, setNotes] = useState('');
+  const [projectName, setProjectName] = useState('RV-10 Build Tracker');
 
   const loadSessions = useCallback(async () => {
     try {
