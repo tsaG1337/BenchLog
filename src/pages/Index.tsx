@@ -1,18 +1,19 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { AssemblySection, WorkSession } from '@/lib/types';
-import { getSessions, addSession, deleteSession, updateSession } from '@/lib/storage';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
+import { toast } from 'sonner';
 
 
 const Index = () => {
-  const [sessions, setSessions] = useState<WorkSession[]>(getSessions);
+  const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [section, setSection] = useState<AssemblySection>('fuselage');
   const [plansPage, setPlansPage] = useState('');
@@ -20,10 +21,24 @@ const Index = () => {
   const [plansStep, setPlansStep] = useState('');
   const [notes, setNotes] = useState('');
 
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await fetchSessions();
+      setSessions(data);
+    } catch (err: any) {
+      console.error('Failed to load sessions:', err);
+      toast.error('Failed to load sessions. Is the backend running?');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
   const handleStart = () => setIsRunning(true);
   const handlePause = () => setIsRunning(false);
 
-  const handleStop = useCallback((durationMinutes: number, startTime: Date, endTime: Date) => {
+  const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
     const plansRef = [plansPage && `Page ${plansPage}`, plansSection && `Section ${plansSection}`, plansStep && `Step ${plansStep}`]
       .filter(Boolean)
       .join(', ');
@@ -38,26 +53,39 @@ const Index = () => {
       plansReference: plansRef || undefined,
     };
 
-    addSession(session);
-    setSessions(getSessions());
+    try {
+      await createSession(session);
+      await loadSessions();
+    } catch (err: any) {
+      toast.error('Failed to save session: ' + err.message);
+    }
+
     setIsRunning(false);
     setPlansPage('');
     setPlansSection('');
     setPlansStep('');
     setNotes('');
-  }, [section, plansPage, plansSection, plansStep, notes]);
+  }, [section, plansPage, plansSection, plansStep, notes, loadSessions]);
 
-  const handleDelete = (id: string) => {
-    deleteSession(id);
-    setSessions(getSessions());
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteSessionApi(id);
+      await loadSessions();
+    } catch (err: any) {
+      toast.error('Failed to delete session: ' + err.message);
+    }
   };
 
-  const handleUpdate = (id: string, updates: Partial<WorkSession>) => {
-    updateSession(id, updates);
-    setSessions(getSessions());
+  const handleUpdate = async (id: string, updates: Partial<WorkSession>) => {
+    try {
+      await updateSessionApi(id, updates);
+      await loadSessions();
+    } catch (err: any) {
+      toast.error('Failed to update session: ' + err.message);
+    }
   };
 
-  const handleManualAdd = (entry: { section: AssemblySection; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
+  const handleManualAdd = async (entry: { section: AssemblySection; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
     const durationMinutes = entry.hours * 60 + entry.minutes;
     const startTime = new Date(entry.date);
     startTime.setHours(12, 0, 0, 0);
@@ -73,8 +101,13 @@ const Index = () => {
       notes: entry.notes,
       plansReference: plansRef || undefined,
     };
-    addSession(session);
-    setSessions(getSessions());
+
+    try {
+      await createSession(session);
+      await loadSessions();
+    } catch (err: any) {
+      toast.error('Failed to save session: ' + err.message);
+    }
   };
 
   return (
