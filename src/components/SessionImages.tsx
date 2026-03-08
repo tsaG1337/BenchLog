@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { uploadImages, deleteImage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ImagePlus, X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -20,26 +20,8 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
     if (!files || files.length === 0) return;
 
     setUploading(true);
-    const newUrls: string[] = [];
-
     try {
-      for (const file of Array.from(files)) {
-        const ext = file.name.split('.').pop();
-        const path = `${sessionId}/${crypto.randomUUID()}.${ext}`;
-
-        const { error } = await supabase.storage
-          .from('session-images')
-          .upload(path, file);
-
-        if (error) throw error;
-
-        const { data: urlData } = supabase.storage
-          .from('session-images')
-          .getPublicUrl(path);
-
-        newUrls.push(urlData.publicUrl);
-      }
-
+      const newUrls = await uploadImages(sessionId, files);
       onImagesChange([...imageUrls, ...newUrls]);
       toast.success(`${newUrls.length} image(s) attached`);
     } catch (err: any) {
@@ -51,18 +33,16 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
   };
 
   const handleRemove = async (url: string) => {
-    // Extract path from URL
-    const parts = url.split('/session-images/');
-    if (parts.length > 1) {
-      const path = decodeURIComponent(parts[1]);
-      await supabase.storage.from('session-images').remove([path]);
+    try {
+      await deleteImage(url);
+    } catch {
+      // Still remove from UI even if server delete fails
     }
     onImagesChange(imageUrls.filter(u => u !== url));
   };
 
   return (
     <div className="mt-3">
-      {/* Thumbnails */}
       {imageUrls.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {imageUrls.map((url) => (
@@ -84,7 +64,6 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
         </div>
       )}
 
-      {/* Upload button */}
       <input
         ref={fileRef}
         type="file"
@@ -104,7 +83,6 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
         {uploading ? 'Uploading…' : 'Add Photos'}
       </Button>
 
-      {/* Lightbox preview */}
       {previewUrl && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
