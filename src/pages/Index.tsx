@@ -8,6 +8,8 @@ import { getSessions, addSession, deleteSession, updateSession } from '@/lib/sto
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
+import { ManualEntryDialog } from '@/components/ManualEntryDialog';
+
 
 const Index = () => {
   const [sessions, setSessions] = useState<WorkSession[]>(getSessions);
@@ -55,6 +57,26 @@ const Index = () => {
     setSessions(getSessions());
   };
 
+  const handleManualAdd = (entry: { section: AssemblySection; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
+    const durationMinutes = entry.hours * 60 + entry.minutes;
+    const startTime = new Date(entry.date);
+    startTime.setHours(12, 0, 0, 0);
+    const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+    const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
+
+    const session: WorkSession = {
+      id: crypto.randomUUID(),
+      section: entry.section,
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      durationMinutes,
+      notes: entry.notes,
+      plansReference: plansRef || undefined,
+    };
+    addSession(session);
+    setSessions(getSessions());
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -67,6 +89,7 @@ const Index = () => {
             <h1 className="text-lg font-bold text-foreground tracking-tight">RV-10 Build Tracker</h1>
             <p className="text-xs text-muted-foreground">Van's Aircraft — Time & Progress Log</p>
           </div>
+          <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>
       </header>
