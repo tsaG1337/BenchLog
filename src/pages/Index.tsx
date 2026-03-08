@@ -123,10 +123,9 @@ const Index = () => {
             <Wrench className="w-5 h-5 text-primary" />
           </div>
           <div className="flex-1">
-            <h1 className="text-lg font-bold text-foreground tracking-tight">RV-10 Build Tracker</h1>
-            <p className="text-xs text-muted-foreground">Van's Aircraft — Time & Progress Log</p>
+            <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
           </div>
-          <SettingsDialog />
+          <SettingsDialog onProjectNameChange={setProjectName} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>

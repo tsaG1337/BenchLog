@@ -69,6 +69,22 @@ export async function deleteImage(url: string): Promise<void> {
   });
 }
 
+// ─── General Settings ───────────────────────────────────────────────
+export interface GeneralSettings {
+  projectName: string;
+}
+
+export async function fetchGeneralSettings(): Promise<GeneralSettings> {
+  return request<GeneralSettings>('/api/settings/general');
+}
+
+export async function updateGeneralSettings(settings: GeneralSettings): Promise<void> {
+  await request('/api/settings/general', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
 // ─── MQTT Settings ──────────────────────────────────────────────────
 export interface MqttSettings {
   enabled: boolean;
