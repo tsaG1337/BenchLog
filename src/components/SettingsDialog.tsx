@@ -145,6 +145,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
               <p className="text-xs text-muted-foreground/60 mt-1">
                 Manufacturer-specified hours to complete the build (default: 2500)
               </p>
+            </div>
           </div>
 
           <Separator />
