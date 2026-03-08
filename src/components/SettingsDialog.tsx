@@ -24,7 +24,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
