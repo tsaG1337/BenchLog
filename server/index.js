@@ -20,6 +20,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'rv10.db');
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Serve frontend build
+app.use(express.static(path.join(__dirname, "../dist")));
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ─── SQLite setup ───────────────────────────────────────────────────
