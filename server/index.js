@@ -73,6 +73,8 @@ function getMqttSettings() {
     username: '',
     password: '',
     topicPrefix: 'mybuild/stats',
+    haDiscovery: false,
+    haDiscoveryPrefix: 'homeassistant',
   });
 }
 

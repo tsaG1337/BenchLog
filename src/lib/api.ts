@@ -92,6 +92,8 @@ export interface MqttSettings {
   username: string;
   password: string;
   topicPrefix: string;
+  haDiscovery: boolean;
+  haDiscoveryPrefix: string;
 }
 
 export async function fetchMqttSettings(): Promise<MqttSettings> {
