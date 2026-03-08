@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
-import { WorkSession, AssemblySection } from '@/lib/types';
+
 
 const Index = () => {
   const [sessions, setSessions] = useState<WorkSession[]>(getSessions);
