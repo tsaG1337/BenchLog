@@ -65,6 +65,7 @@ function setSetting(key, value) {
 
 // ─── MQTT setup ─────────────────────────────────────────────────────
 let mqttClient = null;
+let mqttPendingPublish = false;
 
 function getMqttSettings() {
   return getSetting('mqtt', {
@@ -102,8 +103,14 @@ function connectMqtt() {
 
   mqttClient.on('connect', () => {
     console.log('MQTT: connected');
-    // Publish initial stats on connect
-    publishMqttStats();
+    // Publish any pending stats
+    if (mqttPendingPublish) {
+      mqttPendingPublish = false;
+      publishMqttStats();
+    } else {
+      // Publish initial stats on connect
+      publishMqttStats();
+    }
   });
 
   mqttClient.on('error', (err) => {
@@ -113,11 +120,27 @@ function connectMqtt() {
   mqttClient.on('offline', () => {
     console.log('MQTT: offline');
   });
+
+  mqttClient.on('reconnect', () => {
+    console.log('MQTT: reconnecting...');
+  });
 }
 
 function publishMqttStats() {
   const settings = getMqttSettings();
-  if (!settings.enabled || !mqttClient || !mqttClient.connected) return;
+  if (!settings.enabled) {
+    console.log('MQTT: publish skipped — disabled');
+    return;
+  }
+  if (!mqttClient) {
+    console.log('MQTT: publish skipped — no client');
+    return;
+  }
+  if (!mqttClient.connected) {
+    console.log('MQTT: publish queued — not connected yet');
+    mqttPendingPublish = true;
+    return;
+  }
 
   const prefix = settings.topicPrefix || 'mybuild/stats';
 
