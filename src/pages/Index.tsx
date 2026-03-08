@@ -7,6 +7,7 @@ import { AssemblySection, WorkSession } from '@/lib/types';
 import { getSessions, addSession, deleteSession } from '@/lib/storage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
+import { ExportDialog } from '@/components/ExportDialog';
 
 const Index = () => {
   const [sessions, setSessions] = useState<WorkSession[]>(getSessions);
