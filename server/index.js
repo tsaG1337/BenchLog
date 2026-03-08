@@ -169,7 +169,7 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
     model: 'MQTT Stats',
   };
 
-  function publishSensor(objectId, name, stateTopic, unit, icon) {
+  function publishSensor(objectId, name, stateTopic, unit, icon, stateClass) {
     const uniqueId = `${deviceId}_${objectId}`;
     const configTopic = `${discoveryPrefix}/sensor/${uniqueId}/config`;
     const payload = {
@@ -179,17 +179,19 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
       object_id: uniqueId,
       device,
       icon,
+      value_template: '{{ value }}',
       ...(unit ? { unit_of_measurement: unit } : {}),
+      ...(stateClass ? { state_class: stateClass } : {}),
     };
     mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
   }
 
-  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline');
-  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, '', 'mdi:counter');
+  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
+  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter', 'measurement');
 
   for (const sec of sectionConfigs) {
     const label = sec.label || sec.id;
-    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools');
+    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools', 'measurement');
   }
 
   console.log(`MQTT: published HA discovery configs to ${discoveryPrefix}/sensor/...`);
