@@ -346,15 +346,16 @@ app.delete('/api/upload', async (req, res) => {
 
 // ─── General Settings API ────────────────────────────────────────────
 app.get('/api/settings/general', (req, res) => {
-  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker' });
+  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   res.json(settings);
 });
 
 app.put('/api/settings/general', (req, res) => {
-  const current = getSetting('general', { projectName: 'RV-10 Build Tracker' });
+  const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   const updates = req.body;
   const newSettings = {
     projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
+    targetHours: updates.targetHours !== undefined ? updates.targetHours : current.targetHours,
   };
   setSetting('general', newSettings);
   res.json({ ok: true });

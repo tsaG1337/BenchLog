@@ -22,6 +22,7 @@ const Index = () => {
   const [plansStep, setPlansStep] = useState('');
   const [notes, setNotes] = useState('');
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
+  const [targetHours, setTargetHours] = useState(2500);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -35,7 +36,10 @@ const Index = () => {
 
   useEffect(() => {
     loadSessions();
-    fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
+    fetchGeneralSettings().then(s => {
+      setProjectName(s.projectName);
+      setTargetHours(s.targetHours || 2500);
+    }).catch(() => {});
   }, [loadSessions]);
 
   const handleStart = () => setIsRunning(true);
@@ -123,7 +127,7 @@ const Index = () => {
           <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
           </div>
-          <SettingsDialog onProjectNameChange={setProjectName} />
+          <SettingsDialog onProjectNameChange={setProjectName} onTargetHoursChange={setTargetHours} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
         </div>
@@ -164,7 +168,7 @@ const Index = () => {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="dashboard" className="mt-4">
-            <Dashboard sessions={sessions} />
+            <Dashboard sessions={sessions} targetHours={targetHours} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
             <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />

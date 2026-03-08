@@ -18,13 +18,14 @@ import {
 
 interface SettingsDialogProps {
   onProjectNameChange?: (name: string) => void;
+  onTargetHoursChange?: (hours: number) => void;
 }
 
-export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
+export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker' });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
@@ -60,6 +61,7 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
         updateSections(sections),
       ]);
       onProjectNameChange?.(general.projectName);
+      onTargetHoursChange?.(general.targetHours);
       await reloadSections();
       toast.success('Settings saved');
     } catch (err: any) {
@@ -134,6 +136,17 @@ export function SettingsDialog({ onProjectNameChange }: SettingsDialogProps) {
                 onChange={(e) => setGeneral({ ...general, projectName: e.target.value })}
                 className="bg-secondary border-border text-sm"
               />
+              <Label className="text-xs text-muted-foreground mb-1 block mt-3">Target Build Hours</Label>
+              <Input
+                type="number"
+                placeholder="2500"
+                value={general.targetHours}
+                onChange={(e) => setGeneral({ ...general, targetHours: Number(e.target.value) || 0 })}
+                className="bg-secondary border-border text-sm"
+              />
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Manufacturer-specified hours to complete the build (default: 2500)
+              </p>
             </div>
           </div>
 

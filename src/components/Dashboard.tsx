@@ -2,14 +2,14 @@ import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
 import { CalendarCheck } from 'lucide-react';
 
-const TARGET_HOURS = 2500;
-
 interface DashboardProps {
   sessions: WorkSession[];
+  targetHours?: number;
 }
 
-export function Dashboard({ sessions }: DashboardProps) {
+export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
   const { labels, icons } = useSections();
+  const TARGET_HOURS = targetHours;
 
   const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
   const totalHours = totalMinutes / 60;
