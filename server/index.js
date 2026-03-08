@@ -80,9 +80,7 @@ const minio = new MinioClient({
 
 // ─── Helper: build public URL for MinIO object ─────────────────────
 function getPublicUrl(objectName) {
-  const protocol = MINIO_USE_SSL ? 'https' : 'http';
-  const portStr = (MINIO_USE_SSL && MINIO_PORT === 443) || (!MINIO_USE_SSL && MINIO_PORT === 80) ? '' : `:${MINIO_PORT}`;
-  return `${protocol}://${MINIO_ENDPOINT}${portStr}/${MINIO_BUCKET}/${objectName}`;
+  return `/files/${objectName}`;
 }
 
 // ─── API Routes ─────────────────────────────────────────────────────
