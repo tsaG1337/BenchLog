@@ -1,6 +1,7 @@
 import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
-import { CalendarCheck } from 'lucide-react';
+import { CalendarCheck, HelpCircle } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface DashboardProps {
   sessions: WorkSession[];
@@ -67,6 +68,14 @@ export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
         <div className="flex items-center justify-center gap-2 mb-2">
           <CalendarCheck className="w-4 h-4 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Estimated Finish Date</p>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <HelpCircle className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+              This estimate is calculated by dividing your total logged hours by the number of weeks since your first session to get your average hours per week. The remaining hours (target minus logged) are then divided by that weekly average to project a finish date.
+            </TooltipContent>
+          </Tooltip>
         </div>
         {estimate?.done ? (
           <p className="font-mono text-2xl font-bold text-primary">🎉 Complete!</p>
