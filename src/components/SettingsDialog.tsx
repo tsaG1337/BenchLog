@@ -336,7 +336,14 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: Set
             )}
           </div>
 
-          {/* Actions */}
+          <ImportExportSection onImportComplete={() => {
+            fetchGeneralSettings().then(setGeneral).catch(() => {});
+            fetchMqttSettings().then(setMqtt).catch(() => {});
+            fetchSections().then(setSections).catch(() => {});
+            reloadSections();
+          }} />
+
+          <Separator />
           <div className="flex gap-2 pt-2">
             <Button onClick={handleSave} disabled={saving} className="flex-1">
               {saving ? 'Saving…' : 'Save Settings'}
