@@ -112,7 +112,7 @@ const Index = () => {
             <Dashboard sessions={sessions} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
-            <SessionHistory sessions={sessions} onDelete={handleDelete} />
+            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />
           </TabsContent>
         </Tabs>
       </main>
