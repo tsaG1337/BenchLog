@@ -252,6 +252,7 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
 
   publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
   publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter', 'measurement');
+  publishSensor('build_progress', `${deviceName} Build Progress`, `${prefix}/build_progress`, '%', 'mdi:progress-check', 'measurement');
 
   for (const sec of sectionConfigs) {
     const label = sec.label || sec.id;
