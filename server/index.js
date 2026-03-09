@@ -184,7 +184,10 @@ function publishMqttStats() {
 }
 
 function publishHaDiscovery(settings, sectionConfigs, prefix) {
-  if (!mqttClient || !mqttClient.connected) return;
+  if (!mqttClient || !mqttClient.connected) {
+    console.log('MQTT: HA discovery skipped — not connected');
+    return;
+  }
 
   const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
   const deviceId = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
@@ -211,7 +214,9 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
       ...(unit ? { unit_of_measurement: unit } : {}),
       ...(stateClass ? { state_class: stateClass } : {}),
     };
-    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
+    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true, qos: 1 }, (err) => {
+      if (err) console.error(`MQTT HA discovery publish error (${objectId}):`, err.message);
+    });
   }
 
   publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
