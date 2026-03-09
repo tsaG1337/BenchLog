@@ -132,12 +132,8 @@ function publishMqttStats() {
     console.log('MQTT: publish skipped — disabled');
     return;
   }
-  if (!mqttClient) {
-    console.log('MQTT: publish skipped — no client');
-    return;
-  }
-  if (!mqttClient.connected) {
-    console.log('MQTT: publish queued — not connected yet');
+  if (!mqttClient || !mqttClient.connected) {
+    console.log('MQTT: publish skipped — not connected');
     mqttPendingPublish = true;
     return;
   }
@@ -159,15 +155,24 @@ function publishMqttStats() {
   const totalHours = (totalMinutes / 60).toFixed(1);
   const sessionCount = rows.length;
 
-  // Publish total
-  mqttClient.publish(`${prefix}/total_hours`, totalHours, { retain: true });
-  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), { retain: true });
+  // Publish with error handling
+  const publishOptions = { retain: true, qos: 1 };
+  
+  mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
+    if (err) console.error('MQTT publish error (total_hours):', err.message);
+  });
+  
+  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
+    if (err) console.error('MQTT publish error (total_sessions):', err.message);
+  });
 
   // Publish per section using dynamic sections
   const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
   for (const sec of sectionConfigs) {
     const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
-    mqttClient.publish(`${prefix}/${sec.id}`, hours, { retain: true });
+    mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
+      if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
+    });
   }
 
   // Publish HA discovery if enabled
@@ -179,7 +184,10 @@ function publishMqttStats() {
 }
 
 function publishHaDiscovery(settings, sectionConfigs, prefix) {
-  if (!mqttClient || !mqttClient.connected) return;
+  if (!mqttClient || !mqttClient.connected) {
+    console.log('MQTT: HA discovery skipped — not connected');
+    return;
+  }
 
   const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
   const deviceId = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
@@ -206,7 +214,9 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
       ...(unit ? { unit_of_measurement: unit } : {}),
       ...(stateClass ? { state_class: stateClass } : {}),
     };
-    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true });
+    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true, qos: 1 }, (err) => {
+      if (err) console.error(`MQTT HA discovery publish error (${objectId}):`, err.message);
+    });
   }
 
   publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
