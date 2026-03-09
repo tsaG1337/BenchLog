@@ -269,6 +269,23 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
   publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
   publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter', 'measurement');
   publishSensor('build_progress', `${deviceName} Build Progress`, `${prefix}/build_progress`, '%', 'mdi:progress-check', 'measurement');
+  
+  // Add last session images as a sensor (JSON array of image URLs)
+  const lastSessionImagesTopic = `${prefix}/last_session_images`;
+  const uniqueIdImages = `${deviceId}_last_session_images`;
+  const configTopicImages = `${discoveryPrefix}/sensor/${uniqueIdImages}/config`;
+  const payloadImages = {
+    name: `${deviceName} Last Session Images`,
+    state_topic: lastSessionImagesTopic,
+    unique_id: uniqueIdImages,
+    object_id: uniqueIdImages,
+    device,
+    icon: 'mdi:image-multiple',
+    value_template: '{{ value }}',
+  };
+  mqttClient.publish(configTopicImages, JSON.stringify(payloadImages), { retain: true, qos: 1 }, (err) => {
+    if (err) console.error('MQTT HA discovery publish error (last_session_images):', err.message);
+  });
 
   for (const sec of sectionConfigs) {
     const label = sec.label || sec.id;
