@@ -83,6 +83,7 @@ const Index = () => {
     setPlansSection('');
     setPlansStep('');
     setNotes('');
+    setPendingImageUrls([]);
   }, [plansPage, plansSection, plansStep, notes, loadSessions]);
 
   const handleDelete = async (id: string) => {
