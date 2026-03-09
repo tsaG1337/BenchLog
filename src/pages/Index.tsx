@@ -23,6 +23,7 @@ const Index = () => {
   const [notes, setNotes] = useState('');
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
+  const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -52,7 +53,8 @@ const Index = () => {
 
   const handleStart = async () => {
     try {
-      await startTimer(section);
+      const result = await startTimer(section);
+      setServerStartedAt(result.startedAt);
       setIsRunning(true);
     } catch (err: any) {
       toast.error('Failed to start timer: ' + err.message);
@@ -148,6 +150,7 @@ const Index = () => {
             onStart={handleStart}
             onPause={handlePause}
             onStop={handleStop}
+            serverStartedAt={serverStartedAt}
           />
         </div>
 

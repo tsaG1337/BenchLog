@@ -8,11 +8,19 @@ interface TimerProps {
   isRunning: boolean;
   onStart: () => void;
   onPause: () => void;
+  serverStartedAt?: string | null;
 }
 
-export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
+export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
+
+  // Use prop serverStartedAt immediately, then sync with polling
+  useEffect(() => {
+    if (serverStartedAt) {
+      setServerStartTime(serverStartedAt);
+    }
+  }, [serverStartedAt]);
 
   // Poll server for timer status every 2 seconds
   useEffect(() => {
@@ -44,7 +52,7 @@ export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
     const updateElapsed = () => {
       const startTime = new Date(serverStartTime);
       const now = new Date();
-      const elapsedSeconds = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+      const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - startTime.getTime()) / 1000));
       setElapsed(elapsedSeconds);
     };
 
