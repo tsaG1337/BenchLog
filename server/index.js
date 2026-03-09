@@ -137,60 +137,64 @@ function connectMqtt() {
 }
 
 function publishMqttStats() {
-  const settings = getMqttSettings();
-  if (!settings.enabled) {
-    console.log('MQTT: publish skipped — disabled');
-    return;
-  }
-  if (!mqttClient || !mqttClient.connected) {
-    console.log('MQTT: publish skipped — not connected');
-    mqttPendingPublish = true;
-    return;
-  }
+  try {
+    const settings = getMqttSettings();
+    if (!settings.enabled) {
+      console.log('MQTT: publish skipped — disabled');
+      return;
+    }
+    if (!mqttClient || !mqttClient.connected) {
+      console.log('MQTT: publish skipped — not connected');
+      mqttPendingPublish = true;
+      return;
+    }
 
-  const prefix = settings.topicPrefix || 'mybuild/stats';
+    const prefix = settings.topicPrefix || 'mybuild/stats';
 
-  // Compute stats from DB
-  const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
-  const sectionTotals = {};
-  let totalMinutes = 0;
+    // Compute stats from DB
+    const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
+    const sectionTotals = {};
+    let totalMinutes = 0;
 
-  for (const row of rows) {
-    const sec = row.section;
-    if (!sectionTotals[sec]) sectionTotals[sec] = 0;
-    sectionTotals[sec] += row.duration_minutes;
-    totalMinutes += row.duration_minutes;
-  }
+    for (const row of rows) {
+      const sec = row.section;
+      if (!sectionTotals[sec]) sectionTotals[sec] = 0;
+      sectionTotals[sec] += row.duration_minutes;
+      totalMinutes += row.duration_minutes;
+    }
 
-  const totalHours = (totalMinutes / 60).toFixed(1);
-  const sessionCount = rows.length;
+    const totalHours = (totalMinutes / 60).toFixed(1);
+    const sessionCount = rows.length;
 
-  // Publish with error handling
-  const publishOptions = { retain: true, qos: 1 };
-  
-  mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
-    if (err) console.error('MQTT publish error (total_hours):', err.message);
-  });
-  
-  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
-    if (err) console.error('MQTT publish error (total_sessions):', err.message);
-  });
-
-  // Publish per section using dynamic sections
-  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
-  for (const sec of sectionConfigs) {
-    const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
-    mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
-      if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
+    // Publish with error handling
+    const publishOptions = { retain: true, qos: 1 };
+    
+    mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
+      if (err) console.error('MQTT publish error (total_hours):', err.message);
     });
-  }
+    
+    mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
+      if (err) console.error('MQTT publish error (total_sessions):', err.message);
+    });
 
-  // Publish HA discovery if enabled
-  if (settings.haDiscovery) {
-    publishHaDiscovery(settings, sectionConfigs, prefix);
-  }
+    // Publish per section using dynamic sections
+    const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+    for (const sec of sectionConfigs) {
+      const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
+      mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
+        if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
+      });
+    }
 
-  console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
+    // Publish HA discovery if enabled
+    if (settings.haDiscovery) {
+      publishHaDiscovery(settings, sectionConfigs, prefix);
+    }
+
+    console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
+  } catch (err) {
+    console.error('MQTT publish error:', err.message || err);
+  }
 }
 
 function publishHaDiscovery(settings, sectionConfigs, prefix) {
