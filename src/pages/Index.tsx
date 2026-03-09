@@ -40,6 +40,14 @@ const Index = () => {
       setProjectName(s.projectName);
       setTargetHours(s.targetHours || 2500);
     }).catch(() => {});
+    
+    // Check for active timer on mount
+    getTimerStatus().then(status => {
+      if (status.running && status.section) {
+        setIsRunning(true);
+        setSection(status.section);
+      }
+    }).catch(() => {});
   }, [loadSessions]);
 
   const handleStart = () => setIsRunning(true);
