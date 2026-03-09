@@ -47,10 +47,12 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
   useEffect(() => {
     if (!serverStartTime) {
       setElapsed(0);
+      setIsPaused(false);
       return;
     }
 
     const updateElapsed = () => {
+      if (isPaused) return; // Don't update when paused
       const startTime = new Date(serverStartTime);
       const now = new Date();
       const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - startTime.getTime()) / 1000));
@@ -60,7 +62,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
     updateElapsed();
     const interval = setInterval(updateElapsed, 1000);
     return () => clearInterval(interval);
-  }, [serverStartTime]);
+  }, [serverStartTime, isPaused]);
 
   const hours = Math.floor(elapsed / 3600);
   const minutes = Math.floor((elapsed % 3600) / 60);
