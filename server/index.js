@@ -132,7 +132,11 @@ function connectMqtt() {
   });
 
   mqttClient.on('reconnect', () => {
-    console.log('MQTT: reconnecting...');
+    console.log('MQTT reconnecting...');
+  });
+
+  mqttClient.on('close', () => {
+    console.log('MQTT connection closed');
   });
 }
 
