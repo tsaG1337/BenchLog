@@ -23,6 +23,7 @@ const Index = () => {
   const [notes, setNotes] = useState('');
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
+  const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     try {
