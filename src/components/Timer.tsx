@@ -14,6 +14,7 @@ interface TimerProps {
 export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
 
   // Use prop serverStartedAt immediately, then sync with polling
   useEffect(() => {
@@ -46,10 +47,12 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
   useEffect(() => {
     if (!serverStartTime) {
       setElapsed(0);
+      setIsPaused(false);
       return;
     }
 
     const updateElapsed = () => {
+      if (isPaused) return; // Don't update when paused
       const startTime = new Date(serverStartTime);
       const now = new Date();
       const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - startTime.getTime()) / 1000));
@@ -59,7 +62,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
     updateElapsed();
     const interval = setInterval(updateElapsed, 1000);
     return () => clearInterval(interval);
-  }, [serverStartTime]);
+  }, [serverStartTime, isPaused]);
 
   const hours = Math.floor(elapsed / 3600);
   const minutes = Math.floor((elapsed % 3600) / 60);
@@ -70,7 +73,18 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
   const handleStop = () => {
     const endTime = new Date();
     const startTime = serverStartTime ? new Date(serverStartTime) : new Date(endTime.getTime() - elapsed * 1000);
+    setIsPaused(false);
     onStop(elapsed / 60, startTime, endTime);
+  };
+
+  const handlePause = () => {
+    setIsPaused(true);
+    onPause();
+  };
+
+  const handleResume = () => {
+    setIsPaused(false);
+    onStart();
   };
 
   return (
@@ -84,8 +98,8 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
             <Play className="w-5 h-5" /> Start
           </Button>
         )}
-        {isRunning && (
-          <Button onClick={onPause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
+        {isRunning && !isPaused && (
+          <Button onClick={handlePause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
             <Pause className="w-5 h-5" /> Pause
           </Button>
         )}
@@ -94,8 +108,8 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
             <Square className="w-5 h-5" /> Stop & Log
           </Button>
         )}
-        {!isRunning && elapsed > 0 && (
-          <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
+        {isPaused && (
+          <Button onClick={handleResume} size="lg" className="gap-2 text-lg px-8">
             <Play className="w-5 h-5" /> Resume
           </Button>
         )}
