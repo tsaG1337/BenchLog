@@ -14,6 +14,7 @@ interface TimerProps {
 export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
 
   // Use prop serverStartedAt immediately, then sync with polling
   useEffect(() => {
