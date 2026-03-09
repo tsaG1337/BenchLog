@@ -50,8 +50,18 @@ const Index = () => {
     }).catch(() => {});
   }, [loadSessions]);
 
-  const handleStart = () => setIsRunning(true);
-  const handlePause = () => setIsRunning(false);
+  const handleStart = async () => {
+    try {
+      await startTimer(section);
+      setIsRunning(true);
+    } catch (err: any) {
+      toast.error('Failed to start timer: ' + err.message);
+    }
+  };
+
+  const handlePause = async () => {
+    setIsRunning(false);
+  };
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
     const plansRef = [plansPage && `Page ${plansPage}`, plansSection && `Section ${plansSection}`, plansStep && `Step ${plansStep}`]
