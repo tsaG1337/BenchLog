@@ -17,6 +17,16 @@ const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || 'minioadmin';
 const MINIO_BUCKET = process.env.MINIO_BUCKET || 'session-images';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'rv10.db');
 
+// ─── Default sections configuration ─────────────────────────────────
+const DEFAULT_SECTIONS = [
+  { id: 'fuselage', label: 'Fuselage' },
+  { id: 'wings', label: 'Wings' },
+  { id: 'empennage', label: 'Empennage' },
+  { id: 'finish', label: 'Finish Kit' },
+  { id: 'avionics', label: 'Avionics' },
+  { id: 'engine', label: 'Engine' }
+];
+
 // ─── Express setup ──────────────────────────────────────────────────
 const app = express();
 app.use(cors());
