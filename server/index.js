@@ -112,7 +112,7 @@ function connectMqtt() {
   mqttClient = mqtt.connect(settings.brokerUrl, opts);
 
   mqttClient.on('connect', () => {
-    console.log('MQTT: connected');
+    console.log(`MQTT connected to ${settings.brokerUrl}`);
     // Publish any pending stats
     if (mqttPendingPublish) {
       mqttPendingPublish = false;
@@ -132,7 +132,11 @@ function connectMqtt() {
   });
 
   mqttClient.on('reconnect', () => {
-    console.log('MQTT: reconnecting...');
+    console.log('MQTT reconnecting...');
+  });
+
+  mqttClient.on('close', () => {
+    console.log('MQTT connection closed');
   });
 }
 
@@ -144,7 +148,7 @@ function publishMqttStats() {
       return;
     }
     if (!mqttClient || !mqttClient.connected) {
-      console.log('MQTT: publish skipped — not connected');
+      console.warn('MQTT not connected, skipping publish');
       mqttPendingPublish = true;
       return;
     }
@@ -169,10 +173,12 @@ function publishMqttStats() {
     // Publish with error handling
     const publishOptions = { retain: true, qos: 1 };
     
+    console.log(`MQTT publish → ${prefix}/total_hours`, totalHours);
     mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
       if (err) console.error('MQTT publish error (total_hours):', err.message);
     });
     
+    console.log(`MQTT publish → ${prefix}/total_sessions`, sessionCount);
     mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
       if (err) console.error('MQTT publish error (total_sessions):', err.message);
     });
@@ -181,6 +187,7 @@ function publishMqttStats() {
     const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
     for (const sec of sectionConfigs) {
       const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
+      console.log(`MQTT publish → ${prefix}/${sec.id}`, hours);
       mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
         if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
       });
