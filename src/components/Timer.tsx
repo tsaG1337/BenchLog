@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Play, Square, Pause } from 'lucide-react';
+import { getTimerStatus } from '@/lib/api';
 
 interface TimerProps {
   onStop: (durationMinutes: number, startTime: Date, endTime: Date) => void;
@@ -11,25 +12,46 @@ interface TimerProps {
 
 export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds
-  const startRef = useRef<Date | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pausedElapsed = useRef(0);
+  const [serverStartTime, setServerStartTime] = useState<string | null>(null);
 
+  // Poll server for timer status every 2 seconds
   useEffect(() => {
-    if (isRunning) {
-      const now = new Date();
-      startRef.current = now;
-      intervalRef.current = setInterval(() => {
-        setElapsed(pausedElapsed.current + Math.floor((Date.now() - now.getTime()) / 1000));
-      }, 1000);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      pausedElapsed.current = elapsed;
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+    const pollStatus = async () => {
+      try {
+        const status = await getTimerStatus();
+        if (status.running && status.startedAt) {
+          setServerStartTime(status.startedAt);
+        } else {
+          setServerStartTime(null);
+        }
+      } catch (err) {
+        console.error('Failed to poll timer status:', err);
+      }
     };
-  }, [isRunning]);
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Calculate elapsed time from server start time
+  useEffect(() => {
+    if (!serverStartTime) {
+      setElapsed(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      const startTime = new Date(serverStartTime);
+      const now = new Date();
+      const elapsedSeconds = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+      setElapsed(elapsedSeconds);
+    };
+
+    updateElapsed();
+    const interval = setInterval(updateElapsed, 1000);
+    return () => clearInterval(interval);
+  }, [serverStartTime]);
 
   const hours = Math.floor(elapsed / 3600);
   const minutes = Math.floor((elapsed % 3600) / 60);
@@ -39,11 +61,8 @@ export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
 
   const handleStop = () => {
     const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - elapsed * 1000);
+    const startTime = serverStartTime ? new Date(serverStartTime) : new Date(endTime.getTime() - elapsed * 1000);
     onStop(elapsed / 60, startTime, endTime);
-    setElapsed(0);
-    pausedElapsed.current = 0;
-    startRef.current = null;
   };
 
   return (
