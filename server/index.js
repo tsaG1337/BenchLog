@@ -187,6 +187,7 @@ function publishMqttStats() {
     const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
     for (const sec of sectionConfigs) {
       const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
+      console.log(`MQTT publish → ${prefix}/${sec.id}`, hours);
       mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
         if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
       });
