@@ -24,6 +24,7 @@ const Index = () => {
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
+  const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -82,6 +83,7 @@ const Index = () => {
     setPlansSection('');
     setPlansStep('');
     setNotes('');
+    setPendingImageUrls([]);
   }, [plansPage, plansSection, plansStep, notes, loadSessions]);
 
   const handleDelete = async (id: string) => {
@@ -166,6 +168,9 @@ const Index = () => {
             onPlansStepChange={setPlansStep}
             notes={notes}
             onNotesChange={setNotes}
+            pendingImageUrls={pendingImageUrls}
+            onPendingImageUrlsChange={setPendingImageUrls}
+            isRunning={isRunning}
           />
         </div>
 
