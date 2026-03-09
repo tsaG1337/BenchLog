@@ -423,10 +423,12 @@ app.post('/api/settings/mqtt/test', (req, res) => {
     : `mqtt://${brokerUrl}`;
 
   let responded = false;
+  let testClient;
+
   const timeout = setTimeout(() => {
     if (!responded) {
       responded = true;
-      try { testClient.end(true); } catch (e) {}
+      try { if (testClient) testClient.end(true); } catch (e) {}
       res.status(500).json({ error: 'Connection timed out after 5 seconds' });
     }
   }, 5000);
@@ -436,14 +438,32 @@ app.post('/api/settings/mqtt/test', (req, res) => {
     if (username) opts.username = username;
     if (password) opts.password = password;
 
-    const testClient = mqtt.connect(url, opts);
+    testClient = mqtt.connect(url, opts);
 
     testClient.on('connect', () => {
       if (!responded) {
-        responded = true;
-        clearTimeout(timeout);
-        testClient.end();
-        res.json({ success: true });
+        // Try to publish a test message to verify authentication
+        const testTopic = `test/${Date.now()}`;
+        testClient.publish(testTopic, 'test', { qos: 0 }, (err) => {
+          if (!responded) {
+            if (err) {
+              responded = true;
+              clearTimeout(timeout);
+              testClient.end();
+              res.status(500).json({ error: 'Authentication failed: ' + err.message });
+            } else {
+              // Wait a bit to ensure no delayed auth errors
+              setTimeout(() => {
+                if (!responded) {
+                  responded = true;
+                  clearTimeout(timeout);
+                  testClient.end();
+                  res.json({ success: true });
+                }
+              }, 200);
+            }
+          }
+        });
       }
     });
 
@@ -453,6 +473,14 @@ app.post('/api/settings/mqtt/test', (req, res) => {
         clearTimeout(timeout);
         testClient.end();
         res.status(500).json({ error: err.message });
+      }
+    });
+
+    testClient.on('close', () => {
+      if (!responded) {
+        responded = true;
+        clearTimeout(timeout);
+        res.status(500).json({ error: 'Connection closed unexpectedly (possible authentication failure)' });
       }
     });
   } catch (err) {
