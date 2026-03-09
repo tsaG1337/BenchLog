@@ -63,6 +63,14 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS active_timer (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    section TEXT NOT NULL,
+    start_time TEXT NOT NULL
+  )
+`);
+
 // ─── Settings helpers ───────────────────────────────────────────────
 function getSetting(key, defaultValue = null) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
