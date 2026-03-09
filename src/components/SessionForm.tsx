@@ -1,7 +1,12 @@
+import { useRef, useState } from 'react';
 import { useSections } from '@/contexts/SectionsContext';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { ImagePlus, X, Loader2 } from 'lucide-react';
+import { uploadImages } from '@/lib/api';
+import { toast } from 'sonner';
 
 interface SessionFormProps {
   section: string;
@@ -14,6 +19,9 @@ interface SessionFormProps {
   onPlansStepChange: (v: string) => void;
   notes: string;
   onNotesChange: (v: string) => void;
+  pendingImageUrls: string[];
+  onPendingImageUrlsChange: (urls: string[]) => void;
+  isRunning: boolean;
 }
 
 export function SessionForm({
@@ -22,6 +30,8 @@ export function SessionForm({
   plansSection, onPlansSectionChange,
   plansStep, onPlansStepChange,
   notes, onNotesChange,
+  pendingImageUrls, onPendingImageUrlsChange,
+  isRunning,
 }: SessionFormProps) {
   const { sections } = useSections();
 
