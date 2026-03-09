@@ -68,18 +68,8 @@ const Index = () => {
       .filter(Boolean)
       .join(', ');
 
-    const session: WorkSession = {
-      id: generateId(),
-      section,
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
-      durationMinutes,
-      notes,
-      plansReference: plansRef || undefined,
-    };
-
     try {
-      await createSession(session);
+      await stopTimer(notes, plansRef || undefined);
       await loadSessions();
     } catch (err: any) {
       toast.error('Failed to save session: ' + err.message);
@@ -90,7 +80,7 @@ const Index = () => {
     setPlansSection('');
     setPlansStep('');
     setNotes('');
-  }, [section, plansPage, plansSection, plansStep, notes, loadSessions]);
+  }, [plansPage, plansSection, plansStep, notes, loadSessions]);
 
   const handleDelete = async (id: string) => {
     try {
