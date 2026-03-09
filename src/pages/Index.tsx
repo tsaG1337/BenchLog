@@ -53,7 +53,8 @@ const Index = () => {
 
   const handleStart = async () => {
     try {
-      await startTimer(section);
+      const result = await startTimer(section);
+      setServerStartedAt(result.startedAt);
       setIsRunning(true);
     } catch (err: any) {
       toast.error('Failed to start timer: ' + err.message);
