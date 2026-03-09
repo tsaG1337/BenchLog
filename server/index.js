@@ -112,7 +112,7 @@ function connectMqtt() {
   mqttClient = mqtt.connect(settings.brokerUrl, opts);
 
   mqttClient.on('connect', () => {
-    console.log('MQTT: connected');
+    console.log(`MQTT connected to ${settings.brokerUrl}`);
     // Publish any pending stats
     if (mqttPendingPublish) {
       mqttPendingPublish = false;
