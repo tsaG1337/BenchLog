@@ -61,8 +61,8 @@ const Index = () => {
     }
   };
 
-  const handlePause = async () => {
-    setIsRunning(false);
+  const handlePause = () => {
+    // Pause is client-side only - just stops the UI from updating
   };
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {

@@ -98,8 +98,8 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
             <Play className="w-5 h-5" /> Start
           </Button>
         )}
-        {isRunning && (
-          <Button onClick={onPause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
+        {isRunning && !isPaused && (
+          <Button onClick={handlePause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
             <Pause className="w-5 h-5" /> Pause
           </Button>
         )}
@@ -108,8 +108,8 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
             <Square className="w-5 h-5" /> Stop & Log
           </Button>
         )}
-        {!isRunning && elapsed > 0 && (
-          <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
+        {isPaused && (
+          <Button onClick={handleResume} size="lg" className="gap-2 text-lg px-8">
             <Play className="w-5 h-5" /> Resume
           </Button>
         )}
