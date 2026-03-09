@@ -19,12 +19,14 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'rv10.db');
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [
-  { id: 'fuselage', label: 'Fuselage' },
-  { id: 'wings', label: 'Wings' },
-  { id: 'empennage', label: 'Empennage' },
-  { id: 'finish', label: 'Finish Kit' },
-  { id: 'avionics', label: 'Avionics' },
-  { id: 'engine', label: 'Engine' }
+  { id: 'empennage', label: 'Empennage', icon: '🔺' },
+  { id: 'wings', label: 'Wings', icon: '✈️' },
+  { id: 'fuselage', label: 'Fuselage', icon: '🛩️' },
+  { id: 'finishing-kit', label: 'Finishing Kit', icon: '🔧' },
+  { id: 'engine', label: 'Engine', icon: '⚙️' },
+  { id: 'avionics', label: 'Avionics', icon: '📡' },
+  { id: 'paint', label: 'Paint & Finish', icon: '🎨' },
+  { id: 'other', label: 'Other', icon: '📋' },
 ];
 
 // ─── Express setup ──────────────────────────────────────────────────
