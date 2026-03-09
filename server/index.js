@@ -170,6 +170,11 @@ function publishMqttStats() {
     const totalHours = (totalMinutes / 60).toFixed(1);
     const sessionCount = rows.length;
 
+    // Get target hours for progress calculation
+    const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+    const targetHours = generalSettings.targetHours || 2500;
+    const buildProgress = Math.min(((totalMinutes / 60) / targetHours) * 100, 100).toFixed(1);
+
     // Publish with error handling
     const publishOptions = { retain: true, qos: 1 };
     
@@ -181,6 +186,11 @@ function publishMqttStats() {
     console.log(`MQTT publish → ${prefix}/total_sessions`, sessionCount);
     mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
       if (err) console.error('MQTT publish error (total_sessions):', err.message);
+    });
+
+    console.log(`MQTT publish → ${prefix}/build_progress`, buildProgress);
+    mqttClient.publish(`${prefix}/build_progress`, buildProgress, publishOptions, (err) => {
+      if (err) console.error('MQTT publish error (build_progress):', err.message);
     });
 
     // Publish per section using dynamic sections
