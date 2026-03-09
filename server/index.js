@@ -173,10 +173,12 @@ function publishMqttStats() {
     // Publish with error handling
     const publishOptions = { retain: true, qos: 1 };
     
+    console.log(`MQTT publish → ${prefix}/total_hours`, totalHours);
     mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
       if (err) console.error('MQTT publish error (total_hours):', err.message);
     });
     
+    console.log(`MQTT publish → ${prefix}/total_sessions`, sessionCount);
     mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
       if (err) console.error('MQTT publish error (total_sessions):', err.message);
     });
