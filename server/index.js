@@ -572,10 +572,6 @@ app.get('/api/export', async (req, res) => {
       mqtt: getMqttSettings(),
       sections: getSetting('sections', DEFAULT_SECTIONS),
     };
-    // Mask MQTT password in export
-    if (exportData.settings.mqtt.password) {
-      exportData.settings.mqtt.password = '';
-    }
   }
 
   if (includeSessions) {
