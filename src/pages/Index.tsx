@@ -5,7 +5,7 @@ import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
-import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings } from '@/lib/api';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
@@ -40,28 +40,36 @@ const Index = () => {
       setProjectName(s.projectName);
       setTargetHours(s.targetHours || 2500);
     }).catch(() => {});
+    
+    // Check for active timer on mount
+    getTimerStatus().then(status => {
+      if (status.running && status.section) {
+        setIsRunning(true);
+        setSection(status.section);
+      }
+    }).catch(() => {});
   }, [loadSessions]);
 
-  const handleStart = () => setIsRunning(true);
-  const handlePause = () => setIsRunning(false);
+  const handleStart = async () => {
+    try {
+      await startTimer(section);
+      setIsRunning(true);
+    } catch (err: any) {
+      toast.error('Failed to start timer: ' + err.message);
+    }
+  };
+
+  const handlePause = async () => {
+    setIsRunning(false);
+  };
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
     const plansRef = [plansPage && `Page ${plansPage}`, plansSection && `Section ${plansSection}`, plansStep && `Step ${plansStep}`]
       .filter(Boolean)
       .join(', ');
 
-    const session: WorkSession = {
-      id: generateId(),
-      section,
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
-      durationMinutes,
-      notes,
-      plansReference: plansRef || undefined,
-    };
-
     try {
-      await createSession(session);
+      await stopTimer(notes, plansRef || undefined);
       await loadSessions();
     } catch (err: any) {
       toast.error('Failed to save session: ' + err.message);
@@ -72,7 +80,7 @@ const Index = () => {
     setPlansSection('');
     setPlansStep('');
     setNotes('');
-  }, [section, plansPage, plansSection, plansStep, notes, loadSessions]);
+  }, [plansPage, plansSection, plansStep, notes, loadSessions]);
 
   const handleDelete = async (id: string) => {
     try {

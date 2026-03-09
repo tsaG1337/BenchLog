@@ -63,6 +63,14 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS active_timer (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    section TEXT NOT NULL,
+    start_time TEXT NOT NULL
+  )
+`);
+
 // ─── Settings helpers ───────────────────────────────────────────────
 function getSetting(key, defaultValue = null) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -572,6 +580,78 @@ app.post('/api/settings/mqtt/test', (req, res) => {
 app.get('/api/sections', (req, res) => {
   const sections = getSetting('sections', DEFAULT_SECTIONS);
   res.json(sections);
+});
+
+// ─── Timer API ──────────────────────────────────────────────────────
+
+// POST /api/timer/start — start the timer
+app.post('/api/timer/start', (req, res) => {
+  const { section } = req.body;
+  if (!section) {
+    return res.status(400).json({ error: 'Section is required' });
+  }
+
+  const startTime = new Date().toISOString();
+  
+  // Delete any existing timer (only one active at a time)
+  db.prepare('DELETE FROM active_timer').run();
+  
+  // Insert new timer
+  db.prepare('INSERT INTO active_timer (id, section, start_time) VALUES (1, ?, ?)').run(section, startTime);
+  
+  res.json({ ok: true, section, startedAt: startTime });
+});
+
+// POST /api/timer/stop — stop the timer and save session
+app.post('/api/timer/stop', (req, res) => {
+  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
+  
+  if (!row) {
+    return res.status(404).json({ error: 'No active timer' });
+  }
+
+  const endTime = new Date();
+  const startTime = new Date(row.start_time);
+  const durationMinutes = (endTime - startTime) / (1000 * 60);
+  
+  const { notes, plansReference } = req.body;
+  
+  // Create session ID
+  const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Save session
+  db.prepare(`
+    INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, '[]');
+  
+  // Delete active timer
+  db.prepare('DELETE FROM active_timer WHERE id = 1').run();
+  
+  // Publish updated MQTT stats
+  publishMqttStats();
+  
+  res.json({ 
+    ok: true, 
+    sessionId,
+    durationMinutes,
+    section: row.section
+  });
+});
+
+// GET /api/timer/status — get current timer status
+app.get('/api/timer/status', (req, res) => {
+  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
+  
+  if (!row) {
+    return res.json({ running: false });
+  }
+  
+  res.json({
+    running: true,
+    section: row.section,
+    startedAt: row.start_time
+  });
 });
 
 app.put('/api/sections', (req, res) => {
