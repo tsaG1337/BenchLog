@@ -38,8 +38,15 @@ export function SectionsProvider({ children }: { children: ReactNode }) {
   const reload = useCallback(async () => {
     try {
       const data = await fetchSections();
-      setSections(data);
-      setMaps(buildMaps(data));
+      // Ensure every section has an icon, falling back to defaults or a generic icon
+      const defaultIconMap: Record<string, string> = {};
+      for (const s of DEFAULT_SECTIONS) defaultIconMap[s.id] = s.icon;
+      const withIcons = data.map(s => ({
+        ...s,
+        icon: s.icon || defaultIconMap[s.id] || '📋',
+      }));
+      setSections(withIcons);
+      setMaps(buildMaps(withIcons));
     } catch {
       // keep defaults
     }
