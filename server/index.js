@@ -148,7 +148,7 @@ function publishMqttStats() {
       return;
     }
     if (!mqttClient || !mqttClient.connected) {
-      console.log('MQTT: publish skipped — not connected');
+      console.warn('MQTT not connected, skipping publish');
       mqttPendingPublish = true;
       return;
     }
