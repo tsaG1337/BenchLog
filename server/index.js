@@ -193,6 +193,22 @@ function publishMqttStats() {
       if (err) console.error('MQTT publish error (build_progress):', err.message);
     });
 
+    // Get the last session's images
+    const lastSessionRow = db.prepare('SELECT image_urls FROM sessions ORDER BY start_time DESC LIMIT 1').get();
+    if (lastSessionRow) {
+      const lastSessionImages = JSON.parse(lastSessionRow.image_urls || '[]');
+      const imageUrls = lastSessionImages.map(url => {
+        // Convert relative URLs to absolute URLs
+        const objectName = url.replace(/^\/files\//, '');
+        return `http://${MINIO_ENDPOINT}:${MINIO_PORT}/${MINIO_BUCKET}/${objectName}`;
+      });
+      const imageUrlsJson = JSON.stringify(imageUrls);
+      console.log(`MQTT publish → ${prefix}/last_session_images`, imageUrlsJson);
+      mqttClient.publish(`${prefix}/last_session_images`, imageUrlsJson, publishOptions, (err) => {
+        if (err) console.error('MQTT publish error (last_session_images):', err.message);
+      });
+    }
+
     // Publish per section using dynamic sections
     const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
     for (const sec of sectionConfigs) {
