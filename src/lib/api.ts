@@ -129,6 +129,31 @@ export async function updateSections(sections: SectionConfig[]): Promise<void> {
   });
 }
 
+// ─── Timer API ──────────────────────────────────────────────────────
+export interface TimerStatus {
+  running: boolean;
+  section?: string;
+  startedAt?: string;
+}
+
+export async function startTimer(section: string): Promise<{ ok: boolean; section: string; startedAt: string }> {
+  return request('/api/timer/start', {
+    method: 'POST',
+    body: JSON.stringify({ section }),
+  });
+}
+
+export async function stopTimer(notes?: string, plansReference?: string): Promise<{ ok: boolean; sessionId: string; durationMinutes: number; section: string }> {
+  return request('/api/timer/stop', {
+    method: 'POST',
+    body: JSON.stringify({ notes, plansReference }),
+  });
+}
+
+export async function getTimerStatus(): Promise<TimerStatus> {
+  return request('/api/timer/status');
+}
+
 // ─── Import / Export ────────────────────────────────────────────────
 export async function exportData(includeSettings: boolean, includeSessions: boolean): Promise<Blob> {
   const params = new URLSearchParams();
