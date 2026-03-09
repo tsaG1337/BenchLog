@@ -8,9 +8,10 @@ interface TimerProps {
   isRunning: boolean;
   onStart: () => void;
   onPause: () => void;
+  serverStartedAt?: string | null;
 }
 
-export function Timer({ onStop, isRunning, onStart, onPause }: TimerProps) {
+export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
 
