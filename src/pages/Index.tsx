@@ -168,6 +168,9 @@ const Index = () => {
             onPlansStepChange={setPlansStep}
             notes={notes}
             onNotesChange={setNotes}
+            pendingImageUrls={pendingImageUrls}
+            onPendingImageUrlsChange={setPendingImageUrls}
+            isRunning={isRunning}
           />
         </div>
 
