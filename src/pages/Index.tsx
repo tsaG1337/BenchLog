@@ -150,6 +150,7 @@ const Index = () => {
             onStart={handleStart}
             onPause={handlePause}
             onStop={handleStop}
+            serverStartedAt={serverStartedAt}
           />
         </div>
 
