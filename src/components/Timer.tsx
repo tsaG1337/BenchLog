@@ -73,7 +73,18 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
   const handleStop = () => {
     const endTime = new Date();
     const startTime = serverStartTime ? new Date(serverStartTime) : new Date(endTime.getTime() - elapsed * 1000);
+    setIsPaused(false);
     onStop(elapsed / 60, startTime, endTime);
+  };
+
+  const handlePause = () => {
+    setIsPaused(true);
+    onPause();
+  };
+
+  const handleResume = () => {
+    setIsPaused(false);
+    onStart();
   };
 
   return (
