@@ -102,7 +102,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
       pausedAtRef.current = null;
     }
     setIsPaused(false);
-    onStart();
+    // Don't call onStart() - resume is client-side only, server timer keeps running
   };
 
   return (
