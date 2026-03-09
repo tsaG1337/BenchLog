@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Play, Square, Pause } from 'lucide-react';
 import { getTimerStatus } from '@/lib/api';
@@ -12,11 +12,13 @@ interface TimerProps {
 }
 
 export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
-  const [elapsed, setElapsed] = useState(0); // seconds
+  const [elapsed, setElapsed] = useState(0); // seconds (adjusted for pauses)
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
+  const totalPausedSecsRef = useRef(0);
+  const pausedAtRef = useRef<number | null>(null);
 
-  // Use prop serverStartedAt immediately, then sync with polling
+  // Use prop serverStartedAt immediately
   useEffect(() => {
     if (serverStartedAt) {
       setServerStartTime(serverStartedAt);
@@ -43,20 +45,23 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
     return () => clearInterval(interval);
   }, []);
 
-  // Calculate elapsed time from server start time
+  // Calculate elapsed time from server start time, minus paused time
   useEffect(() => {
     if (!serverStartTime) {
       setElapsed(0);
       setIsPaused(false);
+      totalPausedSecsRef.current = 0;
+      pausedAtRef.current = null;
       return;
     }
 
     const updateElapsed = () => {
-      if (isPaused) return; // Don't update when paused
+      if (isPaused) return;
       const startTime = new Date(serverStartTime);
       const now = new Date();
-      const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - startTime.getTime()) / 1000));
-      setElapsed(elapsedSeconds);
+      const rawElapsed = Math.max(0, Math.floor((now.getTime() - startTime.getTime()) / 1000));
+      const adjusted = Math.max(0, rawElapsed - totalPausedSecsRef.current);
+      setElapsed(adjusted);
     };
 
     updateElapsed();
@@ -71,27 +76,43 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
   const pad = (n: number) => n.toString().padStart(2, '0');
 
   const handleStop = () => {
+    // If currently paused, account for the final pause segment
+    if (pausedAtRef.current !== null) {
+      totalPausedSecsRef.current += Math.floor((Date.now() - pausedAtRef.current) / 1000);
+      pausedAtRef.current = null;
+    }
     const endTime = new Date();
     const startTime = serverStartTime ? new Date(serverStartTime) : new Date(endTime.getTime() - elapsed * 1000);
+    const rawDurationSecs = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
+    const adjustedDurationMins = Math.max(0, (rawDurationSecs - totalPausedSecsRef.current)) / 60;
     setIsPaused(false);
-    onStop(elapsed / 60, startTime, endTime);
+    totalPausedSecsRef.current = 0;
+    onStop(adjustedDurationMins, startTime, endTime);
   };
 
   const handlePause = () => {
+    pausedAtRef.current = Date.now();
     setIsPaused(true);
     onPause();
   };
 
   const handleResume = () => {
+    if (pausedAtRef.current !== null) {
+      totalPausedSecsRef.current += Math.floor((Date.now() - pausedAtRef.current) / 1000);
+      pausedAtRef.current = null;
+    }
     setIsPaused(false);
     onStart();
   };
 
   return (
     <div className="flex flex-col items-center gap-6">
-      <div className={`timer-display text-6xl md:text-7xl font-bold transition-all ${isRunning ? 'text-primary glow-amber-strong' : elapsed > 0 ? 'text-accent-foreground' : 'text-muted-foreground'}`}>
+      <div className={`timer-display text-6xl md:text-7xl font-bold transition-all ${isRunning && !isPaused ? 'text-primary glow-amber-strong' : elapsed > 0 ? 'text-accent-foreground' : 'text-muted-foreground'}`}>
         {pad(hours)}:{pad(minutes)}:{pad(seconds)}
       </div>
+      {isPaused && (
+        <p className="text-sm text-muted-foreground animate-pulse">Paused</p>
+      )}
       <div className="flex gap-3">
         {!isRunning && elapsed === 0 && (
           <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
