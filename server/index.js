@@ -132,12 +132,8 @@ function publishMqttStats() {
     console.log('MQTT: publish skipped — disabled');
     return;
   }
-  if (!mqttClient) {
-    console.log('MQTT: publish skipped — no client');
-    return;
-  }
-  if (!mqttClient.connected) {
-    console.log('MQTT: publish queued — not connected yet');
+  if (!mqttClient || !mqttClient.connected) {
+    console.log('MQTT: publish skipped — not connected');
     mqttPendingPublish = true;
     return;
   }
@@ -159,15 +155,24 @@ function publishMqttStats() {
   const totalHours = (totalMinutes / 60).toFixed(1);
   const sessionCount = rows.length;
 
-  // Publish total
-  mqttClient.publish(`${prefix}/total_hours`, totalHours, { retain: true });
-  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), { retain: true });
+  // Publish with error handling
+  const publishOptions = { retain: true, qos: 1 };
+  
+  mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
+    if (err) console.error('MQTT publish error (total_hours):', err.message);
+  });
+  
+  mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
+    if (err) console.error('MQTT publish error (total_sessions):', err.message);
+  });
 
   // Publish per section using dynamic sections
   const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
   for (const sec of sectionConfigs) {
     const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
-    mqttClient.publish(`${prefix}/${sec.id}`, hours, { retain: true });
+    mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
+      if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
+    });
   }
 
   // Publish HA discovery if enabled
