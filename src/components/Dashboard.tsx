@@ -89,7 +89,17 @@ export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
             </p>
           </>
         ) : (
-          <p className="text-sm text-muted-foreground/60">Need more session data to estimate</p>
+          <div className="flex items-center justify-center gap-1.5">
+            <p className="text-sm text-muted-foreground/60">Need more session data to estimate</p>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <HelpCircle className="w-3.5 h-3.5 text-muted-foreground/40 cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
+                At least 2 sessions spread over 3.5 days or more are needed to calculate your average weekly pace and project a finish date.
+              </TooltipContent>
+            </Tooltip>
+          </div>
         )}
         <div className="mt-3 h-2 bg-secondary rounded-full overflow-hidden">
           <div
