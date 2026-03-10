@@ -8,9 +8,10 @@ interface SessionImagesProps {
   sessionId: string;
   imageUrls: string[];
   onImagesChange: (urls: string[]) => void;
+  editable?: boolean;
 }
 
-export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionImagesProps) {
+export function SessionImages({ sessionId, imageUrls, onImagesChange, editable = true }: SessionImagesProps) {
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -41,6 +42,8 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
     onImagesChange(imageUrls.filter(u => u !== url));
   };
 
+  if (!editable && imageUrls.length === 0) return null;
+
   return (
     <div className="mt-3">
       {imageUrls.length > 0 && (
@@ -53,35 +56,41 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange }: SessionI
                 className="w-16 h-16 rounded-md object-cover border border-border cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => setPreviewUrl(url)}
               />
-              <button
-                onClick={() => handleRemove(url)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="w-3 h-3" />
-              </button>
+              {editable && (
+                <button
+                  onClick={() => handleRemove(url)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </div>
           ))}
         </div>
       )}
 
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={handleUpload}
-      />
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => fileRef.current?.click()}
-        disabled={uploading}
-        className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-      >
-        {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
-        {uploading ? 'Uploading…' : 'Add Photos'}
-      </Button>
+      {editable && (
+        <>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleUpload}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
+            {uploading ? 'Uploading…' : 'Add Photos'}
+          </Button>
+        </>
+      )}
 
       {previewUrl && (
         <div
