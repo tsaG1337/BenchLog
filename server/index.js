@@ -828,6 +828,111 @@ app.post('/api/import', express.json({ limit: '200mb' }), async (req, res) => {
   }
 });
 
+// ─── Blog Posts API ─────────────────────────────────────────────────
+
+// GET /api/blog — list all blog posts (with optional filters)
+app.get('/api/blog', (req, res) => {
+  const { section, year, month } = req.query;
+  let sql = 'SELECT * FROM blog_posts';
+  const conditions = [];
+  const params = [];
+
+  if (section) {
+    conditions.push('section = ?');
+    params.push(section);
+  }
+  if (year) {
+    conditions.push("strftime('%Y', published_at) = ?");
+    params.push(year);
+  }
+  if (month) {
+    conditions.push("strftime('%m', published_at) = ?");
+    params.push(month.padStart(2, '0'));
+  }
+
+  if (conditions.length > 0) {
+    sql += ' WHERE ' + conditions.join(' AND ');
+  }
+  sql += ' ORDER BY published_at DESC';
+
+  const rows = db.prepare(sql).all(...params);
+  const posts = rows.map(row => ({
+    id: row.id,
+    title: row.title,
+    content: row.content,
+    section: row.section,
+    imageUrls: JSON.parse(row.image_urls || '[]'),
+    publishedAt: row.published_at,
+    updatedAt: row.updated_at,
+  }));
+  res.json(posts);
+});
+
+// GET /api/blog/archive — get archive tree (years → months → count)
+app.get('/api/blog/archive', (req, res) => {
+  const rows = db.prepare(`
+    SELECT strftime('%Y', published_at) as year, strftime('%m', published_at) as month, COUNT(*) as count
+    FROM blog_posts
+    GROUP BY year, month
+    ORDER BY year DESC, month DESC
+  `).all();
+  res.json(rows);
+});
+
+// GET /api/blog/:id — get single post
+app.get('/api/blog/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM blog_posts WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Post not found' });
+  res.json({
+    id: row.id,
+    title: row.title,
+    content: row.content,
+    section: row.section,
+    imageUrls: JSON.parse(row.image_urls || '[]'),
+    publishedAt: row.published_at,
+    updatedAt: row.updated_at,
+  });
+});
+
+// POST /api/blog — create a blog post
+app.post('/api/blog', (req, res) => {
+  const { id, title, content, section, imageUrls, publishedAt } = req.body;
+  const postId = id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO blog_posts (id, title, content, section, image_urls, published_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(postId, title, content || '', section || null, JSON.stringify(imageUrls || []), publishedAt || now, now);
+  res.json({ ok: true, id: postId });
+});
+
+// PUT /api/blog/:id — update a blog post
+app.put('/api/blog/:id', (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  const fields = [];
+  const values = [];
+
+  if (updates.title !== undefined) { fields.push('title = ?'); values.push(updates.title); }
+  if (updates.content !== undefined) { fields.push('content = ?'); values.push(updates.content); }
+  if (updates.section !== undefined) { fields.push('section = ?'); values.push(updates.section); }
+  if (updates.imageUrls !== undefined) { fields.push('image_urls = ?'); values.push(JSON.stringify(updates.imageUrls)); }
+  if (updates.publishedAt !== undefined) { fields.push('published_at = ?'); values.push(updates.publishedAt); }
+  fields.push('updated_at = ?'); values.push(new Date().toISOString());
+
+  if (fields.length > 0) {
+    values.push(id);
+    db.prepare(`UPDATE blog_posts SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /api/blog/:id — delete a blog post
+app.delete('/api/blog/:id', (req, res) => {
+  db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));

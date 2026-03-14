@@ -181,3 +181,49 @@ export async function importData(data: object): Promise<ImportResult> {
     body: JSON.stringify(data),
   });
 }
+
+// ─── Blog Posts ─────────────────────────────────────────────────────
+export interface BlogPost {
+  id: string;
+  title: string;
+  content: string;
+  section?: string;
+  imageUrls?: string[];
+  publishedAt: string;
+  updatedAt: string;
+}
+
+export interface BlogArchiveEntry {
+  year: string;
+  month: string;
+  count: number;
+}
+
+export async function fetchBlogPosts(filters?: { section?: string; year?: string; month?: string }): Promise<BlogPost[]> {
+  const params = new URLSearchParams();
+  if (filters?.section) params.set('section', filters.section);
+  if (filters?.year) params.set('year', filters.year);
+  if (filters?.month) params.set('month', filters.month);
+  const qs = params.toString();
+  return request<BlogPost[]>(`/api/blog${qs ? `?${qs}` : ''}`);
+}
+
+export async function fetchBlogPost(id: string): Promise<BlogPost> {
+  return request<BlogPost>(`/api/blog/${id}`);
+}
+
+export async function fetchBlogArchive(): Promise<BlogArchiveEntry[]> {
+  return request<BlogArchiveEntry[]>('/api/blog/archive');
+}
+
+export async function createBlogPost(post: Partial<BlogPost>): Promise<{ ok: boolean; id: string }> {
+  return request('/api/blog', { method: 'POST', body: JSON.stringify(post) });
+}
+
+export async function updateBlogPost(id: string, updates: Partial<BlogPost>): Promise<void> {
+  await request(`/api/blog/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
+}
+
+export async function deleteBlogPost(id: string): Promise<void> {
+  await request(`/api/blog/${id}`, { method: 'DELETE' });
+}
