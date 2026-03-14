@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
@@ -7,7 +8,7 @@ import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Wrench, BarChart3, Clock } from 'lucide-react';
+import { Wrench, BarChart3, Clock, BookOpen } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -142,6 +143,11 @@ const Index = () => {
           <SettingsDialog onProjectNameChange={setProjectName} onTargetHoursChange={setTargetHours} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
+          <Link to="/blog">
+            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors">
+              <BookOpen className="w-4 h-4" /> Blog
+            </button>
+          </Link>
         </div>
       </header>
 
