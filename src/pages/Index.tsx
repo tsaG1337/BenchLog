@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
