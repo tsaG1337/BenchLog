@@ -143,6 +143,11 @@ const Index = () => {
           <SettingsDialog onProjectNameChange={setProjectName} onTargetHoursChange={setTargetHours} />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
+          <Link to="/blog">
+            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors">
+              <BookOpen className="w-4 h-4" /> Blog
+            </button>
+          </Link>
         </div>
       </header>
 
