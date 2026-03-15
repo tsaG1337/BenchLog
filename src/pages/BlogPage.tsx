@@ -117,9 +117,9 @@ export default function BlogPage() {
                     <p className="text-sm mt-1">Create your first build log entry!</p>
                   </div>
                 ) : (
-                  <div className="grid gap-5 sm:grid-cols-2">
+                  <div className="space-y-5">
                     {posts.map(post => (
-                      <BlogPostCard key={post.id} post={post} onClick={() => handlePostClick(post.id)} />
+                      <BlogPostCard key={post.id} post={post} onClick={() => handlePostClick(post)} />
                     ))}
                   </div>
                 )}
