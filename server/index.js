@@ -830,33 +830,21 @@ app.post('/api/import', express.json({ limit: '200mb' }), async (req, res) => {
 
 // ─── Blog Posts API ─────────────────────────────────────────────────
 
-// GET /api/blog — list all blog posts (with optional filters)
+// GET /api/blog — list all blog posts + work sessions (with optional filters)
 app.get('/api/blog', (req, res) => {
   const { section, year, month } = req.query;
-  let sql = 'SELECT * FROM blog_posts';
-  const conditions = [];
-  const params = [];
 
-  if (section) {
-    conditions.push('section = ?');
-    params.push(section);
-  }
-  if (year) {
-    conditions.push("strftime('%Y', published_at) = ?");
-    params.push(year);
-  }
-  if (month) {
-    conditions.push("strftime('%m', published_at) = ?");
-    params.push(month.padStart(2, '0'));
-  }
+  // ── Blog posts ──
+  let blogSql = 'SELECT * FROM blog_posts';
+  const blogConditions = [];
+  const blogParams = [];
+  if (section) { blogConditions.push('section = ?'); blogParams.push(section); }
+  if (year) { blogConditions.push("strftime('%Y', published_at) = ?"); blogParams.push(year); }
+  if (month) { blogConditions.push("strftime('%m', published_at) = ?"); blogParams.push(month.padStart(2, '0')); }
+  if (blogConditions.length > 0) blogSql += ' WHERE ' + blogConditions.join(' AND ');
 
-  if (conditions.length > 0) {
-    sql += ' WHERE ' + conditions.join(' AND ');
-  }
-  sql += ' ORDER BY published_at DESC';
-
-  const rows = db.prepare(sql).all(...params);
-  const posts = rows.map(row => ({
+  const blogRows = db.prepare(blogSql).all(...blogParams);
+  const blogPosts = blogRows.map(row => ({
     id: row.id,
     title: row.title,
     content: row.content,
@@ -864,8 +852,48 @@ app.get('/api/blog', (req, res) => {
     imageUrls: JSON.parse(row.image_urls || '[]'),
     publishedAt: row.published_at,
     updatedAt: row.updated_at,
+    source: 'blog',
   }));
-  res.json(posts);
+
+  // ── Work sessions as posts ──
+  let sessSql = 'SELECT * FROM sessions';
+  const sessConditions = [];
+  const sessParams = [];
+  if (section) { sessConditions.push('section = ?'); sessParams.push(section); }
+  if (year) { sessConditions.push("strftime('%Y', start_time) = ?"); sessParams.push(year); }
+  if (month) { sessConditions.push("strftime('%m', start_time) = ?"); sessParams.push(month.padStart(2, '0')); }
+  if (sessConditions.length > 0) sessSql += ' WHERE ' + sessConditions.join(' AND ');
+
+  const sessRows = db.prepare(sessSql).all(...sessParams);
+  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+  const sectionLabels = {};
+  for (const s of sectionConfigs) sectionLabels[s.id] = s.label;
+
+  const sessionPosts = sessRows.map(row => {
+    const label = sectionLabels[row.section] || row.section;
+    const date = new Date(row.start_time);
+    const hours = Math.floor(row.duration_minutes / 60);
+    const mins = Math.round(row.duration_minutes % 60);
+    const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+    return {
+      id: 'session-' + row.id,
+      title: `${label} — Work Session (${durationStr})`,
+      content: row.notes || '',
+      section: row.section,
+      imageUrls: JSON.parse(row.image_urls || '[]'),
+      publishedAt: row.start_time,
+      updatedAt: row.start_time,
+      source: 'session',
+      plansReference: row.plans_reference,
+      durationMinutes: row.duration_minutes,
+    };
+  });
+
+  // ── Merge and sort ──
+  const all = [...blogPosts, ...sessionPosts].sort((a, b) =>
+    new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
+  );
+  res.json(all);
 });
 
 // GET /api/blog/archive — get archive tree (years → months → count)
