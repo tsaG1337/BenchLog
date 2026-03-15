@@ -143,10 +143,10 @@ export async function startTimer(section: string): Promise<{ ok: boolean; sectio
   });
 }
 
-export async function stopTimer(notes?: string, plansReference?: string): Promise<{ ok: boolean; sessionId: string; durationMinutes: number; section: string }> {
+export async function stopTimer(notes?: string, plansReference?: string, imageUrls?: string[]): Promise<{ ok: boolean; sessionId: string; durationMinutes: number; section: string }> {
   return request('/api/timer/stop', {
     method: 'POST',
-    body: JSON.stringify({ notes, plansReference }),
+    body: JSON.stringify({ notes, plansReference, imageUrls }),
   });
 }
 

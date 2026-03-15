@@ -23,7 +23,10 @@ function parsePlansRef(ref?: string) {
 }
 
 function buildPlansRef(page: string, section: string, step: string) {
-  return [page && `Page ${page}`, section && `Section ${section}`, step && `Step ${step}`]
+  const p = page.trim().replace(/,+$/, '');
+  const s = section.trim().replace(/,+$/, '');
+  const st = step.trim().replace(/,+$/, '');
+  return [p && `Page ${p}`, s && `Section ${s}`, st && `Step ${st}`]
     .filter(Boolean)
     .join(', ') || undefined;
 }

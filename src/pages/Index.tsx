@@ -68,12 +68,15 @@ const Index = () => {
   };
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
-    const plansRef = [plansPage && `Page ${plansPage}`, plansSection && `Section ${plansSection}`, plansStep && `Step ${plansStep}`]
+    const p = plansPage.trim().replace(/,+$/, '');
+    const s = plansSection.trim().replace(/,+$/, '');
+    const st = plansStep.trim().replace(/,+$/, '');
+    const plansRef = [p && `Page ${p}`, s && `Section ${s}`, st && `Step ${st}`]
       .filter(Boolean)
       .join(', ');
 
     try {
-      await stopTimer(notes, plansRef || undefined);
+      await stopTimer(notes, plansRef || undefined, pendingImageUrls);
       await loadSessions();
     } catch (err: any) {
       toast.error('Failed to save session: ' + err.message);
@@ -85,7 +88,7 @@ const Index = () => {
     setPlansStep('');
     setNotes('');
     setPendingImageUrls([]);
-  }, [plansPage, plansSection, plansStep, notes, loadSessions]);
+  }, [plansPage, plansSection, plansStep, notes, pendingImageUrls, loadSessions]);
 
   const handleDelete = async (id: string) => {
     try {
