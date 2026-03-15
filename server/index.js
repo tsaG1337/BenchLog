@@ -628,7 +628,7 @@ app.post('/api/timer/stop', (req, res) => {
   const startTime = new Date(row.start_time);
   const durationMinutes = (endTime - startTime) / (1000 * 60);
   
-  const { notes, plansReference } = req.body;
+  const { notes, plansReference, imageUrls } = req.body;
   
   // Create session ID
   const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -637,7 +637,7 @@ app.post('/api/timer/stop', (req, res) => {
   db.prepare(`
     INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, '[]');
+  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || []));
   
   // Delete active timer
   db.prepare('DELETE FROM active_timer WHERE id = 1').run();
