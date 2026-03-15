@@ -896,12 +896,16 @@ app.get('/api/blog', (req, res) => {
   res.json(all);
 });
 
-// GET /api/blog/archive — get archive tree (years → months → count)
+// GET /api/blog/archive — get archive tree (years → months → count) from both tables
 app.get('/api/blog/archive', (req, res) => {
   const rows = db.prepare(`
-    SELECT strftime('%Y', published_at) as year, strftime('%m', published_at) as month, COUNT(*) as count
-    FROM blog_posts
-    GROUP BY year, month
+    SELECT year, month, SUM(cnt) as count FROM (
+      SELECT strftime('%Y', published_at) as year, strftime('%m', published_at) as month, COUNT(*) as cnt
+      FROM blog_posts GROUP BY year, month
+      UNION ALL
+      SELECT strftime('%Y', start_time) as year, strftime('%m', start_time) as month, COUNT(*) as cnt
+      FROM sessions GROUP BY year, month
+    ) GROUP BY year, month
     ORDER BY year DESC, month DESC
   `).all();
   res.json(rows);
