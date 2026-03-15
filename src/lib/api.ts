@@ -191,6 +191,9 @@ export interface BlogPost {
   imageUrls?: string[];
   publishedAt: string;
   updatedAt: string;
+  source?: 'blog' | 'session';
+  plansReference?: string;
+  durationMinutes?: number;
 }
 
 export interface BlogArchiveEntry {

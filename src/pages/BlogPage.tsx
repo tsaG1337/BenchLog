@@ -41,10 +41,16 @@ export default function BlogPage() {
     fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
   }, []);
 
-  const handlePostClick = async (postId: string) => {
-    try {
-      const post = await fetchBlogPost(postId);
+  const handlePostClick = async (post: BlogPost) => {
+    if (post.source === 'session') {
+      // Session posts are already fully loaded
       setActivePost(post);
+      setView('post');
+      return;
+    }
+    try {
+      const full = await fetchBlogPost(post.id);
+      setActivePost({ ...full, source: 'blog' });
       setView('post');
     } catch {
       toast.error('Failed to load post');
@@ -111,9 +117,9 @@ export default function BlogPage() {
                     <p className="text-sm mt-1">Create your first build log entry!</p>
                   </div>
                 ) : (
-                  <div className="grid gap-5 sm:grid-cols-2">
+                  <div className="space-y-5">
                     {posts.map(post => (
-                      <BlogPostCard key={post.id} post={post} onClick={() => handlePostClick(post.id)} />
+                      <BlogPostCard key={post.id} post={post} onClick={() => handlePostClick(post)} />
                     ))}
                   </div>
                 )}
