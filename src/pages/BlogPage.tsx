@@ -41,10 +41,16 @@ export default function BlogPage() {
     fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
   }, []);
 
-  const handlePostClick = async (postId: string) => {
-    try {
-      const post = await fetchBlogPost(postId);
+  const handlePostClick = async (post: BlogPost) => {
+    if (post.source === 'session') {
+      // Session posts are already fully loaded
       setActivePost(post);
+      setView('post');
+      return;
+    }
+    try {
+      const full = await fetchBlogPost(post.id);
+      setActivePost({ ...full, source: 'blog' });
       setView('post');
     } catch {
       toast.error('Failed to load post');
