@@ -237,3 +237,18 @@ export async function updateBlogPost(id: string, updates: Partial<BlogPost>): Pr
 export async function deleteBlogPost(id: string): Promise<void> {
   await request(`/api/blog/${id}`, { method: 'DELETE' });
 }
+
+// ─── Public Stats ───────────────────────────────────────────────────
+export interface BuildStats {
+  totalHours: number;
+  targetHours: number;
+  progressPct: number;
+  sessionCount: number;
+  estimatedFinish: string | null;
+  hoursPerWeek: number | null;
+  projectName: string;
+}
+
+export async function fetchBuildStats(): Promise<BuildStats> {
+  return request<BuildStats>('/api/stats');
+}
