@@ -491,8 +491,8 @@ app.post('/api/sessions', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// PUT /api/sessions/:id — update a session
-app.put('/api/sessions/:id', (req, res) => {
+// PUT /api/sessions/:id — update a session (auth required)
+app.put('/api/sessions/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
