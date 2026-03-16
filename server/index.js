@@ -614,7 +614,7 @@ app.put('/api/settings/mqtt', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/settings/mqtt/test', (req, res) => {
+app.post('/api/settings/mqtt/test', requireAuth, (req, res) => {
   const { brokerUrl, username, password } = req.body;
   if (!brokerUrl) {
     return res.status(400).json({ error: 'Missing brokerUrl' });
