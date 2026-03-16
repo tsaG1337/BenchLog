@@ -556,8 +556,8 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
   }
 });
 
-// DELETE /api/upload — delete an image from MinIO
-app.delete('/api/upload', async (req, res) => {
+// DELETE /api/upload — delete an image (auth required)
+app.delete('/api/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
     const parts = url.split(`/${MINIO_BUCKET}/`);
