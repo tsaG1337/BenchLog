@@ -721,8 +721,8 @@ app.post('/api/timer/start', requireAuth, (req, res) => {
   res.json({ ok: true, section, startedAt: startTime });
 });
 
-// POST /api/timer/stop — stop the timer and save session
-app.post('/api/timer/stop', (req, res) => {
+// POST /api/timer/stop — stop the timer (auth required)
+app.post('/api/timer/stop', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
   
   if (!row) {
