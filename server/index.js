@@ -870,8 +870,8 @@ app.get('/api/export', async (req, res) => {
   res.json(exportData);
 });
 
-// POST /api/import
-app.post('/api/import', express.json({ limit: '200mb' }), async (req, res) => {
+// POST /api/import (auth required)
+app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (req, res) => {
   const { settings, sessions } = req.body;
   const results = { settingsImported: false, sessionsImported: 0, imagesImported: 0 };
 
