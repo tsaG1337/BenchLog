@@ -16,6 +16,7 @@ interface BlogPostViewProps {
 
 export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewProps) {
   const { labels, icons } = useSections();
+  const { isAuthenticated } = useAuth();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isSession = post.source === 'session';
