@@ -577,7 +577,7 @@ app.get('/api/settings/general', (req, res) => {
   res.json(settings);
 });
 
-app.put('/api/settings/general', (req, res) => {
+app.put('/api/settings/general', requireAuth, (req, res) => {
   const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   const updates = req.body;
   const newSettings = {
