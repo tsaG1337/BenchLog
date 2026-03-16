@@ -8,10 +8,11 @@ import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Wrench, BarChart3, Clock, BookOpen } from 'lucide-react';
+import { Wrench, BarChart3, Clock, BookOpen, LogOut } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
+import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 const Index = () => {
