@@ -480,8 +480,8 @@ app.get('/api/sessions', (req, res) => {
   res.json(sessions);
 });
 
-// POST /api/sessions — create a session
-app.post('/api/sessions', (req, res) => {
+// POST /api/sessions — create a session (auth required)
+app.post('/api/sessions', requireAuth, (req, res) => {
   const { id, section, startTime, endTime, durationMinutes, notes, plansReference, imageUrls } = req.body;
   db.prepare(`
     INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
