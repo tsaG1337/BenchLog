@@ -1043,8 +1043,8 @@ app.post('/api/blog', requireAuth, (req, res) => {
   res.json({ ok: true, id: postId });
 });
 
-// PUT /api/blog/:id — update a blog post
-app.put('/api/blog/:id', (req, res) => {
+// PUT /api/blog/:id — update a blog post (auth required)
+app.put('/api/blog/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const updates = req.body;
   const fields = [];
