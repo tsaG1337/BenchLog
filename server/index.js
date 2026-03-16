@@ -703,8 +703,8 @@ app.get('/api/sections', (req, res) => {
 
 // ─── Timer API ──────────────────────────────────────────────────────
 
-// POST /api/timer/start — start the timer
-app.post('/api/timer/start', (req, res) => {
+// POST /api/timer/start — start the timer (auth required)
+app.post('/api/timer/start', requireAuth, (req, res) => {
   const { section } = req.body;
   if (!section) {
     return res.status(400).json({ error: 'Section is required' });
