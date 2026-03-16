@@ -42,7 +42,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
           <ArrowLeft className="w-5 h-5" />
         </Button>
         <div className="flex-1" />
-        {!isSession && (
+        {isAuthenticated && !isSession && (
           <>
             <Button variant="ghost" size="icon" onClick={onEdit}>
               <Pencil className="w-4 h-4" />
