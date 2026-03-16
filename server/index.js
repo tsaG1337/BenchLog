@@ -773,7 +773,7 @@ app.get('/api/timer/status', (req, res) => {
   });
 });
 
-app.put('/api/sections', (req, res) => {
+app.put('/api/sections', requireAuth, (req, res) => {
   const sections = req.body;
   if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
   setSetting('sections', sections);
