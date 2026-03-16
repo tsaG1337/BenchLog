@@ -120,8 +120,10 @@ export default function BlogPage() {
             />
           </div>
 
-          {/* Main content */}
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 space-y-4">
+            {/* Build stats bar */}
+            <BlogStatsBar stats={stats} />
+
             {view === 'list' && (
               <div className="space-y-4">
                 {posts.length === 0 ? (
