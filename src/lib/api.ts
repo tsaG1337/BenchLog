@@ -56,6 +56,7 @@ export async function uploadImages(sessionId: string, files: FileList): Promise<
 
   const res = await fetch(`${API_URL}/api/upload`, {
     method: 'POST',
+    headers: { ...getAuthHeaders() },
     body: formData,
   });
 
