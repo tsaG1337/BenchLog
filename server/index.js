@@ -1031,8 +1031,8 @@ app.get('/api/blog/:id', (req, res) => {
   });
 });
 
-// POST /api/blog — create a blog post
-app.post('/api/blog', (req, res) => {
+// POST /api/blog — create a blog post (auth required)
+app.post('/api/blog', requireAuth, (req, res) => {
   const { id, title, content, section, imageUrls, publishedAt } = req.body;
   const postId = id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
