@@ -389,9 +389,82 @@ function getPublicUrl(objectName) {
   return `/files/${objectName}`;
 }
 
+// ─── Auth Routes ────────────────────────────────────────────────────
+
+// POST /api/auth/setup — set initial password (only if none set)
+app.post('/api/auth/setup', (req, res) => {
+  const existing = getSetting('auth_password_hash', null);
+  if (existing) return res.status(400).json({ error: 'Password already set' });
+  const { password } = req.body;
+  if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+  const hash = crypto.createHash('sha256').update(password).digest('hex');
+  setSetting('auth_password_hash', hash);
+  const token = createToken({ role: 'admin' });
+  res.json({ ok: true, token });
+});
+
+// POST /api/auth/login
+app.post('/api/auth/login', (req, res) => {
+  const stored = getSetting('auth_password_hash', null);
+  if (!stored) return res.status(400).json({ error: 'No password set. Please set up first.' });
+  const { password } = req.body;
+  const hash = crypto.createHash('sha256').update(password || '').digest('hex');
+  if (hash !== stored) return res.status(401).json({ error: 'Incorrect password' });
+  const token = createToken({ role: 'admin' });
+  res.json({ ok: true, token });
+});
+
+// GET /api/auth/status — check if password is set + if token is valid
+app.get('/api/auth/status', (req, res) => {
+  const hasPassword = !!getSetting('auth_password_hash', null);
+  const auth = req.headers.authorization;
+  let authenticated = false;
+  if (auth && auth.startsWith('Bearer ')) {
+    authenticated = !!verifyToken(auth.slice(7));
+  }
+  res.json({ hasPassword, authenticated });
+});
+
+// ─── Public Stats API ───────────────────────────────────────────────
+app.get('/api/stats', (req, res) => {
+  const rows = db.prepare('SELECT section, duration_minutes, start_time FROM sessions').all();
+  const totalMinutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
+  const totalHours = totalMinutes / 60;
+  const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const targetHours = generalSettings.targetHours || 2500;
+  const progressPct = Math.min((totalHours / targetHours) * 100, 100);
+
+  let estimatedFinish = null;
+  let hoursPerWeek = null;
+  if (rows.length >= 2) {
+    const sorted = rows.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+    const firstDate = new Date(sorted[0].start_time);
+    const lastDate = new Date(sorted[sorted.length - 1].start_time);
+    const spanWeeks = (lastDate - firstDate) / (7 * 24 * 60 * 60 * 1000);
+    if (spanWeeks >= 0.5) {
+      hoursPerWeek = totalHours / spanWeeks;
+      const remaining = targetHours - totalHours;
+      if (remaining > 0) {
+        const remainingWeeks = remaining / hoursPerWeek;
+        estimatedFinish = new Date(Date.now() + remainingWeeks * 7 * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+  }
+
+  res.json({
+    totalHours: parseFloat(totalHours.toFixed(1)),
+    targetHours,
+    progressPct: parseFloat(progressPct.toFixed(1)),
+    sessionCount: rows.length,
+    estimatedFinish,
+    hoursPerWeek: hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
+    projectName: generalSettings.projectName,
+  });
+});
+
 // ─── API Routes ─────────────────────────────────────────────────────
 
-// GET /api/sessions — list all sessions
+// GET /api/sessions — list all sessions (public read)
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all();
   const sessions = rows.map(row => ({
