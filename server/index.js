@@ -1064,8 +1064,8 @@ app.put('/api/blog/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/blog/:id — delete a blog post
-app.delete('/api/blog/:id', (req, res) => {
+// DELETE /api/blog/:id — delete a blog post (auth required)
+app.delete('/api/blog/:id', requireAuth, (req, res) => {
   db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
