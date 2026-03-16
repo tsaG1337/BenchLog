@@ -6,7 +6,9 @@ import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
 import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
-import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, BlogPost, BlogArchiveEntry } from '@/lib/api';
+import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
+import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 type View = 'list' | 'post' | 'editor';
