@@ -536,8 +536,8 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/upload — upload images to MinIO
-app.post('/api/upload', upload.array('files', 10), async (req, res) => {
+// POST /api/upload — upload images (auth required)
+app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
   const sessionId = req.body.sessionId || 'unknown';
   const urls = [];
 
