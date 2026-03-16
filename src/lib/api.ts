@@ -2,11 +2,17 @@ import { WorkSession } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('auth_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...getAuthHeaders(),
       ...options?.headers,
     },
   });
@@ -50,6 +56,7 @@ export async function uploadImages(sessionId: string, files: FileList): Promise<
 
   const res = await fetch(`${API_URL}/api/upload`, {
     method: 'POST',
+    headers: { ...getAuthHeaders() },
     body: formData,
   });
 
@@ -229,4 +236,19 @@ export async function updateBlogPost(id: string, updates: Partial<BlogPost>): Pr
 
 export async function deleteBlogPost(id: string): Promise<void> {
   await request(`/api/blog/${id}`, { method: 'DELETE' });
+}
+
+// ─── Public Stats ───────────────────────────────────────────────────
+export interface BuildStats {
+  totalHours: number;
+  targetHours: number;
+  progressPct: number;
+  sessionCount: number;
+  estimatedFinish: string | null;
+  hoursPerWeek: number | null;
+  projectName: string;
+}
+
+export async function fetchBuildStats(): Promise<BuildStats> {
+  return request<BuildStats>('/api/stats');
 }

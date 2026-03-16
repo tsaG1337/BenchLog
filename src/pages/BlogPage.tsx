@@ -6,7 +6,9 @@ import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
 import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
-import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, BlogPost, BlogArchiveEntry } from '@/lib/api';
+import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
+import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 type View = 'list' | 'post' | 'editor';
@@ -19,6 +21,8 @@ export default function BlogPage() {
   const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string }>({});
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [stats, setStats] = useState<BuildStats | null>(null);
+  const { isAuthenticated } = useAuth();
 
   const loadPosts = useCallback(async () => {
     try {
@@ -39,6 +43,7 @@ export default function BlogPage() {
 
   useEffect(() => {
     fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
+    fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
   const handlePostClick = async (post: BlogPost) => {
@@ -79,12 +84,20 @@ export default function BlogPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold text-foreground tracking-tight truncate">{projectName} — Blog</h1>
           </div>
-          <Button variant="outline" size="sm" className="gap-2" onClick={() => { setActivePost(null); setView('editor'); }}>
-            <PenSquare className="w-4 h-4" /> New Post
-          </Button>
-          <Link to="/">
-            <Button variant="ghost" size="sm">Tracker</Button>
-          </Link>
+          {isAuthenticated && (
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => { setActivePost(null); setView('editor'); }}>
+              <PenSquare className="w-4 h-4" /> New Post
+            </Button>
+          )}
+          {isAuthenticated ? (
+            <Link to="/">
+              <Button variant="ghost" size="sm">Tracker</Button>
+            </Link>
+          ) : (
+            <Link to="/login">
+              <Button variant="ghost" size="sm">Login</Button>
+            </Link>
+          )}
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
@@ -107,8 +120,10 @@ export default function BlogPage() {
             />
           </div>
 
-          {/* Main content */}
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 space-y-4">
+            {/* Build stats bar */}
+            <BlogStatsBar stats={stats} />
+
             {view === 'list' && (
               <div className="space-y-4">
                 {posts.length === 0 ? (

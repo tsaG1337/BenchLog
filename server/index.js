@@ -6,6 +6,38 @@ const { Client: MinioClient } = require('minio');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const mqtt = require('mqtt');
+const crypto = require('crypto');
+
+// ─── Auth helpers ───────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+const TOKEN_EXPIRY_HOURS = 72;
+
+function createToken(payload) {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + TOKEN_EXPIRY_HOURS * 3600000 })).toString('base64url');
+  const sig = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${sig}`;
+}
+
+function verifyToken(token) {
+  try {
+    const [header, body, sig] = token.split('.');
+    const expected = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+    if (sig !== expected) return null;
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
+    if (payload.exp < Date.now()) return null;
+    return payload;
+  } catch { return null; }
+}
+
+function requireAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+  const payload = verifyToken(auth.slice(7));
+  if (!payload) return res.status(401).json({ error: 'Invalid or expired token' });
+  req.user = payload;
+  next();
+}
 
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
@@ -357,9 +389,82 @@ function getPublicUrl(objectName) {
   return `/files/${objectName}`;
 }
 
+// ─── Auth Routes ────────────────────────────────────────────────────
+
+// POST /api/auth/setup — set initial password (only if none set)
+app.post('/api/auth/setup', (req, res) => {
+  const existing = getSetting('auth_password_hash', null);
+  if (existing) return res.status(400).json({ error: 'Password already set' });
+  const { password } = req.body;
+  if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+  const hash = crypto.createHash('sha256').update(password).digest('hex');
+  setSetting('auth_password_hash', hash);
+  const token = createToken({ role: 'admin' });
+  res.json({ ok: true, token });
+});
+
+// POST /api/auth/login
+app.post('/api/auth/login', (req, res) => {
+  const stored = getSetting('auth_password_hash', null);
+  if (!stored) return res.status(400).json({ error: 'No password set. Please set up first.' });
+  const { password } = req.body;
+  const hash = crypto.createHash('sha256').update(password || '').digest('hex');
+  if (hash !== stored) return res.status(401).json({ error: 'Incorrect password' });
+  const token = createToken({ role: 'admin' });
+  res.json({ ok: true, token });
+});
+
+// GET /api/auth/status — check if password is set + if token is valid
+app.get('/api/auth/status', (req, res) => {
+  const hasPassword = !!getSetting('auth_password_hash', null);
+  const auth = req.headers.authorization;
+  let authenticated = false;
+  if (auth && auth.startsWith('Bearer ')) {
+    authenticated = !!verifyToken(auth.slice(7));
+  }
+  res.json({ hasPassword, authenticated });
+});
+
+// ─── Public Stats API ───────────────────────────────────────────────
+app.get('/api/stats', (req, res) => {
+  const rows = db.prepare('SELECT section, duration_minutes, start_time FROM sessions').all();
+  const totalMinutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
+  const totalHours = totalMinutes / 60;
+  const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const targetHours = generalSettings.targetHours || 2500;
+  const progressPct = Math.min((totalHours / targetHours) * 100, 100);
+
+  let estimatedFinish = null;
+  let hoursPerWeek = null;
+  if (rows.length >= 2) {
+    const sorted = rows.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+    const firstDate = new Date(sorted[0].start_time);
+    const lastDate = new Date(sorted[sorted.length - 1].start_time);
+    const spanWeeks = (lastDate - firstDate) / (7 * 24 * 60 * 60 * 1000);
+    if (spanWeeks >= 0.5) {
+      hoursPerWeek = totalHours / spanWeeks;
+      const remaining = targetHours - totalHours;
+      if (remaining > 0) {
+        const remainingWeeks = remaining / hoursPerWeek;
+        estimatedFinish = new Date(Date.now() + remainingWeeks * 7 * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+  }
+
+  res.json({
+    totalHours: parseFloat(totalHours.toFixed(1)),
+    targetHours,
+    progressPct: parseFloat(progressPct.toFixed(1)),
+    sessionCount: rows.length,
+    estimatedFinish,
+    hoursPerWeek: hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
+    projectName: generalSettings.projectName,
+  });
+});
+
 // ─── API Routes ─────────────────────────────────────────────────────
 
-// GET /api/sessions — list all sessions
+// GET /api/sessions — list all sessions (public read)
 app.get('/api/sessions', (req, res) => {
   const rows = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all();
   const sessions = rows.map(row => ({
@@ -375,8 +480,8 @@ app.get('/api/sessions', (req, res) => {
   res.json(sessions);
 });
 
-// POST /api/sessions — create a session
-app.post('/api/sessions', (req, res) => {
+// POST /api/sessions — create a session (auth required)
+app.post('/api/sessions', requireAuth, (req, res) => {
   const { id, section, startTime, endTime, durationMinutes, notes, plansReference, imageUrls } = req.body;
   db.prepare(`
     INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
@@ -386,8 +491,8 @@ app.post('/api/sessions', (req, res) => {
   res.json({ ok: true });
 });
 
-// PUT /api/sessions/:id — update a session
-app.put('/api/sessions/:id', (req, res) => {
+// PUT /api/sessions/:id — update a session (auth required)
+app.put('/api/sessions/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
@@ -409,8 +514,8 @@ app.put('/api/sessions/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/sessions/:id — delete a session and its images
-app.delete('/api/sessions/:id', async (req, res) => {
+// DELETE /api/sessions/:id — delete a session (auth required)
+app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
 
   const row = db.prepare('SELECT image_urls FROM sessions WHERE id = ?').get(id);
@@ -431,8 +536,8 @@ app.delete('/api/sessions/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/upload — upload images to MinIO
-app.post('/api/upload', upload.array('files', 10), async (req, res) => {
+// POST /api/upload — upload images (auth required)
+app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
   const sessionId = req.body.sessionId || 'unknown';
   const urls = [];
 
@@ -451,8 +556,8 @@ app.post('/api/upload', upload.array('files', 10), async (req, res) => {
   }
 });
 
-// DELETE /api/upload — delete an image from MinIO
-app.delete('/api/upload', async (req, res) => {
+// DELETE /api/upload — delete an image (auth required)
+app.delete('/api/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
     const parts = url.split(`/${MINIO_BUCKET}/`);
@@ -472,7 +577,7 @@ app.get('/api/settings/general', (req, res) => {
   res.json(settings);
 });
 
-app.put('/api/settings/general', (req, res) => {
+app.put('/api/settings/general', requireAuth, (req, res) => {
   const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
   const updates = req.body;
   const newSettings = {
@@ -492,7 +597,7 @@ app.get('/api/settings/mqtt', (req, res) => {
   });
 });
 
-app.put('/api/settings/mqtt', (req, res) => {
+app.put('/api/settings/mqtt', requireAuth, (req, res) => {
   const current = getMqttSettings();
   const updates = req.body;
   const newSettings = {
@@ -509,7 +614,7 @@ app.put('/api/settings/mqtt', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/settings/mqtt/test', (req, res) => {
+app.post('/api/settings/mqtt/test', requireAuth, (req, res) => {
   const { brokerUrl, username, password } = req.body;
   if (!brokerUrl) {
     return res.status(400).json({ error: 'Missing brokerUrl' });
@@ -598,8 +703,8 @@ app.get('/api/sections', (req, res) => {
 
 // ─── Timer API ──────────────────────────────────────────────────────
 
-// POST /api/timer/start — start the timer
-app.post('/api/timer/start', (req, res) => {
+// POST /api/timer/start — start the timer (auth required)
+app.post('/api/timer/start', requireAuth, (req, res) => {
   const { section } = req.body;
   if (!section) {
     return res.status(400).json({ error: 'Section is required' });
@@ -616,8 +721,8 @@ app.post('/api/timer/start', (req, res) => {
   res.json({ ok: true, section, startedAt: startTime });
 });
 
-// POST /api/timer/stop — stop the timer and save session
-app.post('/api/timer/stop', (req, res) => {
+// POST /api/timer/stop — stop the timer (auth required)
+app.post('/api/timer/stop', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
   
   if (!row) {
@@ -668,7 +773,7 @@ app.get('/api/timer/status', (req, res) => {
   });
 });
 
-app.put('/api/sections', (req, res) => {
+app.put('/api/sections', requireAuth, (req, res) => {
   const sections = req.body;
   if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
   setSetting('sections', sections);
@@ -765,8 +870,8 @@ app.get('/api/export', async (req, res) => {
   res.json(exportData);
 });
 
-// POST /api/import
-app.post('/api/import', express.json({ limit: '200mb' }), async (req, res) => {
+// POST /api/import (auth required)
+app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (req, res) => {
   const { settings, sessions } = req.body;
   const results = { settingsImported: false, sessionsImported: 0, imagesImported: 0 };
 
@@ -926,8 +1031,8 @@ app.get('/api/blog/:id', (req, res) => {
   });
 });
 
-// POST /api/blog — create a blog post
-app.post('/api/blog', (req, res) => {
+// POST /api/blog — create a blog post (auth required)
+app.post('/api/blog', requireAuth, (req, res) => {
   const { id, title, content, section, imageUrls, publishedAt } = req.body;
   const postId = id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
@@ -938,8 +1043,8 @@ app.post('/api/blog', (req, res) => {
   res.json({ ok: true, id: postId });
 });
 
-// PUT /api/blog/:id — update a blog post
-app.put('/api/blog/:id', (req, res) => {
+// PUT /api/blog/:id — update a blog post (auth required)
+app.put('/api/blog/:id', requireAuth, (req, res) => {
   const { id } = req.params;
   const updates = req.body;
   const fields = [];
@@ -959,8 +1064,8 @@ app.put('/api/blog/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/blog/:id — delete a blog post
-app.delete('/api/blog/:id', (req, res) => {
+// DELETE /api/blog/:id — delete a blog post (auth required)
+app.delete('/api/blog/:id', requireAuth, (req, res) => {
   db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
