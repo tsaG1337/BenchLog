@@ -597,7 +597,7 @@ app.get('/api/settings/mqtt', (req, res) => {
   });
 });
 
-app.put('/api/settings/mqtt', (req, res) => {
+app.put('/api/settings/mqtt', requireAuth, (req, res) => {
   const current = getMqttSettings();
   const updates = req.body;
   const newSettings = {
