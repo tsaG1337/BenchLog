@@ -84,12 +84,20 @@ export default function BlogPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold text-foreground tracking-tight truncate">{projectName} — Blog</h1>
           </div>
-          <Button variant="outline" size="sm" className="gap-2" onClick={() => { setActivePost(null); setView('editor'); }}>
-            <PenSquare className="w-4 h-4" /> New Post
-          </Button>
-          <Link to="/">
-            <Button variant="ghost" size="sm">Tracker</Button>
-          </Link>
+          {isAuthenticated && (
+            <Button variant="outline" size="sm" className="gap-2" onClick={() => { setActivePost(null); setView('editor'); }}>
+              <PenSquare className="w-4 h-4" /> New Post
+            </Button>
+          )}
+          {isAuthenticated ? (
+            <Link to="/">
+              <Button variant="ghost" size="sm">Tracker</Button>
+            </Link>
+          ) : (
+            <Link to="/login">
+              <Button variant="ghost" size="sm">Login</Button>
+            </Link>
+          )}
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
