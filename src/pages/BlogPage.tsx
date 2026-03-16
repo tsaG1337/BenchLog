@@ -21,6 +21,8 @@ export default function BlogPage() {
   const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string }>({});
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [stats, setStats] = useState<BuildStats | null>(null);
+  const { isAuthenticated } = useAuth();
 
   const loadPosts = useCallback(async () => {
     try {
