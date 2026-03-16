@@ -43,6 +43,7 @@ export default function BlogPage() {
 
   useEffect(() => {
     fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
+    fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
   const handlePostClick = async (post: BlogPost) => {
