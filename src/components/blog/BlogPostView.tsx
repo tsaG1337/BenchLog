@@ -1,5 +1,6 @@
 import { BlogPost, deleteBlogPost } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Pencil, Trash2, Clock, Wrench } from 'lucide-react';
