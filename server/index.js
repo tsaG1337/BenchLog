@@ -514,8 +514,8 @@ app.put('/api/sessions/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/sessions/:id — delete a session and its images
-app.delete('/api/sessions/:id', async (req, res) => {
+// DELETE /api/sessions/:id — delete a session (auth required)
+app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
 
   const row = db.prepare('SELECT image_urls FROM sessions WHERE id = ?').get(id);
