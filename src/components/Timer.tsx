@@ -107,7 +107,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
 
   return (
     <div className="flex flex-col items-center gap-6">
-      <div className={`timer-display text-6xl md:text-7xl font-bold transition-all ${isRunning && !isPaused ? 'text-primary glow-amber-strong' : elapsed > 0 ? 'text-accent-foreground' : 'text-muted-foreground'}`}>
+      <div className={`timer-display text-6xl md:text-7xl font-bold transition-all ${isRunning && !isPaused ? 'text-primary' : elapsed > 0 ? 'text-accent-foreground' : 'text-muted-foreground'}`}>
         {pad(hours)}:{pad(minutes)}:{pad(seconds)}
       </div>
       {isPaused && (
