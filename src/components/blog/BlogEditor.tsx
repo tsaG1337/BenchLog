@@ -105,7 +105,7 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
           <SelectValue placeholder="Select section (optional)" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="none">No section</SelectItem>
+          
           {sections.map(sec => (
             <SelectItem key={sec.id} value={sec.id}>
               {sec.icon} {sec.label}
