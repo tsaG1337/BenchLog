@@ -19,7 +19,7 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
   const { sections } = useSections();
   const [title, setTitle] = useState(post?.title || '');
   const [content, setContent] = useState(post?.content || '');
-  const [section, setSection] = useState(post?.section || '');
+  const [section, setSection] = useState(post?.section || 'other');
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
 
