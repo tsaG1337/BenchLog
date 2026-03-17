@@ -57,7 +57,7 @@ export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
 
   return (
     <div className="space-y-6">
-      <div className="bg-card border border-border rounded-lg p-6 text-center glow-amber">
+      <div className="bg-card border border-border rounded-lg p-6 text-center">
         <p className="text-sm text-muted-foreground mb-1">Total Build Time</p>
         <p className="font-mono text-4xl font-bold text-primary">{totalHours.toFixed(1)}</p>
         <p className="text-sm text-muted-foreground">hours</p>

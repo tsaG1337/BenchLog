@@ -73,7 +73,7 @@ export function SessionForm({
               onClick={() => onSectionChange(s.id)}
               className={`flex items-center gap-2 px-3 py-2.5 rounded-md text-sm font-medium transition-all border ${
                 section === s.id
-                  ? 'bg-primary/15 border-primary text-primary glow-amber'
+                  ? 'bg-primary/15 border-primary text-primary'
                   : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'
               }`}
             >
