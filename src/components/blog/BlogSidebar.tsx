@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Calendar, Layers } from 'lucide-react';
 import { BlogArchiveEntry } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { cn } from '@/lib/utils';
+import { BuildFlowchart } from './BuildFlowchart';
 
 interface BlogSidebarProps {
   archive: BlogArchiveEntry[];
