@@ -132,6 +132,9 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
           })}
         </div>
       </div>
+
+      {/* Build Progress Flowchart */}
+      <BuildFlowchart />
     </aside>
   );
 }
