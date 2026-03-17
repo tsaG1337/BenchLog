@@ -1070,6 +1070,19 @@ app.delete('/api/blog/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Flowchart Status API ───────────────────────────────────────────
+// GET /api/flowchart-status — public read
+app.get('/api/flowchart-status', (req, res) => {
+  const data = getSetting('flowchart_status', {});
+  res.json(data);
+});
+
+// PUT /api/flowchart-status — auth required, save all statuses
+app.put('/api/flowchart-status', requireAuth, (req, res) => {
+  setSetting('flowchart_status', req.body);
+  res.json({ ok: true });
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
