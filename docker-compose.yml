@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  timetracker:
+    build: .
+    container_name: timetracker
+    restart: unless-stopped
+
+    ports:
+      - "3010:3001"
+
+    environment:
+      PORT: 3001
+
+      MINIO_ENDPOINT: "192.168.1.2"
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+
+      MINIO_ACCESS_KEY: miniIOroot
+      MINIO_SECRET_KEY: miniIOrootPW
+
+      MINIO_BUCKET: session-images
+
+      DB_PATH: /data/database.db
+
+    volumes:
+      - ./data:/data
