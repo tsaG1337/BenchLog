@@ -329,6 +329,20 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
             </div>
           </div>
 
+          <div>
+            <p className="text-sm font-medium text-foreground mb-2">Report order:</p>
+            <RadioGroup value={groupBy} onValueChange={(v) => setGroupBy(v as 'chronological' | 'section')} className="flex gap-4">
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="chronological" id="group-chrono" />
+                <Label htmlFor="group-chrono" className="text-sm text-muted-foreground cursor-pointer">Chronological</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="section" id="group-section" />
+                <Label htmlFor="group-section" className="text-sm text-muted-foreground cursor-pointer">Grouped by section</Label>
+              </div>
+            </RadioGroup>
+          </div>
+
           <div className="space-y-3">
             <p className="text-sm font-medium text-foreground">Include in export:</p>
             <div className="flex items-center gap-2">
