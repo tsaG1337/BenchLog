@@ -20,6 +20,7 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
   const [includeReferences, setIncludeReferences] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeImages, setIncludeImages] = useState(false);
+  const [groupBy, setGroupBy] = useState<'chronological' | 'section'>('chronological');
   const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('txt');
   const [generating, setGenerating] = useState(false);
   const [open, setOpen] = useState(false);
