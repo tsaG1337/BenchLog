@@ -182,21 +182,14 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
         );
 
-        doc.setFontSize(13);
-        doc.setFont('helvetica', 'bold');
-        checkPage(10);
-        doc.text('Session Details', margin, y);
-        y += 8;
-
-        for (const s of sortedSessions) {
+        const renderSession = async (s: WorkSession, showSection: boolean) => {
           checkPage(14);
-
           doc.setFontSize(10);
           doc.setFont('helvetica', 'bold');
-          doc.text(
-            `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`,
-            margin + 2, y
-          );
+          const label = showSection
+            ? `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`
+            : `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`;
+          doc.text(label, margin + 2, y);
           y += 5;
 
           if (includeReferences && s.plansReference) {
@@ -227,22 +220,15 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           if (includeImages && s.imageUrls && s.imageUrls.length > 0) {
             const imgSize = 40;
             let imgX = margin + 2;
-
             for (const imgUrl of s.imageUrls) {
               const dataUrl = await loadImageAsDataUrl(imgUrl);
               if (!dataUrl) continue;
-
               if (imgX + imgSize > pageWidth - margin) {
                 imgX = margin + 2;
                 y += imgSize + 3;
               }
               checkPage(imgSize + 5);
-
-              try {
-                doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize);
-              } catch {
-                // skip broken images
-              }
+              try { doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize); } catch {}
               imgX += imgSize + 3;
             }
             y += imgSize + 3;
@@ -252,6 +238,35 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           doc.setDrawColor(230);
           doc.line(margin + 2, y, pageWidth - margin - 2, y);
           y += 5;
+        };
+
+        if (groupBy === 'section') {
+          const sectionGroups: Record<string, WorkSession[]> = {};
+          for (const s of sortedSessions) {
+            if (!sectionGroups[s.section]) sectionGroups[s.section] = [];
+            sectionGroups[s.section].push(s);
+          }
+          for (const [sec, group] of Object.entries(sectionGroups).sort((a, b) => getLabel(a[0]).localeCompare(getLabel(b[0])))) {
+            const sectionMinutes = group.reduce((sum, s) => sum + s.durationMinutes, 0);
+            checkPage(14);
+            doc.setFontSize(13);
+            doc.setFont('helvetica', 'bold');
+            doc.text(`${getLabel(sec)} (${formatTime(sectionMinutes)})`, margin, y);
+            y += 8;
+            for (const s of group) {
+              await renderSession(s, false);
+            }
+            y += 4;
+          }
+        } else {
+          doc.setFontSize(13);
+          doc.setFont('helvetica', 'bold');
+          checkPage(10);
+          doc.text('Session Details', margin, y);
+          y += 8;
+          for (const s of sortedSessions) {
+            await renderSession(s, true);
+          }
         }
       }
 
