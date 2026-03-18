@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Download, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { jsPDF } from 'jspdf';
@@ -19,6 +20,7 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
   const [includeReferences, setIncludeReferences] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeImages, setIncludeImages] = useState(false);
+  const [groupBy, setGroupBy] = useState<'chronological' | 'section'>('chronological');
   const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('txt');
   const [generating, setGenerating] = useState(false);
   const [open, setOpen] = useState(false);
@@ -53,19 +55,36 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
     lines.push(`Sessions: ${sessions.length}`);
 
     if (includeReferences || includeNotes) {
-      lines.push('');
-      lines.push('=== Session Details ===');
       const sortedSessions = [...sessions].sort(
         (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
       );
-      for (const s of sortedSessions) {
-        lines.push('');
-        lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
-        if (includeReferences && s.plansReference) {
-          lines.push(`  Plans: ${s.plansReference}`);
+
+      if (groupBy === 'section') {
+        // Group by section
+        const sectionGroups: Record<string, WorkSession[]> = {};
+        for (const s of sortedSessions) {
+          if (!sectionGroups[s.section]) sectionGroups[s.section] = [];
+          sectionGroups[s.section].push(s);
         }
-        if (includeNotes && s.notes) {
-          lines.push(`  Notes: ${s.notes}`);
+        for (const [sec, group] of Object.entries(sectionGroups).sort((a, b) => getLabel(a[0]).localeCompare(getLabel(b[0])))) {
+          lines.push('');
+          const sectionMinutes = group.reduce((sum, s) => sum + s.durationMinutes, 0);
+          lines.push(`=== ${getLabel(sec)} (${formatTime(sectionMinutes)}) ===`);
+          for (const s of group) {
+            lines.push('');
+            lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`);
+            if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
+            if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
+          }
+        }
+      } else {
+        lines.push('');
+        lines.push('=== Session Details ===');
+        for (const s of sortedSessions) {
+          lines.push('');
+          lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
+          if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
+          if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
         }
       }
     }
@@ -163,21 +182,14 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
         );
 
-        doc.setFontSize(13);
-        doc.setFont('helvetica', 'bold');
-        checkPage(10);
-        doc.text('Session Details', margin, y);
-        y += 8;
-
-        for (const s of sortedSessions) {
+        const renderSession = async (s: WorkSession, showSection: boolean) => {
           checkPage(14);
-
           doc.setFontSize(10);
           doc.setFont('helvetica', 'bold');
-          doc.text(
-            `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`,
-            margin + 2, y
-          );
+          const label = showSection
+            ? `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`
+            : `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`;
+          doc.text(label, margin + 2, y);
           y += 5;
 
           if (includeReferences && s.plansReference) {
@@ -208,22 +220,15 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           if (includeImages && s.imageUrls && s.imageUrls.length > 0) {
             const imgSize = 40;
             let imgX = margin + 2;
-
             for (const imgUrl of s.imageUrls) {
               const dataUrl = await loadImageAsDataUrl(imgUrl);
               if (!dataUrl) continue;
-
               if (imgX + imgSize > pageWidth - margin) {
                 imgX = margin + 2;
                 y += imgSize + 3;
               }
               checkPage(imgSize + 5);
-
-              try {
-                doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize);
-              } catch {
-                // skip broken images
-              }
+              try { doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize); } catch {}
               imgX += imgSize + 3;
             }
             y += imgSize + 3;
@@ -233,6 +238,35 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
           doc.setDrawColor(230);
           doc.line(margin + 2, y, pageWidth - margin - 2, y);
           y += 5;
+        };
+
+        if (groupBy === 'section') {
+          const sectionGroups: Record<string, WorkSession[]> = {};
+          for (const s of sortedSessions) {
+            if (!sectionGroups[s.section]) sectionGroups[s.section] = [];
+            sectionGroups[s.section].push(s);
+          }
+          for (const [sec, group] of Object.entries(sectionGroups).sort((a, b) => getLabel(a[0]).localeCompare(getLabel(b[0])))) {
+            const sectionMinutes = group.reduce((sum, s) => sum + s.durationMinutes, 0);
+            checkPage(14);
+            doc.setFontSize(13);
+            doc.setFont('helvetica', 'bold');
+            doc.text(`${getLabel(sec)} (${formatTime(sectionMinutes)})`, margin, y);
+            y += 8;
+            for (const s of group) {
+              await renderSession(s, false);
+            }
+            y += 4;
+          }
+        } else {
+          doc.setFontSize(13);
+          doc.setFont('helvetica', 'bold');
+          checkPage(10);
+          doc.text('Session Details', margin, y);
+          y += 8;
+          for (const s of sortedSessions) {
+            await renderSession(s, true);
+          }
         }
       }
 
@@ -293,6 +327,20 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
                 PDF (.pdf)
               </Button>
             </div>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-foreground mb-2">Report order:</p>
+            <RadioGroup value={groupBy} onValueChange={(v) => setGroupBy(v as 'chronological' | 'section')} className="flex gap-4">
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="chronological" id="group-chrono" />
+                <Label htmlFor="group-chrono" className="text-sm text-muted-foreground cursor-pointer">Chronological</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="section" id="group-section" />
+                <Label htmlFor="group-section" className="text-sm text-muted-foreground cursor-pointer">Grouped by section</Label>
+              </div>
+            </RadioGroup>
           </div>
 
           <div className="space-y-3">
