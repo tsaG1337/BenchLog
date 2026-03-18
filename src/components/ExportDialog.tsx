@@ -55,19 +55,36 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
     lines.push(`Sessions: ${sessions.length}`);
 
     if (includeReferences || includeNotes) {
-      lines.push('');
-      lines.push('=== Session Details ===');
       const sortedSessions = [...sessions].sort(
         (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
       );
-      for (const s of sortedSessions) {
-        lines.push('');
-        lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
-        if (includeReferences && s.plansReference) {
-          lines.push(`  Plans: ${s.plansReference}`);
+
+      if (groupBy === 'section') {
+        // Group by section
+        const sectionGroups: Record<string, WorkSession[]> = {};
+        for (const s of sortedSessions) {
+          if (!sectionGroups[s.section]) sectionGroups[s.section] = [];
+          sectionGroups[s.section].push(s);
         }
-        if (includeNotes && s.notes) {
-          lines.push(`  Notes: ${s.notes}`);
+        for (const [sec, group] of Object.entries(sectionGroups).sort((a, b) => getLabel(a[0]).localeCompare(getLabel(b[0])))) {
+          lines.push('');
+          const sectionMinutes = group.reduce((sum, s) => sum + s.durationMinutes, 0);
+          lines.push(`=== ${getLabel(sec)} (${formatTime(sectionMinutes)}) ===`);
+          for (const s of group) {
+            lines.push('');
+            lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`);
+            if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
+            if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
+          }
+        }
+      } else {
+        lines.push('');
+        lines.push('=== Session Details ===');
+        for (const s of sortedSessions) {
+          lines.push('');
+          lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
+          if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
+          if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
         }
       }
     }
