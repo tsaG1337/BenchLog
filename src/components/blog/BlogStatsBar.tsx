@@ -1,4 +1,4 @@
-import { Clock, CalendarCheck, TrendingUp } from 'lucide-react';
+import { Clock, CalendarCheck, TrendingUp, CheckSquare } from 'lucide-react';
 import { BuildStats } from '@/lib/api';
 
 interface BlogStatsBarProps {
@@ -12,6 +12,8 @@ export function BlogStatsBar({ stats }: BlogStatsBarProps) {
     ? new Date(stats.estimatedFinish).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
     : null;
 
+  const isPackages = stats.progressMode === 'packages';
+
   return (
     <div className="bg-card border border-border rounded-xl p-4 space-y-3">
       <div className="flex items-center gap-6 flex-wrap text-sm">
@@ -19,20 +21,30 @@ export function BlogStatsBar({ stats }: BlogStatsBarProps) {
           <Clock className="w-4 h-4 text-primary" />
           <span className="text-muted-foreground">Total:</span>
           <span className="font-mono font-bold text-foreground">{stats.totalHours}h</span>
-          <span className="text-muted-foreground">/ {stats.targetHours}h</span>
+          {!isPackages && <span className="text-muted-foreground">/ {stats.targetHours}h</span>}
         </div>
-        {finishDate && (
+        {isPackages ? (
           <div className="flex items-center gap-2">
-            <CalendarCheck className="w-4 h-4 text-primary" />
-            <span className="text-muted-foreground">Est. finish:</span>
-            <span className="font-medium text-foreground">{finishDate}</span>
+            <CheckSquare className="w-4 h-4 text-primary" />
+            <span className="text-muted-foreground">Work packages:</span>
+            <span className="font-medium text-foreground">{stats.progressPct}% complete</span>
           </div>
-        )}
-        {stats.hoursPerWeek && (
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-primary" />
-            <span className="text-muted-foreground">{stats.hoursPerWeek} hrs/week avg</span>
-          </div>
+        ) : (
+          <>
+            {finishDate && (
+              <div className="flex items-center gap-2">
+                <CalendarCheck className="w-4 h-4 text-primary" />
+                <span className="text-muted-foreground">Est. finish:</span>
+                <span className="font-medium text-foreground">{finishDate}</span>
+              </div>
+            )}
+            {stats.hoursPerWeek && (
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-primary" />
+                <span className="text-muted-foreground">{stats.hoursPerWeek} hrs/week avg</span>
+              </div>
+            )}
+          </>
         )}
       </div>
       <div className="h-2 bg-secondary rounded-full overflow-hidden">

@@ -6,9 +6,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 interface DashboardProps {
   sessions: WorkSession[];
   targetHours?: number;
+  progressMode?: 'time' | 'packages';
+  packageProgressPct?: number;
 }
 
-export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
+export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time', packageProgressPct = 0 }: DashboardProps) {
   const { labels, icons } = useSections();
   const TARGET_HOURS = targetHours;
 
@@ -53,7 +55,9 @@ export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
   };
 
   const estimate = estimateFinishDate();
-  const progressPct = Math.min((totalHours / TARGET_HOURS) * 100, 100);
+  const progressPct = progressMode === 'packages'
+    ? packageProgressPct
+    : Math.min((totalHours / TARGET_HOURS) * 100, 100);
 
   return (
     <div className="space-y-6">
@@ -107,7 +111,10 @@ export function Dashboard({ sessions, targetHours = 2500 }: DashboardProps) {
             style={{ width: `${progressPct}%` }}
           />
         </div>
-        <p className="text-xs text-muted-foreground mt-1">{progressPct.toFixed(1)}% complete</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {progressPct.toFixed(1)}% complete
+          {progressMode === 'packages' && <span className="text-muted-foreground/60"> (packages)</span>}
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3">

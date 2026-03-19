@@ -20,13 +20,14 @@ import {
 interface SettingsDialogProps {
   onProjectNameChange?: (name: string) => void;
   onTargetHoursChange?: (hours: number) => void;
+  onSettingsSaved?: () => void;
 }
 
-export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: SettingsDialogProps) {
+export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
@@ -64,6 +65,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: Set
       onProjectNameChange?.(general.projectName);
       onTargetHoursChange?.(general.targetHours);
       await reloadSections();
+      onSettingsSaved?.();
       toast.success('Settings saved');
     } catch (err: any) {
       toast.error('Failed to save: ' + err.message);
@@ -147,6 +149,29 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange }: Set
               />
               <p className="text-xs text-muted-foreground/60 mt-1">
                 Manufacturer-specified hours to complete the build (default: 2500)
+              </p>
+              <Label className="text-xs text-muted-foreground mb-2 block mt-3">Progress Calculation</Label>
+              <div className="flex gap-2">
+                {([
+                  { value: 'time' as const, label: 'Time-based', desc: 'Build hours vs. target' },
+                  { value: 'packages' as const, label: 'Package-based', desc: 'Completed work packages' },
+                ] as const).map(({ value, label, desc }) => (
+                  <button
+                    key={value}
+                    onClick={() => setGeneral({ ...general, progressMode: value })}
+                    className={`flex-1 text-left px-3 py-2 rounded-md border text-xs transition-colors ${
+                      (general.progressMode || 'time') === value
+                        ? 'bg-primary/15 border-primary text-primary'
+                        : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'
+                    }`}
+                  >
+                    <p className="font-medium">{label}</p>
+                    <p className="text-[10px] opacity-70 mt-0.5">{desc}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Controls the progress bar shown on the blog and tracker pages.
               </p>
             </div>
           </div>

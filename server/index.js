@@ -430,9 +430,27 @@ app.get('/api/stats', (req, res) => {
   const rows = db.prepare('SELECT section, duration_minutes, start_time FROM sessions').all();
   const totalMinutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
   const totalHours = totalMinutes / 60;
-  const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
   const targetHours = generalSettings.targetHours || 2500;
-  const progressPct = Math.min((totalHours / targetHours) * 100, 100);
+  const progressMode = generalSettings.progressMode || 'time';
+
+  // Calculate time-based progress
+  const timePct = Math.min((totalHours / targetHours) * 100, 100);
+
+  // Calculate package-based progress
+  let packagePct = 0;
+  if (progressMode === 'packages') {
+    const flowStatus = getSetting('flowchart_status', {});
+    const flowPackages = getSetting('flowchart_packages', {});
+    function getAllPackageIds(items) {
+      return items.flatMap(item => [item.id, ...getAllPackageIds(item.children || [])]);
+    }
+    const allIds = Object.values(flowPackages).flatMap(items => getAllPackageIds(items));
+    const doneCount = allIds.filter(id => flowStatus[id] === 'done').length;
+    packagePct = allIds.length > 0 ? Math.min((doneCount / allIds.length) * 100, 100) : 0;
+  }
+
+  const progressPct = progressMode === 'packages' ? packagePct : timePct;
 
   let estimatedFinish = null;
   let hoursPerWeek = null;
@@ -455,6 +473,7 @@ app.get('/api/stats', (req, res) => {
     totalHours: parseFloat(totalHours.toFixed(1)),
     targetHours,
     progressPct: parseFloat(progressPct.toFixed(1)),
+    progressMode,
     sessionCount: rows.length,
     estimatedFinish,
     hoursPerWeek: hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
@@ -573,16 +592,17 @@ app.delete('/api/upload', requireAuth, async (req, res) => {
 
 // ─── General Settings API ────────────────────────────────────────────
 app.get('/api/settings/general', (req, res) => {
-  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
   res.json(settings);
 });
 
 app.put('/api/settings/general', requireAuth, (req, res) => {
-  const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+  const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
   const updates = req.body;
   const newSettings = {
     projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
     targetHours: updates.targetHours !== undefined ? updates.targetHours : current.targetHours,
+    progressMode: updates.progressMode !== undefined ? updates.progressMode : (current.progressMode || 'time'),
   };
   setSetting('general', newSettings);
   res.json({ ok: true });
@@ -814,6 +834,8 @@ app.get('/api/export', async (req, res) => {
       general: getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 }),
       mqtt: getMqttSettings(),
       sections: getSetting('sections', DEFAULT_SECTIONS),
+      flowchartStatus: getSetting('flowchart_status', {}),
+      flowchartPackages: getSetting('flowchart_packages', {}),
     };
   }
 
@@ -886,6 +908,8 @@ app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (re
         setSetting('mqtt', newMqtt);
       }
       if (settings.sections) setSetting('sections', settings.sections);
+      if (settings.flowchartStatus) setSetting('flowchart_status', settings.flowchartStatus);
+      if (settings.flowchartPackages) setSetting('flowchart_packages', settings.flowchartPackages);
       results.settingsImported = true;
       connectMqtt();
     }
@@ -1080,6 +1104,21 @@ app.get('/api/flowchart-status', (req, res) => {
 // PUT /api/flowchart-status — auth required, save all statuses
 app.put('/api/flowchart-status', requireAuth, (req, res) => {
   setSetting('flowchart_status', req.body);
+  res.json({ ok: true });
+});
+
+// GET /api/flowchart-packages — public read
+app.get('/api/flowchart-packages', (req, res) => {
+  const data = getSetting('flowchart_packages', {});
+  res.json(data);
+});
+
+// PUT /api/flowchart-packages — auth required
+app.put('/api/flowchart-packages', requireAuth, (req, res) => {
+  if (typeof req.body !== 'object' || Array.isArray(req.body)) {
+    return res.status(400).json({ error: 'Expected object' });
+  }
+  setSetting('flowchart_packages', req.body);
   res.json({ ok: true });
 });
 

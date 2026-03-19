@@ -6,6 +6,7 @@ import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
 import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
+import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
 import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
 import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
@@ -117,6 +118,7 @@ export default function BlogPage() {
               activeYear={filters.year}
               activeMonth={filters.month}
               onFilterChange={handleFilterChange}
+              projectName={projectName}
             />
           </div>
 
@@ -152,7 +154,17 @@ export default function BlogPage() {
               </div>
             )}
 
-            {view === 'editor' && (
+            {view === 'editor' && activePost?.source === 'session' && (
+              <div className="bg-card border border-border rounded-xl p-6 md:p-8">
+                <SessionBlogEditor
+                  post={activePost}
+                  onSave={handleSaved}
+                  onCancel={() => setView('post')}
+                />
+              </div>
+            )}
+
+            {view === 'editor' && activePost?.source !== 'session' && (
               <div className="bg-card border border-border rounded-xl p-6 md:p-8">
                 <BlogEditor
                   post={activePost || undefined}

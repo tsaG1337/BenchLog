@@ -31,6 +31,12 @@ function buildPlansRef(page: string, section: string, step: string) {
     .join(', ') || undefined;
 }
 
+function toDatetimeLocal(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryProps) {
   const { labels, icons, sections } = useSections();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -39,6 +45,8 @@ export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryP
   const [editPage, setEditPage] = useState('');
   const [editPlanSection, setEditPlanSection] = useState('');
   const [editStep, setEditStep] = useState('');
+  const [editStartTime, setEditStartTime] = useState('');
+  const [editEndTime, setEditEndTime] = useState('');
 
   const formatDuration = (minutes: number) => {
     const h = Math.floor(minutes / 60);
@@ -54,15 +62,23 @@ export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryP
     setEditPage(parsed.page);
     setEditPlanSection(parsed.section);
     setEditStep(parsed.step);
+    setEditStartTime(toDatetimeLocal(session.startTime));
+    setEditEndTime(toDatetimeLocal(session.endTime));
   };
 
   const cancelEdit = () => setEditingId(null);
 
   const saveEdit = (session: WorkSession) => {
+    const newStart = new Date(editStartTime);
+    const newEnd = new Date(editEndTime);
+    const newDuration = Math.max(0, (newEnd.getTime() - newStart.getTime()) / 60000);
     onUpdate(session.id, {
       section: editSection,
       notes: editNotes,
       plansReference: buildPlansRef(editPage, editPlanSection, editStep),
+      startTime: newStart.toISOString(),
+      endTime: newEnd.toISOString(),
+      durationMinutes: newDuration,
     });
     setEditingId(null);
   };
@@ -120,6 +136,38 @@ export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryP
                             </button>
                           ))}
                         </div>
+                      </div>
+
+                      {/* Timing */}
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-2 block">Timing</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-xs text-muted-foreground/70 mb-1 block">Start</Label>
+                            <Input
+                              type="datetime-local"
+                              value={editStartTime}
+                              onChange={(e) => setEditStartTime(e.target.value)}
+                              className="bg-secondary border-border font-mono h-8 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground/70 mb-1 block">End</Label>
+                            <Input
+                              type="datetime-local"
+                              value={editEndTime}
+                              onChange={(e) => setEditEndTime(e.target.value)}
+                              className="bg-secondary border-border font-mono h-8 text-xs"
+                            />
+                          </div>
+                        </div>
+                        {editStartTime && editEndTime && (() => {
+                          const mins = (new Date(editEndTime).getTime() - new Date(editStartTime).getTime()) / 60000;
+                          if (mins < 0) return <p className="text-xs text-destructive mt-1">End time is before start time</p>;
+                          const h = Math.floor(mins / 60);
+                          const m = Math.round(mins % 60);
+                          return <p className="text-xs text-muted-foreground/60 mt-1">Duration: {h > 0 ? `${h}h ` : ''}{m}m</p>;
+                        })()}
                       </div>
 
                       {/* Plans reference */}

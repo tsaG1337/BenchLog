@@ -6,7 +6,7 @@ import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
-import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wrench, BarChart3, Clock, BookOpen, LogOut } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
@@ -26,6 +26,8 @@ const Index = () => {
   const [notes, setNotes] = useState('');
   const [projectName, setProjectName] = useState('RV-10 Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
+  const [progressMode, setProgressMode] = useState<'time' | 'packages'>('time');
+  const [packageProgressPct, setPackageProgressPct] = useState(0);
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
   const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
 
@@ -44,6 +46,10 @@ const Index = () => {
     fetchGeneralSettings().then(s => {
       setProjectName(s.projectName);
       setTargetHours(s.targetHours || 2500);
+    }).catch(() => {});
+    fetchBuildStats().then(s => {
+      setProgressMode(s.progressMode || 'time');
+      setPackageProgressPct(s.progressPct);
     }).catch(() => {});
     
     // Check for active timer on mount
@@ -145,7 +151,16 @@ const Index = () => {
           <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
           </div>
-          <SettingsDialog onProjectNameChange={setProjectName} onTargetHoursChange={setTargetHours} />
+          <SettingsDialog
+            onProjectNameChange={setProjectName}
+            onTargetHoursChange={setTargetHours}
+            onSettingsSaved={() => {
+              fetchBuildStats().then(s => {
+                setProgressMode(s.progressMode || 'time');
+                setPackageProgressPct(s.progressPct);
+              }).catch(() => {});
+            }}
+          />
           <ManualEntryDialog onAdd={handleManualAdd} />
           <ExportDialog sessions={sessions} />
           <Link to="/blog">
@@ -202,7 +217,7 @@ const Index = () => {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="dashboard" className="mt-4">
-            <Dashboard sessions={sessions} targetHours={targetHours} />
+            <Dashboard sessions={sessions} targetHours={targetHours} progressMode={progressMode} packageProgressPct={packageProgressPct} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
             <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />

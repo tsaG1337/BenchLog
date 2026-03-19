@@ -11,11 +11,12 @@ interface BlogSidebarProps {
   activeYear?: string;
   activeMonth?: string;
   onFilterChange: (filters: { section?: string; year?: string; month?: string }) => void;
+  projectName?: string;
 }
 
 const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange }: BlogSidebarProps) {
+export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange, projectName }: BlogSidebarProps) {
   const { sections } = useSections();
   const [expandedYears, setExpandedYears] = useState<Set<string>>(() => {
     const years = new Set<string>();
@@ -134,7 +135,7 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
       </div>
 
       {/* Build Progress Flowchart */}
-      <BuildFlowchart />
+      <BuildFlowchart projectName={projectName} />
     </aside>
   );
 }

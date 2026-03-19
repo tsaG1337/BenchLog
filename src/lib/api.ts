@@ -80,6 +80,7 @@ export async function deleteImage(url: string): Promise<void> {
 export interface GeneralSettings {
   projectName: string;
   targetHours: number;
+  progressMode?: 'time' | 'packages';
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
@@ -243,6 +244,7 @@ export interface BuildStats {
   totalHours: number;
   targetHours: number;
   progressPct: number;
+  progressMode: 'time' | 'packages';
   sessionCount: number;
   estimatedFinish: string | null;
   hoursPerWeek: number | null;
