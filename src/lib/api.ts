@@ -249,6 +249,7 @@ export interface BuildStats {
   estimatedFinish: string | null;
   hoursPerWeek: number | null;
   projectName: string;
+  sectionHours: Record<string, number>;
 }
 
 export async function fetchBuildStats(): Promise<BuildStats> {

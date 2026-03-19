@@ -75,22 +75,6 @@ function removeItem(items: FlowItem[], id: string): FlowItem[] {
     );
 }
 
-/**
- * Collect items grouped by their depth level (DFS traversal).
- * Result: level 0 = top-level items, level 1 = all children, level 2 = all grandchildren, etc.
- */
-function collectByLevel(
-  items: FlowItem[],
-  depth = 0,
-  result: Map<number, FlowItem[]> = new Map(),
-): Map<number, FlowItem[]> {
-  for (const item of items) {
-    if (!result.has(depth)) result.set(depth, []);
-    result.get(depth)!.push(item);
-    if (item.children?.length) collectByLevel(item.children, depth + 1, result);
-  }
-  return result;
-}
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
@@ -240,7 +224,24 @@ function Chip({ item }: { item: FlowItem }) {
   );
 }
 
-// ─── Section row (full-width, collapsible, level-based chip rows) ─────────────
+// ─── Recursive tree node: chip on top, children in a flex row below ──────────
+
+function PackageNode({ item }: { item: FlowItem }) {
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      <Chip item={item} />
+      {item.children?.length ? (
+        <div className="flex flex-wrap gap-1.5 pl-3 pt-0.5">
+          {item.children.map(child => (
+            <PackageNode key={child.id} item={child} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Section row (full-width, collapsible) ─────────────────────────────────────
 
 function SectionRow({
   section,
@@ -264,9 +265,6 @@ function SectionRow({
       ? (allInSection.find(i => i.id === addTarget.id)?.label ?? '')
       : '';
 
-  // Collect items by depth level for horizontal row rendering
-  const byLevel = collectByLevel(items);
-  const maxDepth = byLevel.size > 0 ? Math.max(...byLevel.keys()) : -1;
 
   return (
     <div className="border border-border/60 rounded-lg bg-secondary/20 overflow-hidden">
@@ -313,17 +311,11 @@ function SectionRow({
                 : 'No packages defined'}
             </p>
           ) : (
-            Array.from({ length: maxDepth + 1 }, (_, depth) => (
-              <div
-                key={depth}
-                className="flex flex-wrap gap-1.5"
-                style={{ paddingLeft: depth * 20 }}
-              >
-                {byLevel.get(depth)?.map(item => (
-                  <Chip key={item.id} item={item} />
-                ))}
-              </div>
-            ))
+            <div className="flex flex-wrap gap-2 items-start">
+              {items.map(item => (
+                <PackageNode key={item.id} item={item} />
+              ))}
+            </div>
           )}
 
           {/* Add form, shown at the bottom of the section when active */}

@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Agent handoff document (local only)
+AGENT_HANDOFF.md
+/.claude
+
+# Local data (SQLite database, MinIO data)
+data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

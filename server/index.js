@@ -469,6 +469,15 @@ app.get('/api/stats', (req, res) => {
     }
   }
 
+  const sectionHours = {};
+  for (const row of rows) {
+    if (!sectionHours[row.section]) sectionHours[row.section] = 0;
+    sectionHours[row.section] += row.duration_minutes / 60;
+  }
+  for (const k of Object.keys(sectionHours)) {
+    sectionHours[k] = parseFloat(sectionHours[k].toFixed(1));
+  }
+
   res.json({
     totalHours: parseFloat(totalHours.toFixed(1)),
     targetHours,
@@ -478,6 +487,7 @@ app.get('/api/stats', (req, res) => {
     estimatedFinish,
     hoursPerWeek: hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
     projectName: generalSettings.projectName,
+    sectionHours,
   });
 });
 

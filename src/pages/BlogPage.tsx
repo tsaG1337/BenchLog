@@ -47,6 +47,10 @@ export default function BlogPage() {
     fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (projectName) document.title = `${projectName} — Blog`;
+  }, [projectName]);
+
   const handlePostClick = async (post: BlogPost) => {
     if (post.source === 'session') {
       // Session posts are already fully loaded
@@ -119,6 +123,7 @@ export default function BlogPage() {
               activeMonth={filters.month}
               onFilterChange={handleFilterChange}
               projectName={projectName}
+              sectionHours={stats?.sectionHours ?? {}}
             />
           </div>
 

@@ -12,11 +12,12 @@ interface BlogSidebarProps {
   activeMonth?: string;
   onFilterChange: (filters: { section?: string; year?: string; month?: string }) => void;
   projectName?: string;
+  sectionHours?: Record<string, number>;
 }
 
 const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange, projectName }: BlogSidebarProps) {
+export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange, projectName, sectionHours = {} }: BlogSidebarProps) {
   const { sections } = useSections();
   const [expandedYears, setExpandedYears] = useState<Set<string>>(() => {
     const years = new Set<string>();
@@ -69,7 +70,11 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
                 activeSection === sec.id ? 'bg-primary/15 text-primary font-medium' : 'text-foreground hover:bg-secondary'
               )}
             >
-              <span>{sec.icon}</span> {sec.label}
+              <span>{sec.icon}</span>
+              <span className="flex-1 truncate">{sec.label}</span>
+              {sectionHours[sec.id] ? (
+                <span className="text-[10px] text-muted-foreground shrink-0">{sectionHours[sec.id]}h</span>
+              ) : null}
             </button>
           ))}
         </div>

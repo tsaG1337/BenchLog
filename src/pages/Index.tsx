@@ -42,6 +42,10 @@ const Index = () => {
   }, []);
 
   useEffect(() => {
+    if (projectName) document.title = projectName;
+  }, [projectName]);
+
+  useEffect(() => {
     loadSessions();
     fetchGeneralSettings().then(s => {
       setProjectName(s.projectName);
