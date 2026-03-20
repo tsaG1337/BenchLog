@@ -59,7 +59,7 @@ if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations ar
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
-const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h' };
+const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker' };
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [
@@ -658,6 +658,10 @@ app.put('/api/settings/general', requireAuth, (req, res) => {
     projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
     targetHours: updates.targetHours !== undefined ? updates.targetHours : current.targetHours,
     progressMode: updates.progressMode !== undefined ? updates.progressMode : (current.progressMode || 'time'),
+    imageResizing: updates.imageResizing !== undefined ? updates.imageResizing : (current.imageResizing ?? true),
+    imageMaxWidth: updates.imageMaxWidth !== undefined ? updates.imageMaxWidth : (current.imageMaxWidth || 1920),
+    timeFormat: updates.timeFormat !== undefined ? updates.timeFormat : (current.timeFormat || '24h'),
+    landingPage: updates.landingPage !== undefined ? updates.landingPage : (current.landingPage || 'tracker'),
   };
   setSetting('general', newSettings);
   res.json({ ok: true });

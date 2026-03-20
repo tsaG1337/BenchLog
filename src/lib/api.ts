@@ -84,6 +84,7 @@ export interface GeneralSettings {
   imageResizing?: boolean;
   imageMaxWidth?: number;
   timeFormat?: '24h' | '12h';
+  landingPage?: 'tracker' | 'blog';
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
