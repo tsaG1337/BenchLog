@@ -185,7 +185,7 @@ const Index = () => {
               )}
               {!demoMode && <DropdownMenuSeparator />}
               <DropdownMenuItem onClick={() => setOpenDialog('export')}>
-                <Download className="w-4 h-4 mr-2" /> Export
+                <Download className="w-4 h-4 mr-2" /> Build Report
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>

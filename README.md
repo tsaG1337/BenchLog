@@ -85,6 +85,20 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 
 ---
 
+### 📄 Build Report
+
+Generate a formatted report of your build sessions as a **PDF** or plain text file.
+
+- Choose between **chronological** or **grouped by section** order
+- Optionally include **plans references**, **session notes**, and **session photos** (PDF only)
+- **Non-billable sections** (e.g. "Other") can be included separately — clearly marked as not counted toward build hours
+- **Custom logo** — a logo is placed top-right on the PDF cover; replace or upload your own during export
+- Section summary with billable total shown in the dialog before generating
+
+![Build Report](docs/screenshots/build-report.PNG)
+
+---
+
 ### 🔐 Authentication
 
 - Single-user password setup on first run

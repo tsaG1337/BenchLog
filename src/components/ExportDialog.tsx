@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { WorkSession } from '@/lib/types';
 import { useSections } from '@/contexts/SectionsContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, Loader2, ImagePlus, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import { toast } from 'sonner';
@@ -18,16 +18,24 @@ interface ExportDialogProps {
 }
 
 export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: controlledOnOpenChange }: ExportDialogProps) {
-  const { labels } = useSections();
+  const { labels, sections: sectionConfigs } = useSections();
   const [includeReferences, setIncludeReferences] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeImages, setIncludeImages] = useState(false);
+  const [includeNonBillable, setIncludeNonBillable] = useState(false);
+  const [includeLogo, setIncludeLogo] = useState(true);
+  const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [groupBy, setGroupBy] = useState<'chronological' | 'section'>('chronological');
-  const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('txt');
+  const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('pdf');
   const [generating, setGenerating] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
+
+  const nonBillableIds = new Set(
+    sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
+  );
 
   const formatTime = (minutes: number) => {
     const h = Math.floor(minutes / 60);
@@ -37,12 +45,24 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
 
   const getLabel = (section: string) => labels[section] || section;
 
-  const bySection = sessions.reduce<Record<string, number>>((acc, s) => {
+  const filteredSessions = includeNonBillable
+    ? sessions
+    : sessions.filter(s => !nonBillableIds.has(s.section));
+
+  const bySection = filteredSessions.reduce<Record<string, number>>((acc, s) => {
     acc[s.section] = (acc[s.section] || 0) + s.durationMinutes;
     return acc;
   }, {});
 
-  const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+  const billableMinutes = sessions
+    .filter(s => !nonBillableIds.has(s.section))
+    .reduce((sum, s) => sum + s.durationMinutes, 0);
+
+  const nonBillableMinutes = sessions
+    .filter(s => nonBillableIds.has(s.section))
+    .reduce((sum, s) => sum + s.durationMinutes, 0);
+
+  const totalMinutes = includeNonBillable ? billableMinutes + nonBillableMinutes : billableMinutes;
 
   const handleExportTxt = () => {
     const lines: string[] = [];
@@ -52,14 +72,18 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
     lines.push('=== Time by Section ===');
     const sorted = Object.entries(bySection).sort((a, b) => b[1] - a[1]);
     for (const [section, minutes] of sorted) {
-      lines.push(`${getLabel(section)}: ${formatTime(minutes)} (${(minutes / 60).toFixed(1)} hrs)`);
+      const tag = nonBillableIds.has(section) ? ' (not counted)' : '';
+      lines.push(`${getLabel(section)}${tag}: ${formatTime(minutes)} (${(minutes / 60).toFixed(1)} hrs)`);
     }
     lines.push('');
-    lines.push(`TOTAL: ${formatTime(totalMinutes)} (${(totalMinutes / 60).toFixed(1)} hrs)`);
-    lines.push(`Sessions: ${sessions.length}`);
+    lines.push(`TOTAL (build hours): ${formatTime(billableMinutes)} (${(billableMinutes / 60).toFixed(1)} hrs)`);
+    if (includeNonBillable && nonBillableMinutes > 0) {
+      lines.push(`Other (not counted): ${formatTime(nonBillableMinutes)} (${(nonBillableMinutes / 60).toFixed(1)} hrs)`);
+    }
+    lines.push(`Sessions: ${filteredSessions.length}`);
 
     if (includeReferences || includeNotes) {
-      const sortedSessions = [...sessions].sort(
+      const sortedSessions = [...filteredSessions].sort(
         (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
       );
 
@@ -103,6 +127,14 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
     setOpen(false);
   };
 
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setCustomLogoDataUrl(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
+
   const loadImageAsDataUrl = (url: string): Promise<string | null> => {
     return new Promise((resolve) => {
       const img = new Image();
@@ -113,11 +145,16 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
+        resolve(canvas.toDataURL('image/png'));
       };
       img.onerror = () => resolve(null);
       img.src = url;
     });
+  };
+
+  const loadLogoDataUrl = (): Promise<string | null> => {
+    if (customLogoDataUrl) return Promise.resolve(customLogoDataUrl);
+    return loadImageAsDataUrl('/report-logo.png');
   };
 
   const handleExportPdf = async () => {
@@ -137,6 +174,28 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
         }
       };
 
+      // Logo top-right
+      const logoHeight = 18;
+      const logoMaxWidth = 60;
+      if (includeLogo) {
+        const logoData = await loadLogoDataUrl();
+        if (logoData) {
+          // Detect dimensions to preserve aspect ratio
+          await new Promise<void>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              const aspect = img.naturalWidth / img.naturalHeight;
+              const w = Math.min(logoMaxWidth, logoHeight * aspect);
+              const h = w / aspect;
+              try { doc.addImage(logoData, 'PNG', pageWidth - margin - w, margin, w, h); } catch {}
+              resolve();
+            };
+            img.onerror = () => resolve();
+            img.src = logoData;
+          });
+        }
+      }
+
       doc.setFontSize(20);
       doc.setFont('helvetica', 'bold');
       doc.text('Build Time Report', margin, y + 7);
@@ -145,7 +204,9 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120);
       doc.text(`Generated: ${format(new Date(), 'MMMM d, yyyy h:mm a')}`, margin, y);
-      y += 10;
+      // Push y past logo height if logo is taller than the title block
+      y = Math.max(y, margin + logoHeight + 4);
+      y += 6;
       doc.setTextColor(0);
 
       doc.setFontSize(13);
@@ -157,10 +218,13 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       doc.setFontSize(10);
       for (const [section, minutes] of sorted) {
         checkPage(6);
+        const isNonBillable = nonBillableIds.has(section);
         doc.setFont('helvetica', 'normal');
-        doc.text(getLabel(section), margin + 2, y);
+        doc.setTextColor(isNonBillable ? 120 : 0);
+        doc.text(getLabel(section) + (isNonBillable ? ' (not counted)' : ''), margin + 2, y);
         doc.setFont('helvetica', 'bold');
         doc.text(`${formatTime(minutes)} (${(minutes / 60).toFixed(1)} hrs)`, pageWidth - margin, y, { align: 'right' });
+        doc.setTextColor(0);
         y += 6;
       }
 
@@ -171,18 +235,28 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       y += 5;
       doc.setFontSize(12);
       doc.setFont('helvetica', 'bold');
-      doc.text('TOTAL', margin + 2, y);
-      doc.text(`${formatTime(totalMinutes)} (${(totalMinutes / 60).toFixed(1)} hrs)`, pageWidth - margin, y, { align: 'right' });
+      doc.text('TOTAL (build hours)', margin + 2, y);
+      doc.text(`${formatTime(billableMinutes)} (${(billableMinutes / 60).toFixed(1)} hrs)`, pageWidth - margin, y, { align: 'right' });
       y += 6;
+      if (includeNonBillable && nonBillableMinutes > 0) {
+        checkPage(6);
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(120);
+        doc.text('Other (not counted)', margin + 2, y);
+        doc.text(`${formatTime(nonBillableMinutes)} (${(nonBillableMinutes / 60).toFixed(1)} hrs)`, pageWidth - margin, y, { align: 'right' });
+        doc.setTextColor(0);
+        y += 6;
+      }
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120);
-      doc.text(`${sessions.length} sessions`, margin + 2, y);
+      doc.text(`${filteredSessions.length} sessions`, margin + 2, y);
       doc.setTextColor(0);
       y += 12;
 
       if (includeReferences || includeNotes || includeImages) {
-        const sortedSessions = [...sessions].sort(
+        const sortedSessions = [...filteredSessions].sort(
           (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
         );
 
@@ -291,7 +365,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
     }
   };
 
-  const hasImages = sessions.some(s => s.imageUrls && s.imageUrls.length > 0);
+  const hasImages = filteredSessions.some(s => s.imageUrls && s.imageUrls.length > 0);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -304,7 +378,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Export Build Log</DialogTitle>
+          <DialogTitle>Create Build Report</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="bg-secondary rounded-lg p-4 space-y-1">
@@ -313,14 +387,22 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               .sort((a, b) => b[1] - a[1])
               .map(([section, minutes]) => (
                 <div key={section} className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">{getLabel(section)}</span>
-                  <span className="font-mono text-foreground">{formatTime(minutes)}</span>
+                  <span className={nonBillableIds.has(section) ? 'text-muted-foreground/50 italic' : 'text-muted-foreground'}>
+                    {getLabel(section)}{nonBillableIds.has(section) && ' (not counted)'}
+                  </span>
+                  <span className={`font-mono ${nonBillableIds.has(section) ? 'text-muted-foreground/50' : 'text-foreground'}`}>{formatTime(minutes)}</span>
                 </div>
               ))}
             <div className="border-t border-border mt-2 pt-2 flex justify-between text-sm font-semibold">
-              <span className="text-primary">Total</span>
-              <span className="font-mono text-primary">{formatTime(totalMinutes)}</span>
+              <span className="text-primary">Total (build hours)</span>
+              <span className="font-mono text-primary">{formatTime(billableMinutes)}</span>
             </div>
+            {includeNonBillable && nonBillableMinutes > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground/60">
+                <span className="italic">Other (not counted)</span>
+                <span className="font-mono">{formatTime(nonBillableMinutes)}</span>
+              </div>
+            )}
           </div>
 
           <div>
@@ -334,6 +416,39 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               </Button>
             </div>
           </div>
+
+          {exportFormat === 'pdf' && (
+            <div>
+              <p className="text-sm font-medium text-foreground mb-2">Logo (top-right of PDF):</p>
+              <div className="flex items-center gap-3">
+                <div className="w-24 h-12 rounded border border-border bg-secondary flex items-center justify-center overflow-hidden shrink-0">
+                  {customLogoDataUrl ? (
+                    <img src={customLogoDataUrl} alt="Logo preview" className="max-w-full max-h-full object-contain" />
+                  ) : (
+                    <img src="/report-logo.png" alt="Default logo" className="max-w-full max-h-full object-contain"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="include-logo" checked={includeLogo} onCheckedChange={(v) => setIncludeLogo(v === true)} />
+                    <Label htmlFor="include-logo" className="text-sm text-muted-foreground cursor-pointer">Include logo</Label>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <Button variant="outline" size="sm" className="gap-1.5 h-7 text-xs" onClick={() => logoInputRef.current?.click()}>
+                      <ImagePlus className="w-3.5 h-3.5" /> Custom
+                    </Button>
+                    {customLogoDataUrl && (
+                      <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs text-muted-foreground" onClick={() => { setCustomLogoDataUrl(null); if (logoInputRef.current) logoInputRef.current.value = ''; }}>
+                        <X className="w-3.5 h-3.5" /> Reset
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoFileChange} />
+              </div>
+            </div>
+          )}
 
           <div>
             <p className="text-sm font-medium text-foreground mb-2">Report order:</p>
@@ -363,6 +478,12 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               <div className="flex items-center gap-2">
                 <Checkbox id="include-images" checked={includeImages} onCheckedChange={(v) => setIncludeImages(v === true)} />
                 <Label htmlFor="include-images" className="text-sm text-muted-foreground cursor-pointer">Session photos</Label>
+              </div>
+            )}
+            {nonBillableIds.size > 0 && (
+              <div className="flex items-center gap-2">
+                <Checkbox id="include-nonbillable" checked={includeNonBillable} onCheckedChange={(v) => setIncludeNonBillable(v === true)} />
+                <Label htmlFor="include-nonbillable" className="text-sm text-muted-foreground cursor-pointer">Non-billable sections (e.g. Other)</Label>
               </div>
             )}
           </div>
