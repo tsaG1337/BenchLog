@@ -9,7 +9,7 @@ import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen } from 'lucide-react';
+import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -17,7 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 const Index = () => {
-  const { logout } = useAuth();
+  const { logout, demoMode } = useAuth();
   const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | null>(null);
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -150,6 +150,12 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      {demoMode && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+          <Eye className="w-4 h-4 shrink-0" />
+          <span>Demo mode — read only. No data can be created or changed.</span>
+        </div>
+      )}
       <header className="border-b border-border bg-card/50">
         <div className="container max-w-4xl px-4 py-3 flex items-center gap-3">
           <div className="w-9 h-9 shrink-0 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
@@ -167,13 +173,17 @@ const Index = () => {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
-                <Settings className="w-4 h-4 mr-2" /> Settings
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setOpenDialog('manual')}>
-                <Plus className="w-4 h-4 mr-2" /> Add Entry
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
+              {!demoMode && (
+                <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
+                  <Settings className="w-4 h-4 mr-2" /> Settings
+                </DropdownMenuItem>
+              )}
+              {!demoMode && (
+                <DropdownMenuItem onClick={() => setOpenDialog('manual')}>
+                  <Plus className="w-4 h-4 mr-2" /> Add Entry
+                </DropdownMenuItem>
+              )}
+              {!demoMode && <DropdownMenuSeparator />}
               <DropdownMenuItem onClick={() => setOpenDialog('export')}>
                 <Download className="w-4 h-4 mr-2" /> Export
               </DropdownMenuItem>
@@ -183,10 +193,14 @@ const Index = () => {
                   <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
                 </Link>
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
-                <LogOut className="w-4 h-4 mr-2" /> Sign out
-              </DropdownMenuItem>
+              {!demoMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
+                    <LogOut className="w-4 h-4 mr-2" /> Sign out
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -224,25 +238,28 @@ const Index = () => {
             onPause={handlePause}
             onStop={handleStop}
             serverStartedAt={serverStartedAt}
+            demoMode={demoMode}
           />
         </div>
 
-        <div className="bg-card border border-border rounded-xl p-6">
-          <SessionForm
-            section={section}
-            onSectionChange={setSection}
-            plansPage={plansPage}
-            onPlansPageChange={setPlansPage}
-            plansSection={plansSection}
-            onPlansSectionChange={setPlansSection}
-            plansStep={plansStep}
-            onPlansStepChange={setPlansStep}
-            notes={notes}
-            onNotesChange={setNotes}
-            pendingImageUrls={pendingImageUrls}
-            onPendingImageUrlsChange={setPendingImageUrls}
-          />
-        </div>
+        {!demoMode && (
+          <div className="bg-card border border-border rounded-xl p-6">
+            <SessionForm
+              section={section}
+              onSectionChange={setSection}
+              plansPage={plansPage}
+              onPlansPageChange={setPlansPage}
+              plansSection={plansSection}
+              onPlansSectionChange={setPlansSection}
+              plansStep={plansStep}
+              onPlansStepChange={setPlansStep}
+              notes={notes}
+              onNotesChange={setNotes}
+              pendingImageUrls={pendingImageUrls}
+              onPendingImageUrlsChange={setPendingImageUrls}
+            />
+          </div>
+        )}
 
         <Tabs defaultValue="dashboard" className="w-full">
           <TabsList className="w-full bg-card border border-border">
@@ -257,7 +274,7 @@ const Index = () => {
             <Dashboard sessions={sessions} targetHours={targetHours} progressMode={progressMode} packageProgressPct={packageProgressPct} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
-            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} />
+            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} />
           </TabsContent>
         </Tabs>
       </main>

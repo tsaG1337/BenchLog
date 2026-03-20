@@ -100,7 +100,6 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix UI) |
 | Backend | Node.js, Express (CommonJS) |
 | Database | SQLite via `better-sqlite3` |
-| Image Storage | MinIO (S3-compatible) |
 | Image Processing | `sharp` (server-side resize + thumbnail generation) |
 | Auth | Custom JWT (HS256), SHA-256 password hash |
 | Deployment | Docker + docker-compose |

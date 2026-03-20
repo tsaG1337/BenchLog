@@ -9,9 +9,10 @@ interface TimerProps {
   onStart: () => void;
   onPause: () => void;
   serverStartedAt?: string | null;
+  demoMode?: boolean;
 }
 
-export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: TimerProps) {
+export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, demoMode }: TimerProps) {
   const [elapsed, setElapsed] = useState(0); // seconds (adjusted for pauses)
   const [serverStartTime, setServerStartTime] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
@@ -113,29 +114,31 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt }: 
       {isPaused && (
         <p className="text-sm text-muted-foreground animate-pulse">Paused</p>
       )}
-      <div className="flex gap-3">
-        {!isRunning && elapsed === 0 && (
-          <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
-            <Play className="w-5 h-5" /> Start
-          </Button>
-        )}
-        {isRunning && (
-          isPaused ? (
-            <Button onClick={handleResume} size="lg" className="gap-2 text-lg px-8">
-              <Play className="w-5 h-5" /> Resume
+      {!demoMode && (
+        <div className="flex gap-3">
+          {!isRunning && elapsed === 0 && (
+            <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
+              <Play className="w-5 h-5" /> Start
             </Button>
-          ) : (
-            <Button onClick={handlePause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
-              <Pause className="w-5 h-5" /> Pause
+          )}
+          {isRunning && (
+            isPaused ? (
+              <Button onClick={handleResume} size="lg" className="gap-2 text-lg px-8">
+                <Play className="w-5 h-5" /> Resume
+              </Button>
+            ) : (
+              <Button onClick={handlePause} variant="secondary" size="lg" className="gap-2 text-lg px-8">
+                <Pause className="w-5 h-5" /> Pause
+              </Button>
+            )
+          )}
+          {(isRunning || elapsed > 0) && (
+            <Button onClick={handleStop} variant="destructive" size="lg" className="gap-2 text-lg px-8">
+              <Square className="w-5 h-5" /> Stop & Log
             </Button>
-          )
-        )}
-        {(isRunning || elapsed > 0) && (
-          <Button onClick={handleStop} variant="destructive" size="lg" className="gap-2 text-lg px-8">
-            <Square className="w-5 h-5" /> Stop & Log
-          </Button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

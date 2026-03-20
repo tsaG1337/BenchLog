@@ -5,6 +5,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   needsSetup: boolean;
+  demoMode: boolean;
   login: (password: string) => Promise<void>;
   setup: (password: string) => Promise<void>;
   logout: () => void;
@@ -19,6 +20,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
 
   const checkAuth = useCallback(async () => {
     try {
@@ -26,11 +28,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await res.json();
+      setDemoMode(!!data.demoMode);
       setNeedsSetup(!data.hasPassword);
       setIsAuthenticated(data.authenticated);
-      if (!data.authenticated) {
-        // Don't clear token yet — might just be expired
-      }
     } catch {
       // Server unavailable
     } finally {
@@ -82,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, login, setup, logout }}>
+    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, login, setup, logout }}>
       {children}
     </AuthContext.Provider>
   );

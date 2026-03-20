@@ -13,6 +13,7 @@ interface SessionHistoryProps {
   sessions: WorkSession[];
   onDelete: (id: string) => void;
   onUpdate: (id: string, updates: Partial<WorkSession>) => void;
+  readOnly?: boolean;
 }
 
 function parsePlansRef(ref?: string) {
@@ -37,7 +38,7 @@ function toDatetimeLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryProps) {
+export function SessionHistory({ sessions, onDelete, onUpdate, readOnly }: SessionHistoryProps) {
   const { labels, icons, sections } = useSections();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSection, setEditSection] = useState('');
@@ -238,14 +239,16 @@ export function SessionHistory({ sessions, onDelete, onUpdate }: SessionHistoryP
                           editable={false}
                         />
                       </div>
-                      <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => startEdit(session)} className="text-muted-foreground hover:text-foreground">
-                          <Pencil className="w-4 h-4" />
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => onDelete(session.id)} className="text-muted-foreground hover:text-destructive">
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
+                      {!readOnly && (
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => startEdit(session)} className="text-muted-foreground hover:text-foreground">
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => onDelete(session.id)} className="text-muted-foreground hover:text-destructive">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

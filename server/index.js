@@ -54,6 +54,8 @@ function requireAuth(req, res, next) {
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
+const DEMO_MODE = process.env.DEMO_MODE === 'true';
+if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
@@ -75,6 +77,17 @@ const DEFAULT_SECTIONS = [
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Demo mode: block all mutating API requests
+if (DEMO_MODE) {
+  app.use('/api', (req, res, next) => {
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+      return res.status(403).json({ error: 'Demo mode — read only' });
+    }
+    next();
+  });
+}
+
 // Serve frontend build
 app.use(express.static(path.join(__dirname, "../dist")));
 
@@ -419,7 +432,8 @@ app.get('/api/auth/status', (req, res) => {
   if (auth && auth.startsWith('Bearer ')) {
     authenticated = !!verifyToken(auth.slice(7));
   }
-  res.json({ hasPassword, authenticated });
+  // In demo mode, treat as always authenticated so frontend skips login
+  res.json({ hasPassword: DEMO_MODE ? true : hasPassword, authenticated: DEMO_MODE ? true : authenticated, demoMode: DEMO_MODE });
 });
 
 // ─── Public Stats API ───────────────────────────────────────────────
