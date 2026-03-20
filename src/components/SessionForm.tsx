@@ -22,6 +22,7 @@ interface SessionFormProps {
   pendingImageUrls: string[];
   onPendingImageUrlsChange: (urls: string[]) => void;
   activeSessionId?: string;
+  demoMode?: boolean;
 }
 
 export function SessionForm({
@@ -32,6 +33,7 @@ export function SessionForm({
   notes, onNotesChange,
   pendingImageUrls, onPendingImageUrlsChange,
   activeSessionId,
+  demoMode,
 }: SessionFormProps) {
   const { sections } = useSections();
   const [uploading, setUploading] = useState(false);
@@ -125,7 +127,7 @@ export function SessionForm({
         />
       </div>
 
-      <div>
+      {!demoMode && <div>
         <Label className="text-sm text-muted-foreground mb-2 block">Photos</Label>
         {pendingImageUrls.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
@@ -185,7 +187,7 @@ export function SessionForm({
             </button>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

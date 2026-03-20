@@ -26,8 +26,10 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
     }
   }, [serverStartedAt]);
 
-  // Poll server for timer status every 2 seconds
+  // Poll server for timer status every 2 seconds (skip in demo mode)
   useEffect(() => {
+    if (demoMode) return;
+
     const pollStatus = async () => {
       try {
         const status = await getTimerStatus();
@@ -44,7 +46,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
     pollStatus();
     const interval = setInterval(pollStatus, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [demoMode]);
 
   // Calculate elapsed time from server start time, minus paused time
   useEffect(() => {
@@ -114,8 +116,7 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
       {isPaused && (
         <p className="text-sm text-muted-foreground animate-pulse">Paused</p>
       )}
-      {!demoMode && (
-        <div className="flex gap-3">
+      <div className="flex gap-3">
           {!isRunning && elapsed === 0 && (
             <Button onClick={onStart} size="lg" className="gap-2 text-lg px-8">
               <Play className="w-5 h-5" /> Start
@@ -138,7 +139,6 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
             </Button>
           )}
         </div>
-      )}
     </div>
   );
 }

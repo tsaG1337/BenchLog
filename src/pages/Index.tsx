@@ -71,6 +71,11 @@ const Index = () => {
   }, [loadSessions]);
 
   const handleStart = async () => {
+    if (demoMode) {
+      setServerStartedAt(new Date().toISOString());
+      setIsRunning(true);
+      return;
+    }
     try {
       const result = await startTimer(section);
       setServerStartedAt(result.startedAt);
@@ -85,6 +90,17 @@ const Index = () => {
   };
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
+    if (demoMode) {
+      setIsRunning(false);
+      setServerStartedAt(null);
+      setPlansPage('');
+      setPlansSection('');
+      setPlansStep('');
+      setNotes('');
+      toast.info('Demo mode — session not saved.');
+      return;
+    }
+
     const p = plansPage.trim().replace(/,+$/, '');
     const s = plansSection.trim().replace(/,+$/, '');
     const st = plansStep.trim().replace(/,+$/, '');
@@ -105,7 +121,7 @@ const Index = () => {
     setPlansStep('');
     setNotes('');
     setPendingImageUrls([]);
-  }, [plansPage, plansSection, plansStep, notes, pendingImageUrls, loadSessions]);
+  }, [demoMode, plansPage, plansSection, plansStep, notes, pendingImageUrls, loadSessions]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -156,7 +172,7 @@ const Index = () => {
       {demoMode && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
           <Eye className="w-4 h-4 shrink-0" />
-          <span>Demo mode — read only. No data can be created or changed.</span>
+          <span>Demo mode — the timer and form are fully interactive, but sessions are not saved.</span>
         </div>
       )}
       <header className="border-b border-border bg-card/50">
@@ -255,24 +271,23 @@ const Index = () => {
           />
         </div>
 
-        {!demoMode && (
-          <div className="bg-card border border-border rounded-xl p-6">
-            <SessionForm
-              section={section}
-              onSectionChange={setSection}
-              plansPage={plansPage}
-              onPlansPageChange={setPlansPage}
-              plansSection={plansSection}
-              onPlansSectionChange={setPlansSection}
-              plansStep={plansStep}
-              onPlansStepChange={setPlansStep}
-              notes={notes}
-              onNotesChange={setNotes}
-              pendingImageUrls={pendingImageUrls}
-              onPendingImageUrlsChange={setPendingImageUrls}
-            />
-          </div>
-        )}
+        <div className="bg-card border border-border rounded-xl p-6">
+          <SessionForm
+            section={section}
+            onSectionChange={setSection}
+            plansPage={plansPage}
+            onPlansPageChange={setPlansPage}
+            plansSection={plansSection}
+            onPlansSectionChange={setPlansSection}
+            plansStep={plansStep}
+            onPlansStepChange={setPlansStep}
+            notes={notes}
+            onNotesChange={setNotes}
+            pendingImageUrls={pendingImageUrls}
+            onPendingImageUrlsChange={setPendingImageUrls}
+            demoMode={demoMode}
+          />
+        </div>
 
         <Tabs defaultValue="dashboard" className="w-full">
           <TabsList className="w-full bg-card border border-border">
