@@ -12,6 +12,7 @@ For a full project overview, features, and screenshots see the [root README](../
 - **Framework**: Express
 - **Database**: SQLite via `better-sqlite3` (single file, zero configuration)
 - **Image storage**: MinIO (S3-compatible)
+- **Image processing**: `sharp` — server-side resize on upload (configurable max width, default 1920px) + automatic `_thumb.jpg` thumbnail generation (400px)
 - **Auth**: Custom JWT (HS256, 72 h expiry), SHA-256 password hash stored in SQLite
 
 All application logic lives in `index.js`. The backend serves the compiled frontend from `../dist/` at the root path so a single process handles everything in production.
@@ -102,7 +103,7 @@ All settings (project name, target hours, progress mode, MQTT config, assembly s
 
 | Key | Description |
 |---|---|
-| `general` | Project name, target build hours, progress calculation mode |
+| `general` | Project name, target build hours, progress calculation mode, image resizing settings |
 | `mqtt` | MQTT broker config and Home Assistant discovery settings |
 | `sections` | Assembly section configuration (id, label, icon) |
 | `flowchart_status` | Build progress — status per work package (`none` / `in-progress` / `done`) |
@@ -119,7 +120,7 @@ All settings (project name, target hours, progress mode, MQTT config, assembly s
 |---|---|---|
 | GET | `/api/sessions` | All work sessions |
 | GET | `/api/stats` | Build stats — total hours, progress %, est. finish date |
-| GET | `/api/blog` | Blog posts (manual entries + sessions) with optional `?section=`, `?year=`, `?month=` filters |
+| GET | `/api/blog` | Blog posts (manual entries + sessions) with optional `?section=`, `?year=`, `?month=`, `?plansSection=` filters |
 | GET | `/api/blog/archive` | Monthly archive counts |
 | GET | `/api/blog/:id` | Single blog post |
 | GET | `/api/settings/general` | General settings |

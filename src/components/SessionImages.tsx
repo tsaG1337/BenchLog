@@ -3,6 +3,7 @@ import { uploadImages, deleteImage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ImagePlus, X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { thumbUrl } from '@/lib/utils';
 
 interface SessionImagesProps {
   sessionId: string;
@@ -51,7 +52,8 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange, editable =
           {imageUrls.map((url) => (
             <div key={url} className="relative group">
               <img
-                src={url}
+                src={thumbUrl(url)}
+                onError={(e) => { e.currentTarget.src = url; }}
                 alt="Session photo"
                 className="w-16 h-16 rounded-md object-cover border border-border cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => setPreviewUrl(url)}

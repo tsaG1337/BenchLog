@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.git
+.github
+.claude
+.vscode
+*.log
+AGENT_HANDOFF.md
+docker-compose*.yml

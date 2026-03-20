@@ -2,6 +2,7 @@ import { BlogPost } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { format } from 'date-fns';
 import { Clock, Wrench } from 'lucide-react';
+import { thumbUrl } from '@/lib/utils';
 
 interface BlogPostCardProps {
   post: BlogPost;
@@ -61,7 +62,8 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
             {firstImage && (
               <div className="w-40 h-40 shrink-0 rounded-lg overflow-hidden bg-secondary">
                 <img
-                  src={firstImage}
+                  src={thumbUrl(firstImage)}
+                  onError={(e) => { e.currentTarget.src = firstImage; }}
                   alt=""
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />
@@ -82,7 +84,7 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
           <div className="flex gap-2 pt-1">
             {extraImages.map((url, i) => (
               <div key={i} className="w-16 h-16 rounded-md overflow-hidden bg-secondary shrink-0">
-                <img src={url} alt="" className="w-full h-full object-cover" />
+                <img src={thumbUrl(url)} onError={(e) => { e.currentTarget.src = url; }} alt="" className="w-full h-full object-cover" />
               </div>
             ))}
             {allImages.length > 4 && (

@@ -1,51 +1,99 @@
 # Benchlog
 
-A self-hosted web application for tracking a construction or build project. Log your build sessions, visualize progress, document your work through a blog, and monitor everything from a clean dashboard — all running on your own infrastructure.
+A self-hosted web application for tracking a homebuilt aircraft (or any large construction project). Log build sessions, document your work through a public blog, visualize package-level progress, and monitor everything from a clean dashboard — all running on your own infrastructure.
+
+Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
+
+---
+
+## Screenshots
+
+| Blog & Sidebar | Build Progress |
+|---|---|
+| ![Blog](docs/screenshots/blog.png) | ![Build Progress](docs/screenshots/build-progress.png) |
+
+| Dashboard | Time Tracker |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Tracker](docs/screenshots/tracker.png) |
+
+| General Settings | MQTT & Export |
+|---|---|
+| ![Settings](docs/screenshots/settings.png) | ![MQTT](docs/screenshots/mqtt.png) |
 
 ---
 
 ## Features
 
-### Time Tracking
-- **Server-side timer** — start and stop a build session from the UI; the timer runs on the server so it survives page refreshes and browser restarts
-- **Manual entry** — add sessions retrospectively with date, duration, section, notes, and plans reference
-- **Session editing** — modify any session's start/end time, duration, section, notes, and plans reference inline
-- **Image attachments** — upload photos to a session; images are stored in MinIO (S3-compatible object storage)
+### ⏱ Time Tracker
 
-### Dashboard
-- Total build hours and session count
-- Progress bar and percentage complete (time-based or package-based — see Settings)
-- Estimated finish date based on average weekly pace
-- Hours broken down by build section (empennage, wings, fuselage, etc.)
+- **Server-side timer** — start a session from the UI; the timer runs on the server and survives page refreshes or browser restarts
+- **Section tagging** — assign each session to an assembly section (Empennage, Wings, Fuselage, etc.)
+- **Plans reference** — log the Section, Page, and Step number from the manufacturer's plans
+- **Session notes** — free-text notes on what was accomplished
+- **Photo attachments** — upload photos per session; images are automatically resized on upload (configurable max width, default 1920px) and thumbnails are generated for fast loading
+- **Manual entry** — add sessions retrospectively with full date, duration, section, and photo support
 
-### Build Progress Tracker
-- Visual tracker organized by **Assembly Sections** (configurable in Settings)
-- Add unlimited **work packages** with nested sub-packages (any depth)
-- Click a chip to cycle its status: Not Started → In Progress → Done
-- Per-section completion percentage (circular progress ring)
-- Compact horizontal chip layout organized by depth level — no scrolling
-- Collapsible sections for a clean overview
-- Fully persistent — stored in the database
+---
 
-### Build Blog / Journal
-- Write rich build log entries with a Markdown editor (bold, italic, headings, lists, images)
-- Browse posts by section or by month in a collapsible archive sidebar
-- Work sessions automatically appear as blog posts alongside manual entries
-- Edit session posts (timing, section, notes, plans reference) directly from the blog
-- Public read access — share your build log with the community, no login required
+### 📊 Dashboard
 
-### Settings
-- **Project name** and **target build hours**
-- **Progress calculation mode** — switch between time-based (hours logged vs. target) and package-based (completed work packages from the build progress tracker)
-- **Assembly Sections** — fully configurable: add, remove, reorder, and set icons for build sections
-- **Theme** — Light, Dark, or system default
-- **MQTT publishing** — publish build stats to a Home Assistant-compatible MQTT broker after every session (total hours, progress %, per-section hours, last session images)
-- **Home Assistant Auto-Discovery** — automatically creates sensors in HA
-- **Export / Import** — full JSON backup and restore including sessions, settings, flowchart state, and embedded images
+- Total build hours, session count, and average session duration
+- Estimated finish date based on rolling weekly pace
+- Progress bar (time-based or package-based — switchable in Settings)
+- Hours broken down by assembly section with a visual bar chart
+- Sections marked as non-billable (e.g. "Other") are excluded from totals and averages
 
-### Authentication
-- Single-user password authentication with JWT tokens (72-hour expiry)
-- Public read access for the blog and stats; write operations require login
+---
+
+### 🏗 Build Progress Tracker
+
+Organize your entire build into a tree of **work packages**, mirroring the structure of the manufacturer's plans.
+
+- Packages are grouped by **Assembly Section** and can be nested to any depth
+- Hierarchy is visualized with connecting lines between parent and child packages
+- Click a chip to cycle its status: **Not Started → In Progress → Done**
+- Per-section circular completion indicator (0 – 100%)
+- Drag and drop packages to reorder or reparent them in edit mode
+- Rename packages inline
+- Deletion of packages with children requires confirmation
+
+#### 🔗 Build Progress → Blog Integration
+
+Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 Rudder"**) are linked directly to the build blog. Hovering a chip in the progress overview reveals a **blog icon** — clicking it closes the overlay and instantly filters the blog to show all posts and sessions referencing that plans section. This makes the build tracker a live index into your build journal.
+
+---
+
+### 📝 Build Blog / Journal
+
+- Write rich build log entries with a full editor (headings, bold, italic, lists, links, inline images)
+- **Work sessions automatically appear as blog posts** — no double entry required
+- Edit session posts directly from the blog (timing, section, notes, plans reference, photos)
+- Filter posts by **assembly section** or browse by **month** in the collapsible archive sidebar
+- **Public read access** — share your entire build log with the community, no login required
+- Image uploads supported in both blog posts and session posts
+
+---
+
+### ⚙️ Settings
+
+- **Project name** and **target build hours** (default: 2500h for an RV-10)
+- **Progress calculation mode** — time-based (hours logged vs. target) or package-based (completed work packages)
+- **Image resizing** — configure maximum upload width or disable resizing entirely
+- **Assembly Sections** — add, remove, reorder, and set emoji icons; toggle whether a section counts toward total build hours
+- **Theme** — Light, Dark, or system default (Auto)
+- **MQTT publishing** — publish build stats to any MQTT broker after every session:
+  - Total hours, progress %, session count, last session images
+  - Per-section hours (one topic per section)
+- **Home Assistant Auto-Discovery** — sensors appear in HA automatically without YAML configuration
+- **Export / Import** — full JSON backup and restore including sessions, settings, flowchart state, and base64-embedded images
+
+---
+
+### 🔐 Authentication
+
+- Single-user password setup on first run
+- JWT Bearer tokens (72-hour expiry)
+- **Public read access** for the blog, stats, and build progress — authenticated write access for everything else
 
 ---
 
@@ -57,6 +105,7 @@ A self-hosted web application for tracking a construction or build project. Log 
 | Backend | Node.js, Express (CommonJS) |
 | Database | SQLite via `better-sqlite3` |
 | Image Storage | MinIO (S3-compatible) |
+| Image Processing | `sharp` (server-side resize + thumbnail generation) |
 | Auth | Custom JWT (HS256), SHA-256 password hash |
 | Deployment | Docker + docker-compose |
 | Home Automation | MQTT (Home Assistant integration) |
@@ -100,7 +149,7 @@ docker compose up -d
 
 The app is then available at `http://localhost:3001`.
 
-On first visit, you will be prompted to set a password. After that, log in to access the timer, dashboard, and settings.
+On first visit you will be prompted to set a password. After that, log in to access the timer, dashboard, and settings. The blog at `/blog` is always publicly accessible.
 
 ### Local Development
 
@@ -151,7 +200,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 | GET | `/api/flowchart-status` | Build progress package statuses |
 | GET | `/api/flowchart-packages` | Build progress package tree |
 | GET | `/api/timer/status` | Current timer state |
-| GET | `/files/:object` | Serve uploaded images (proxied from MinIO) |
+| GET | `/files/:object` | Serve uploaded images |
 
 ### Authenticated endpoints (Bearer token required)
 
@@ -212,4 +261,11 @@ Enable **Home Assistant Auto-Discovery** to have sensors appear in HA automatica
 
 ## License
 
-Personal / private use. Not affiliated with Van's Aircraft, Inc.
+This project is licensed under the [PolyForm Noncommercial License 1.0](LICENSE).
+Free for personal and non-commercial use. Contributions are subject to the [Contributor License Agreement](CLA.md).
+
+> Looking for a commercial license? [Contact me](mailto:) for inquiries regarding commercial use or acquisition.
+
+---
+
+*Not affiliated with Van's Aircraft, Inc.*

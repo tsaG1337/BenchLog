@@ -5,6 +5,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Derives the thumbnail URL for a given image URL.
+ * e.g. /files/abc123.jpg → /files/abc123_thumb.jpg
+ * Falls back to the original URL for images uploaded before thumbnail support.
+ */
+export function thumbUrl(url: string): string {
+  return url.replace(/\.jpg$/, '_thumb.jpg');
+}
+
 export function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();

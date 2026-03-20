@@ -122,7 +122,7 @@ const Index = () => {
     }
   };
 
-  const handleManualAdd = async (entry: { section: string; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string }) => {
+  const handleManualAdd = async (entry: { section: string; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string; imageUrls: string[] }) => {
     const durationMinutes = entry.hours * 60 + entry.minutes;
     const startTime = new Date(entry.date);
     startTime.setHours(12, 0, 0, 0);
@@ -137,6 +137,7 @@ const Index = () => {
       durationMinutes,
       notes: entry.notes,
       plansReference: plansRef || undefined,
+      imageUrls: entry.imageUrls.length > 0 ? entry.imageUrls : undefined,
     };
 
     try {
@@ -240,7 +241,6 @@ const Index = () => {
             onNotesChange={setNotes}
             pendingImageUrls={pendingImageUrls}
             onPendingImageUrlsChange={setPendingImageUrls}
-            isRunning={isRunning}
           />
         </div>
 

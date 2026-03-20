@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const mqtt = require('mqtt');
 const crypto = require('crypto');
+const sharp = require('sharp');
 
 // ─── Auth helpers ───────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -44,7 +45,7 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db'
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
-const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time' };
+const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920 };
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [
@@ -74,17 +75,14 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // Serve uploaded images publicly (blog is public, so images are too)
 app.use('/files', express.static(UPLOADS_DIR));
 
-// Multer: disk storage with UUID filenames + MIME type validation
+// Multer: disk storage — always save as .jpg (sharp will process the content)
 const multerStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `${uuidv4()}${ext}`);
-  },
+  filename: (req, file, cb) => cb(null, `${uuidv4()}.jpg`),
 });
 const upload = multer({
   storage: multerStorage,
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 100 * 1024 * 1024 }, // allow large originals; sharp will resize down
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
     allowed.includes(file.mimetype)
@@ -92,6 +90,11 @@ const upload = multer({
       : cb(new Error('Only image files are allowed'));
   },
 });
+
+// Derive thumbnail path/url from a main image filename
+function thumbFilename(filename) {
+  return filename.replace(/\.jpg$/, '_thumb.jpg');
+}
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -284,7 +287,6 @@ function publishMqttStats() {
     }
 
     // Publish per section using dynamic sections
-    const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
     for (const sec of sectionConfigs) {
       const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
       console.log(`MQTT publish → ${prefix}/${sec.id}`, hours);
@@ -547,6 +549,8 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
         const filename = path.basename(url);
         const filePath = path.join(UPLOADS_DIR, filename);
         if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
+        if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
       } catch (err) {
         console.error('Failed to delete image file:', err.message);
       }
@@ -559,23 +563,57 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/upload — upload images (auth required)
-// Multer writes files to UPLOADS_DIR with UUID filenames; we just return the URLs.
-app.post('/api/upload', requireAuth, upload.array('files', 10), (req, res) => {
+// Multer saves to disk, then sharp resizes the main image and generates a thumbnail.
+app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
   try {
-    const urls = req.files.map(file => `/files/${file.filename}`);
+    const generalSettings = getSetting('general', DEFAULT_GENERAL);
+    const resizingEnabled = generalSettings.imageResizing !== false;
+    const maxWidth = generalSettings.imageMaxWidth || DEFAULT_GENERAL.imageMaxWidth;
+    const thumbWidth = 400;
+
+    const urls = [];
+    for (const file of req.files) {
+      const filePath = file.path;
+
+      // Resize main image in-place if enabled
+      if (resizingEnabled) {
+        const buf = await sharp(filePath)
+          .rotate() // auto-orient from EXIF
+          .resize(maxWidth, null, { withoutEnlargement: true })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+        fs.writeFileSync(filePath, buf);
+      } else {
+        // Still convert to JPEG and auto-orient even when resizing is off
+        const buf = await sharp(filePath).rotate().jpeg({ quality: 90 }).toBuffer();
+        fs.writeFileSync(filePath, buf);
+      }
+
+      // Always generate thumbnail
+      const thumbPath = path.join(UPLOADS_DIR, thumbFilename(file.filename));
+      await sharp(filePath)
+        .rotate()
+        .resize(thumbWidth, null, { withoutEnlargement: true })
+        .jpeg({ quality: 75 })
+        .toFile(thumbPath);
+
+      urls.push(`/files/${file.filename}`);
+    }
     res.json({ urls });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /api/upload — delete an image (auth required)
+// DELETE /api/upload — delete an image and its thumbnail (auth required)
 app.delete('/api/upload', requireAuth, (req, res) => {
   const { url } = req.body;
   try {
     const filename = path.basename(url || '');
     const filePath = path.join(UPLOADS_DIR, filename);
     if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
+    if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -930,28 +968,23 @@ app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (re
 
 // GET /api/blog — list all blog posts + work sessions (with optional filters)
 app.get('/api/blog', (req, res) => {
-  const { section, year, month } = req.query;
+  const { section, year, month, plansSection } = req.query;
 
-  // ── Blog posts ──
-  let blogSql = 'SELECT * FROM blog_posts';
-  const blogConditions = [];
-  const blogParams = [];
-  if (section) { blogConditions.push('section = ?'); blogParams.push(section); }
-  if (year) { blogConditions.push("strftime('%Y', published_at) = ?"); blogParams.push(year); }
-  if (month) { blogConditions.push("strftime('%m', published_at) = ?"); blogParams.push(month.padStart(2, '0')); }
-  if (blogConditions.length > 0) blogSql += ' WHERE ' + blogConditions.join(' AND ');
-
-  const blogRows = db.prepare(blogSql).all(...blogParams);
-  const blogPosts = blogRows.map(row => ({
-    id: row.id,
-    title: row.title,
-    content: row.content,
-    section: row.section,
-    imageUrls: JSON.parse(row.image_urls || '[]'),
-    publishedAt: row.published_at,
-    updatedAt: row.updated_at,
-    source: 'blog',
-  }));
+  // ── Blog posts — skipped when filtering by plansSection (manual posts have no plans reference) ──
+  const blogPosts = plansSection ? [] : (() => {
+    let blogSql = 'SELECT * FROM blog_posts';
+    const blogConditions = [];
+    const blogParams = [];
+    if (section) { blogConditions.push('section = ?'); blogParams.push(section); }
+    if (year) { blogConditions.push("strftime('%Y', published_at) = ?"); blogParams.push(year); }
+    if (month) { blogConditions.push("strftime('%m', published_at) = ?"); blogParams.push(month.padStart(2, '0')); }
+    if (blogConditions.length > 0) blogSql += ' WHERE ' + blogConditions.join(' AND ');
+    return db.prepare(blogSql).all(...blogParams).map(row => ({
+      id: row.id, title: row.title, content: row.content, section: row.section,
+      imageUrls: JSON.parse(row.image_urls || '[]'),
+      publishedAt: row.published_at, updatedAt: row.updated_at, source: 'blog',
+    }));
+  })();
 
   // ── Work sessions as posts ──
   let sessSql = 'SELECT * FROM sessions';
@@ -960,6 +993,7 @@ app.get('/api/blog', (req, res) => {
   if (section) { sessConditions.push('section = ?'); sessParams.push(section); }
   if (year) { sessConditions.push("strftime('%Y', start_time) = ?"); sessParams.push(year); }
   if (month) { sessConditions.push("strftime('%m', start_time) = ?"); sessParams.push(month.padStart(2, '0')); }
+  if (plansSection) { sessConditions.push("plans_reference LIKE ?"); sessParams.push(`%Section ${plansSection}%`); }
   if (sessConditions.length > 0) sessSql += ' WHERE ' + sessConditions.join(' AND ');
 
   const sessRows = db.prepare(sessSql).all(...sessParams);
@@ -1059,6 +1093,25 @@ app.put('/api/blog/:id', requireAuth, (req, res) => {
 
 // DELETE /api/blog/:id — delete a blog post (auth required)
 app.delete('/api/blog/:id', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT image_urls, content FROM blog_posts WHERE id = ?').get(req.params.id);
+  if (row) {
+    // Delete files stored in image_urls array
+    const imageUrls = JSON.parse(row.image_urls || '[]');
+    // Also extract any images embedded directly in the HTML content
+    const contentMatches = [...(row.content || '').matchAll(/<img[^>]+src="([^"]+)"/g)].map(m => m[1]);
+    const allUrls = [...new Set([...imageUrls, ...contentMatches])].filter(u => u.startsWith('/files/'));
+    for (const url of allUrls) {
+      try {
+        const filename = path.basename(url);
+        const filePath = path.join(UPLOADS_DIR, filename);
+        if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
+        if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
+      } catch (err) {
+        console.error('Failed to delete blog image file:', err.message);
+      }
+    }
+  }
   db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });

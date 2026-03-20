@@ -20,7 +20,7 @@ export default function BlogPage() {
   const [archive, setArchive] = useState<BlogArchiveEntry[]>([]);
   const [view, setView] = useState<View>('list');
   const [activePost, setActivePost] = useState<BlogPost | null>(null);
-  const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string }>({});
+  const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string; plansSection?: string }>({});
   const [projectName, setProjectName] = useState('Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stats, setStats] = useState<BuildStats | null>(null);
@@ -68,7 +68,7 @@ export default function BlogPage() {
     }
   };
 
-  const handleFilterChange = (newFilters: { section?: string; year?: string; month?: string }) => {
+  const handleFilterChange = (newFilters: { section?: string; year?: string; month?: string; plansSection?: string }) => {
     setFilters(newFilters);
     setView('list');
     setSidebarOpen(false);
@@ -110,7 +110,7 @@ export default function BlogPage() {
               )}
               {isAuthenticated && <DropdownMenuSeparator />}
               <DropdownMenuItem asChild>
-                <Link to={isAuthenticated ? '/' : '/login'} className="flex items-center w-full">
+                <Link to={isAuthenticated ? '/' : '/login'} state={{ from: '/blog' }} className="flex items-center w-full">
                   {isAuthenticated
                     ? <><Timer className="w-4 h-4 mr-2" /> Tracker</>
                     : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
@@ -145,6 +145,17 @@ export default function BlogPage() {
 
             {view === 'list' && (
               <div className="space-y-4">
+                {filters.plansSection && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Filtering by:</span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/15 border border-primary/30 text-xs text-primary font-medium">
+                      Plans Section {filters.plansSection}
+                      <button onClick={() => setFilters(f => { const { plansSection, ...rest } = f; return rest; })} className="hover:text-foreground transition-colors">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  </div>
+                )}
                 {posts.length === 0 ? (
                   <div className="text-center py-16 text-muted-foreground">
                     <p className="text-lg">No blog posts yet</p>

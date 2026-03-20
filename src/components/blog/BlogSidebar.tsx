@@ -10,7 +10,7 @@ interface BlogSidebarProps {
   activeSection?: string;
   activeYear?: string;
   activeMonth?: string;
-  onFilterChange: (filters: { section?: string; year?: string; month?: string }) => void;
+  onFilterChange: (filters: { section?: string; year?: string; month?: string; plansSection?: string }) => void;
   projectName?: string;
   sectionHours?: Record<string, number>;
 }
@@ -140,7 +140,7 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
       </div>
 
       {/* Build Progress Flowchart */}
-      <BuildFlowchart projectName={projectName} />
+      <BuildFlowchart projectName={projectName} onPlansSectionFilter={plansSection => onFilterChange({ plansSection })} />
     </aside>
   );
 }

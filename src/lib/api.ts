@@ -81,6 +81,8 @@ export interface GeneralSettings {
   projectName: string;
   targetHours: number;
   progressMode?: 'time' | 'packages';
+  imageResizing?: boolean;
+  imageMaxWidth?: number;
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
@@ -210,11 +212,12 @@ export interface BlogArchiveEntry {
   count: number;
 }
 
-export async function fetchBlogPosts(filters?: { section?: string; year?: string; month?: string }): Promise<BlogPost[]> {
+export async function fetchBlogPosts(filters?: { section?: string; year?: string; month?: string; plansSection?: string }): Promise<BlogPost[]> {
   const params = new URLSearchParams();
   if (filters?.section) params.set('section', filters.section);
   if (filters?.year) params.set('year', filters.year);
   if (filters?.month) params.set('month', filters.month);
+  if (filters?.plansSection) params.set('plansSection', filters.plansSection);
   const qs = params.toString();
   return request<BlogPost[]>(`/api/blog${qs ? `?${qs}` : ''}`);
 }

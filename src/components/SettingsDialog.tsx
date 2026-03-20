@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock } from 'lucide-react';
+import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
@@ -31,7 +31,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time' });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920 });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
@@ -186,6 +186,36 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
               <p className="text-xs text-muted-foreground/60 mt-1">
                 Controls the progress bar shown on the blog and tracker pages.
               </p>
+
+              <div className="flex items-center justify-between mt-3">
+                <div>
+                  <Label className="text-xs text-muted-foreground block">Image Resizing</Label>
+                  <p className="text-xs text-muted-foreground/60">
+                    Resize uploads to max width on the server (recommended)
+                  </p>
+                </div>
+                <Switch
+                  checked={general.imageResizing ?? true}
+                  onCheckedChange={(checked) => setGeneral({ ...general, imageResizing: checked })}
+                />
+              </div>
+              {(general.imageResizing ?? true) && (
+                <div className="mt-2">
+                  <Label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                    <ImageDown className="w-3 h-3" /> Max image width (px)
+                  </Label>
+                  <Input
+                    type="number"
+                    placeholder="1920"
+                    value={general.imageMaxWidth ?? 1920}
+                    onChange={(e) => setGeneral({ ...general, imageMaxWidth: Number(e.target.value) || 1920 })}
+                    className="bg-secondary border-border text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground/60 mt-1">
+                    Images wider than this are scaled down. Thumbnails (400 px) are always generated.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 

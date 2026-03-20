@@ -11,12 +11,19 @@ interface DashboardProps {
 }
 
 export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time', packageProgressPct = 0 }: DashboardProps) {
-  const { labels, icons } = useSections();
+  const { labels, icons, sections } = useSections();
   const TARGET_HOURS = targetHours;
 
-  const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+  // Only count sessions from sections where countTowardsBuildHours !== false
+  const excludedSectionIds = new Set(
+    sections.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
+  );
+  const countedSessions = sessions.filter(s => !excludedSectionIds.has(s.section));
+
+  const totalMinutes = countedSessions.reduce((sum, s) => sum + s.durationMinutes, 0);
   const totalHours = totalMinutes / 60;
 
+  // Show all sections in the breakdown so the user can see uncounted work too
   const bySection = sessions.reduce<Record<string, number>>((acc, s) => {
     acc[s.section] = (acc[s.section] || 0) + s.durationMinutes;
     return acc;
@@ -33,9 +40,9 @@ export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time',
 
   // Estimate finish date based on average hours per week
   const estimateFinishDate = () => {
-    if (sessions.length < 2) return null;
+    if (countedSessions.length < 2) return null;
 
-    const sorted = [...sessions].sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    const sorted = [...countedSessions].sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
     const firstDate = new Date(sorted[0].startTime);
     const lastDate = new Date(sorted[sorted.length - 1].startTime);
     const spanMs = lastDate.getTime() - firstDate.getTime();
@@ -119,12 +126,12 @@ export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time',
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <p className="text-2xl font-bold text-foreground font-mono">{sessions.length}</p>
+          <p className="text-2xl font-bold text-foreground font-mono">{countedSessions.length}</p>
           <p className="text-xs text-muted-foreground">Sessions</p>
         </div>
         <div className="bg-card border border-border rounded-lg p-4 text-center">
           <p className="text-2xl font-bold text-foreground font-mono">
-            {sessions.length > 0 ? formatTime(totalMinutes / sessions.length) : '0m'}
+            {countedSessions.length > 0 ? formatTime(totalMinutes / countedSessions.length) : '0m'}
           </p>
           <p className="text-xs text-muted-foreground">Avg Session</p>
         </div>

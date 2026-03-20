@@ -1,0 +1,38 @@
+# ─── Benchlog — TrueNAS deployment ────────────────────────────────────────────
+#
+# Usage:
+#   1. Create a GitHub PAT at https://github.com/settings/tokens
+#      with the "read:packages" scope.
+#   2. In TrueNAS → Apps → "Install via YAML", paste this file.
+#   3. Fill in JWT_SECRET (any long random string) and your PAT below,
+#      then adjust the host port and volume path as needed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  benchlog:
+    image: ghcr.io/tsag1337/benchlog:latest
+    container_name: benchlog
+    restart: unless-stopped
+
+    # Pull credentials for the private GitHub Container Registry.
+    # Create a PAT at https://github.com/settings/tokens with "read:packages".
+    # Replace YOUR_GITHUB_USERNAME and YOUR_PAT below.
+    pull_policy: always
+    image_pull_credentials:
+      registry: ghcr.io
+      username: YOUR_GITHUB_USERNAME
+      password: YOUR_PAT
+
+    ports:
+      - "3010:3001"   # change 3010 to any free host port
+
+    environment:
+      PORT: 3001
+      DB_PATH: /data/database.db
+      # REQUIRED in production — generate with: openssl rand -hex 32
+      JWT_SECRET: CHANGE_ME_TO_A_LONG_RANDOM_STRING
+
+    volumes:
+      # Map to a persistent dataset on your TrueNAS pool, e.g.:
+      #   /mnt/tank/apps/benchlog/data
+      - /mnt/tank/apps/benchlog/data:/data

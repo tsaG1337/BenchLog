@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft, Pencil, Trash2, Clock, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { useState } from 'react';
+import { thumbUrl } from '@/lib/utils';
 
 interface BlogPostViewProps {
   post: BlogPost;
@@ -93,7 +94,8 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
         <div className="flex flex-col md:flex-row gap-6">
           <div className="md:w-1/2 shrink-0">
             <img
-              src={firstImage}
+              src={thumbUrl(firstImage)}
+              onError={(e) => { e.currentTarget.src = firstImage; }}
               alt=""
               className="w-full rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
               onClick={() => setPreviewUrl(firstImage)}
@@ -122,7 +124,8 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
             {extraImages.map((url, i) => (
               <img
                 key={i}
-                src={url}
+                src={thumbUrl(url)}
+                onError={(e) => { e.currentTarget.src = url; }}
                 alt=""
                 className="w-full aspect-video rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => setPreviewUrl(url)}
