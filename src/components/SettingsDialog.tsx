@@ -249,6 +249,32 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
           <Separator />
 
+          {/* Time Format */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-muted-foreground" />
+              <Label className="text-sm font-medium">Time Format</Label>
+            </div>
+            <div className="pl-6 border-l-2 border-border flex gap-2">
+              {([
+                { value: '24h' as const, label: '24h', example: '14:00' },
+                { value: '12h' as const, label: '12h', example: '2:00 PM' },
+              ]).map(({ value, label, example }) => (
+                <Button
+                  key={value}
+                  variant={(general.timeFormat || '24h') === value ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setGeneral({ ...general, timeFormat: value })}
+                  className="gap-1.5 flex-1"
+                >
+                  {label} <span className="text-xs opacity-60">({example})</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
           {/* Assembly Sections */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">

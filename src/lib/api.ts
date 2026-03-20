@@ -83,6 +83,7 @@ export interface GeneralSettings {
   progressMode?: 'time' | 'packages';
   imageResizing?: boolean;
   imageMaxWidth?: number;
+  timeFormat?: '24h' | '12h';
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {

@@ -14,6 +14,7 @@ interface SessionHistoryProps {
   onDelete: (id: string) => void;
   onUpdate: (id: string, updates: Partial<WorkSession>) => void;
   readOnly?: boolean;
+  timeFormat?: '24h' | '12h';
 }
 
 function parsePlansRef(ref?: string) {
@@ -38,7 +39,8 @@ function toDatetimeLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function SessionHistory({ sessions, onDelete, onUpdate, readOnly }: SessionHistoryProps) {
+export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFormat = '24h' }: SessionHistoryProps) {
+  const timeFmt = timeFormat === '24h' ? 'HH:mm' : 'h:mm a';
   const { labels, icons, sections } = useSections();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSection, setEditSection] = useState('');
@@ -229,7 +231,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly }: Sessi
                           <p className="text-sm text-muted-foreground">{session.notes}</p>
                         )}
                         <p className="text-xs text-muted-foreground/50 mt-2">
-                          {format(new Date(session.startTime), 'h:mm a')} – {format(new Date(session.endTime), 'h:mm a')}
+                          {format(new Date(session.startTime), timeFmt)} – {format(new Date(session.endTime), timeFmt)}
                         </p>
                         {/* Show images read-only when not editing */}
                         <SessionImages

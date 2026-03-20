@@ -15,9 +15,13 @@ interface ExportDialogProps {
   sessions: WorkSession[];
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  timeFormat?: '24h' | '12h';
 }
 
-export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: controlledOnOpenChange }: ExportDialogProps) {
+export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: controlledOnOpenChange, timeFormat = '24h' }: ExportDialogProps) {
+  const timeFmt = timeFormat === '24h' ? 'HH:mm' : 'h:mm a';
+  const dateTimeFmt = timeFormat === '24h' ? 'MMM d, yyyy HH:mm' : dateTimeFmt;
+  const fullDateTimeFmt = timeFormat === '24h' ? 'MMMM d, yyyy HH:mm' : fullDateTimeFmt;
   const { labels, sections: sectionConfigs } = useSections();
   const [includeReferences, setIncludeReferences] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(false);
@@ -67,7 +71,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
   const handleExportTxt = () => {
     const lines: string[] = [];
     lines.push('Build Time Report');
-    lines.push(`Generated: ${format(new Date(), 'MMMM d, yyyy h:mm a')}`);
+    lines.push(`Generated: ${format(new Date(), fullDateTimeFmt)}`);
     lines.push('');
     lines.push('=== Time by Section ===');
     const sorted = Object.entries(bySection).sort((a, b) => b[1] - a[1]);
@@ -100,7 +104,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           lines.push(`=== ${getLabel(sec)} (${formatTime(sectionMinutes)}) ===`);
           for (const s of group) {
             lines.push('');
-            lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`);
+            lines.push(`${format(new Date(s.startTime), dateTimeFmt)} — ${formatTime(s.durationMinutes)}`);
             if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
             if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
           }
@@ -110,7 +114,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
         lines.push('=== Session Details ===');
         for (const s of sortedSessions) {
           lines.push('');
-          lines.push(`${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
+          lines.push(`${format(new Date(s.startTime), dateTimeFmt)} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`);
           if (includeReferences && s.plansReference) lines.push(`  Plans: ${s.plansReference}`);
           if (includeNotes && s.notes) lines.push(`  Notes: ${s.notes}`);
         }
@@ -203,7 +207,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(120);
-      doc.text(`Generated: ${format(new Date(), 'MMMM d, yyyy h:mm a')}`, margin, y);
+      doc.text(`Generated: ${format(new Date(), fullDateTimeFmt)}`, margin, y);
       // Push y past logo height if logo is taller than the title block
       y = Math.max(y, margin + logoHeight + 4);
       y += 6;
@@ -265,8 +269,8 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           doc.setFontSize(10);
           doc.setFont('helvetica', 'bold');
           const label = showSection
-            ? `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`
-            : `${format(new Date(s.startTime), 'MMM d, yyyy h:mm a')} — ${formatTime(s.durationMinutes)}`;
+            ? `${format(new Date(s.startTime), dateTimeFmt)} — ${getLabel(s.section)} — ${formatTime(s.durationMinutes)}`
+            : `${format(new Date(s.startTime), dateTimeFmt)} — ${formatTime(s.durationMinutes)}`;
           doc.text(label, margin + 2, y);
           y += 5;
 

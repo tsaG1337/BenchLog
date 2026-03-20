@@ -30,6 +30,7 @@ const Index = () => {
   const [targetHours, setTargetHours] = useState(2500);
   const [progressMode, setProgressMode] = useState<'time' | 'packages'>('time');
   const [packageProgressPct, setPackageProgressPct] = useState(0);
+  const [timeFormat, setTimeFormat] = useState<'24h' | '12h'>('24h');
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
   const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
 
@@ -52,6 +53,7 @@ const Index = () => {
     fetchGeneralSettings().then(s => {
       setProjectName(s.projectName);
       setTargetHours(s.targetHours || 2500);
+      setTimeFormat(s.timeFormat || '24h');
     }).catch(() => {});
     fetchBuildStats().then(s => {
       setProgressMode(s.progressMode || 'time');
@@ -217,6 +219,7 @@ const Index = () => {
             setProgressMode(s.progressMode || 'time');
             setPackageProgressPct(s.progressPct);
           }).catch(() => {});
+          fetchGeneralSettings().then(s => setTimeFormat(s.timeFormat || '24h')).catch(() => {});
         }}
       />
       <ManualEntryDialog
@@ -228,6 +231,7 @@ const Index = () => {
         sessions={sessions}
         open={openDialog === 'export'}
         onOpenChange={o => setOpenDialog(o ? 'export' : null)}
+        timeFormat={timeFormat}
       />
 
       <main className="container max-w-4xl py-6 space-y-6">
@@ -274,7 +278,7 @@ const Index = () => {
             <Dashboard sessions={sessions} targetHours={targetHours} progressMode={progressMode} packageProgressPct={packageProgressPct} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
-            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} />
+            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} timeFormat={timeFormat} />
           </TabsContent>
         </Tabs>
       </main>
