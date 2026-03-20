@@ -4,12 +4,24 @@ const Database = require('better-sqlite3');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const fs = require('fs');
 const mqtt = require('mqtt');
 const crypto = require('crypto');
 const sharp = require('sharp');
 
 // ─── Auth helpers ───────────────────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+function loadOrCreateJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  const dataDir = path.dirname(process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db'));
+  const secretFile = path.join(dataDir, '.jwt_secret');
+  if (fs.existsSync(secretFile)) return fs.readFileSync(secretFile, 'utf8').trim();
+  const secret = crypto.randomBytes(32).toString('hex');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(secretFile, secret, { mode: 0o600 });
+  console.log('[auth] Generated JWT secret →', secretFile);
+  return secret;
+}
+const JWT_SECRET = loadOrCreateJwtSecret();
 const TOKEN_EXPIRY_HOURS = 72;
 
 function createToken(payload) {
@@ -67,7 +79,6 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "../dist")));
 
 // ─── SQLite setup ───────────────────────────────────────────────────
-const fs = require('fs');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 // ─── Local file storage setup ───────────────────────────────────────

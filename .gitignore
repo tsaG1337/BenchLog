@@ -16,8 +16,12 @@ dist-ssr
 AGENT_HANDOFF.md
 /.claude
 
-# Local data (SQLite database, MinIO data)
+# Local data
 data/
+
+# Local environment secrets (never commit)
+.env
+.env.local
 
 # Editor directories and files
 .vscode/*

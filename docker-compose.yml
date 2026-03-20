@@ -1,6 +1,6 @@
 services:
   benchlog:
-    build: .
+    image: ghcr.io/tsag1337/benchlog:1.0.0
     container_name: benchlog
     restart: unless-stopped
 
@@ -10,6 +10,7 @@ services:
     environment:
       PORT: 3001
       DB_PATH: /data/database.db
+      # JWT_SECRET: optional — auto-generated and persisted to /data/.jwt_secret on first run
 
     volumes:
       - ./data:/data

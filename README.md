@@ -113,39 +113,59 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/)
-- A running **MinIO** instance (or any S3-compatible storage) for image uploads
 - Optionally: an MQTT broker for Home Assistant integration
 
 ### Quick Start with Docker Compose
 
+The easiest way to run Benchlog is using the pre-built image from the GitHub Container Registry. Pin to a specific release tag for a stable, predictable deployment:
+
 ```yaml
 # docker-compose.yml
 services:
-  app:
-    build: .
+  benchlog:
+    image: ghcr.io/tsag1337/benchlog:1.0.0
+    container_name: benchlog
+    restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3010:3001"
     volumes:
       - ./data:/data
     environment:
       PORT: 3001
       DB_PATH: /data/database.db
-      JWT_SECRET: change-me-to-a-long-random-string
-      MINIO_ENDPOINT: 192.168.1.2
-      MINIO_PORT: 9000
-      MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: session-images
 ```
 
 ```bash
 docker compose up -d
 ```
 
-The app is then available at `http://localhost:3001`.
+The app is then available at `http://localhost:3010`.
 
 On first visit you will be prompted to set a password. After that, log in to access the timer, dashboard, and settings. The blog at `/blog` is always publicly accessible.
+
+**To upgrade**, update the tag in your `docker-compose.yml` to the new version and run:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Check the [Releases page](https://github.com/tsag1337/benchlog/releases) for available versions and changelogs.
+
+> **Choosing a tag**
+>
+> | Tag | Behaviour | Recommended for |
+> |---|---|---|
+> | `1.0.0` | Exact release — never changes | Production (most stable) |
+> | `1` | Auto-updates within v1.x.x — gets new features and fixes, never a breaking v2 | Users who want updates without surprises |
+> | `latest` | Tracks the `main` branch — may include unreleased changes | Development / testing only |
+
+### Build from Source
+
+```bash
+git clone https://github.com/tsag1337/benchlog.git
+cd benchlog
+docker compose up -d --build
+```
 
 ### Local Development
 
@@ -171,13 +191,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 |---|---|---|
 | `PORT` | `3001` | HTTP server port |
 | `DB_PATH` | `./data/database.db` | Path to SQLite database file |
-| `JWT_SECRET` | *(random)* | Secret key for signing JWT tokens — **set this in production** |
-| `MINIO_ENDPOINT` | `localhost` | MinIO hostname or IP |
-| `MINIO_PORT` | `9000` | MinIO API port |
-| `MINIO_USE_SSL` | `false` | Use HTTPS for MinIO connections |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
-| `MINIO_BUCKET` | `session-images` | Bucket name for session image storage |
+| `JWT_SECRET` | *(auto-generated)* | Secret key for signing JWT tokens. If not set, a random secret is generated on first run and saved to `/data/.jwt_secret` so it persists across restarts. |
 
 ---
 
@@ -235,7 +249,7 @@ volumes:
   - ./data:/data
 ```
 
-Uploaded images are stored in MinIO and are **not** included in the Docker volume — make sure your MinIO data is also backed up. The Export function embeds all images as base64 in the JSON backup so you can restore everything from a single file.
+Uploaded images are stored inside the `/data` volume alongside the database, so a single volume mount covers everything. The Export function embeds all images as base64 in the JSON backup so you can restore everything from a single file.
 
 ---
 
