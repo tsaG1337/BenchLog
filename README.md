@@ -130,13 +130,13 @@ Generate a formatted report of your build sessions as a **PDF** or plain text fi
 
 ### Quick Start with Docker Compose
 
-The easiest way to run Benchlog is using the pre-built image from the GitHub Container Registry. Pin to a specific release tag for a stable, predictable deployment:
+The easiest way to run Benchlog is using the pre-built image from the GitHub Container Registry. The `stable` tag is recommended — it is manually promoted by the maintainer after testing and always reflects a vetted release:
 
 ```yaml
 # docker-compose.yml
 services:
   benchlog:
-    image: ghcr.io/tsag1337/benchlog:1.0.0
+    image: ghcr.io/tsag1337/benchlog:stable
     container_name: benchlog
     restart: unless-stopped
     ports:
@@ -168,8 +168,9 @@ Check the [Releases page](https://github.com/tsag1337/benchlog/releases) for ava
 >
 > | Tag | Behaviour | Recommended for |
 > |---|---|---|
-> | `1.0.0` | Exact release — never changes | Production (most stable) |
+> | `1.0.0` | Exact release — never changes | Production (pinned) |
 > | `1` | Auto-updates within v1.x.x — gets new features and fixes, never a breaking v2 | Users who want updates without surprises |
+> | `stable` | Manually promoted by the maintainer after testing — always a vetted release | **Most users** |
 > | `latest` | Tracks the `main` branch — may include unreleased changes | Development / testing only |
 
 ### Build from Source

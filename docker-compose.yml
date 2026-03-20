@@ -1,6 +1,6 @@
 services:
   benchlog:
-    image: ghcr.io/tsag1337/benchlog:1.0.0
+    image: ghcr.io/tsag1337/benchlog:stable
     container_name: benchlog
     restart: unless-stopped
 
