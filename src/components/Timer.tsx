@@ -19,11 +19,9 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
   const totalPausedSecsRef = useRef(0);
   const pausedAtRef = useRef<number | null>(null);
 
-  // Use prop serverStartedAt immediately
+  // Use prop serverStartedAt immediately (including null to reset)
   useEffect(() => {
-    if (serverStartedAt) {
-      setServerStartTime(serverStartedAt);
-    }
+    setServerStartTime(serverStartedAt ?? null);
   }, [serverStartedAt]);
 
   // Poll server for timer status every 2 seconds (skip in demo mode)
