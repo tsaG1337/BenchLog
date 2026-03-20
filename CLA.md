@@ -52,11 +52,4 @@ description, you confirm your agreement to this CLA:
 
 > I have read and agree to the Contributor License Agreement (CLA.md).
 
-Optionally, you can also add your name to the list below by including it in
-your pull request.
 
-## Signatories
-
-| Name / GitHub Handle | Date |
-|---|---|
-| *(your name here)* | *(date)* |
