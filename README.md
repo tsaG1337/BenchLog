@@ -6,22 +6,6 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 
 ---
 
-## Screenshots
-
-| Blog & Sidebar | Build Progress |
-|---|---|
-| ![Blog](docs/screenshots/blog.PNG) | ![Build Progress](docs/screenshots/build-progress.PNG) |
-
-| Dashboard | Time Tracker |
-|---|---|
-| ![Dashboard](docs/screenshots/dashboard.PNG) | ![Tracker](docs/screenshots/tracker.PNG) |
-
-| General Settings | MQTT & Export |
-|---|---|
-| ![Settings](docs/screenshots/settings.PNG) | ![MQTT](docs/screenshots/mqtt.PNG) |
-
----
-
 ## Features
 
 ### ⏱ Time Tracker
@@ -33,6 +17,8 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 - **Photo attachments** — upload photos per session; images are automatically resized on upload (configurable max width, default 1920px) and thumbnails are generated for fast loading
 - **Manual entry** — add sessions retrospectively with full date, duration, section, and photo support
 
+![Tracker](docs/screenshots/tracker.PNG)
+
 ---
 
 ### 📊 Dashboard
@@ -42,6 +28,8 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 - Progress bar (time-based or package-based — switchable in Settings)
 - Hours broken down by assembly section with a visual bar chart
 - Sections marked as non-billable (e.g. "Other") are excluded from totals and averages
+
+![Dashboard](docs/screenshots/dashboard.PNG)
 
 ---
 
@@ -61,6 +49,8 @@ Organize your entire build into a tree of **work packages**, mirroring the struc
 
 Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 Rudder"**) are linked directly to the build blog. Hovering a chip in the progress overview reveals a **blog icon** — clicking it closes the overlay and instantly filters the blog to show all posts and sessions referencing that plans section. This makes the build tracker a live index into your build journal.
 
+![Build Progress](docs/screenshots/build-progress.PNG)
+
 ---
 
 ### 📝 Build Blog / Journal
@@ -71,6 +61,8 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 - Filter posts by **assembly section** or browse by **month** in the collapsible archive sidebar
 - **Public read access** — share your entire build log with the community, no login required
 - Image uploads supported in both blog posts and session posts
+
+![Blog](docs/screenshots/blog.PNG)
 
 ---
 
@@ -86,6 +78,10 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
   - Per-section hours (one topic per section)
 - **Home Assistant Auto-Discovery** — sensors appear in HA automatically without YAML configuration
 - **Export / Import** — full JSON backup and restore including sessions, settings, flowchart state, and base64-embedded images
+
+| General Settings | MQTT & Export |
+|---|---|
+| ![Settings](docs/screenshots/settings.PNG) | ![MQTT](docs/screenshots/mqtt.PNG) |
 
 ---
 
