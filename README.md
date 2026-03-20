@@ -288,7 +288,7 @@ Enable **Home Assistant Auto-Discovery** to have sensors appear in HA automatica
 This project is licensed under the [PolyForm Noncommercial License 1.0](LICENSE).
 Free for personal and non-commercial use. Contributions are subject to the [Contributor License Agreement](CLA.md).
 
-> Looking for a commercial license? [Contact me](mailto:) for inquiries regarding commercial use or acquisition.
+> Looking for a commercial license? [Contact me](mailto:info@bihnairy.de) for inquiries regarding commercial use or acquisition.
 
 ---
 
