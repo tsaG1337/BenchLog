@@ -40,10 +40,21 @@ jobs:
           tags: |
             # latest on every push to main
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            # short commit SHA on every push (e.g. d906531)
+            type=sha,format=short
             # semver tags on release  (v1.2.3 → 1.2.3, 1.2, 1)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+
+      - name: Set build version
+        id: version
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "value=sha-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -55,4 +66,4 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
-          build-args: BUILD_VERSION=${{ github.ref_name }}
+          build-args: BUILD_VERSION=${{ steps.version.outputs.value }}
