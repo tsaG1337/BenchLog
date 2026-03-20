@@ -1,6 +1,9 @@
 # ---------- FRONTEND BUILD ----------
 FROM node:20 AS builder
 
+ARG BUILD_VERSION=dev
+ENV VITE_APP_VERSION=$BUILD_VERSION
+
 WORKDIR /app
 COPY . .
 

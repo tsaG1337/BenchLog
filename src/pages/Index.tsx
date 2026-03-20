@@ -9,16 +9,17 @@ import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye } from 'lucide-react';
+import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
+import { AboutDialog } from '@/components/AboutDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 const Index = () => {
   const { logout, demoMode } = useAuth();
-  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | null>(null);
+  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | 'about' | null>(null);
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [section, setSection] = useState('fuselage');
@@ -195,6 +196,10 @@ const Index = () => {
                   <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
                 </Link>
               </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setOpenDialog('about')}>
+                <Info className="w-4 h-4 mr-2" /> About
+              </DropdownMenuItem>
               {!demoMode && (
                 <>
                   <DropdownMenuSeparator />
@@ -232,6 +237,10 @@ const Index = () => {
         open={openDialog === 'export'}
         onOpenChange={o => setOpenDialog(o ? 'export' : null)}
         timeFormat={timeFormat}
+      />
+      <AboutDialog
+        open={openDialog === 'about'}
+        onOpenChange={o => setOpenDialog(o ? 'about' : null)}
       />
 
       <main className="container max-w-4xl py-6 space-y-6">
