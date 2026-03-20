@@ -76,7 +76,7 @@ const DEFAULT_SECTIONS = [
 // ─── Express setup ──────────────────────────────────────────────────
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '200mb' }));
 
 // Demo mode: block all mutating API requests
 if (DEMO_MODE) {
@@ -925,7 +925,7 @@ app.get('/api/export', async (req, res) => {
 });
 
 // POST /api/import (auth required)
-app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (req, res) => {
+app.post('/api/import', requireAuth, async (req, res) => {
   const { settings, sessions } = req.body;
   const results = { settingsImported: false, sessionsImported: 0, imagesImported: 0 };
 
