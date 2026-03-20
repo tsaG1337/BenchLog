@@ -14,7 +14,7 @@ export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>About Benchlog</DialogTitle>
+          <DialogTitle>About BenchLog</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-1">
           <div className="flex items-center justify-between text-sm">
