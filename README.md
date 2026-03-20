@@ -1,6 +1,6 @@
-# RV-10 Build Tracker
+# Benchlog
 
-A self-hosted web application for tracking the construction of a Van's RV-10 homebuilt aircraft. Log your build sessions, visualize progress, document your work through a blog, and monitor everything from a clean dashboard — all running on your own infrastructure.
+A self-hosted web application for tracking a construction or build project. Log your build sessions, visualize progress, document your work through a blog, and monitor everything from a clean dashboard — all running on your own infrastructure.
 
 ---
 

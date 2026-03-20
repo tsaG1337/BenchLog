@@ -1,6 +1,6 @@
-# RV-10 Build Tracker — Backend
+# Benchlog — Backend
 
-Express + SQLite + MinIO backend for the RV-10 Build Tracker.
+Express + SQLite backend for Benchlog.
 
 For a full project overview, features, and screenshots see the [root README](../README.md).
 

@@ -8,7 +8,8 @@ import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Wrench, BarChart3, Clock, BookOpen, LogOut } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -17,6 +18,7 @@ import { toast } from 'sonner';
 
 const Index = () => {
   const { logout } = useAuth();
+  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | null>(null);
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [section, setSection] = useState('fuselage');
@@ -24,7 +26,7 @@ const Index = () => {
   const [plansSection, setPlansSection] = useState('');
   const [plansStep, setPlansStep] = useState('');
   const [notes, setNotes] = useState('');
-  const [projectName, setProjectName] = useState('RV-10 Build Tracker');
+  const [projectName, setProjectName] = useState('Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
   const [progressMode, setProgressMode] = useState<'time' | 'packages'>('time');
   const [packageProgressPct, setPackageProgressPct] = useState(0);
@@ -148,39 +150,70 @@ const Index = () => {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-card/50">
-        <div className="container max-w-4xl py-4 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
-            <Wrench className="w-5 h-5 text-primary" />
+        <div className="container max-w-4xl px-4 py-3 flex items-center gap-3">
+          <div className="w-9 h-9 shrink-0 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
+            <Wrench className="w-4 h-4 text-primary" />
           </div>
-          <div className="flex-1">
-            <h1 className="text-lg font-bold text-foreground tracking-tight">{projectName}</h1>
-          </div>
-          <SettingsDialog
-            onProjectNameChange={setProjectName}
-            onTargetHoursChange={setTargetHours}
-            onSettingsSaved={() => {
-              fetchBuildStats().then(s => {
-                setProgressMode(s.progressMode || 'time');
-                setPackageProgressPct(s.progressPct);
-              }).catch(() => {});
-            }}
-          />
-          <ManualEntryDialog onAdd={handleManualAdd} />
-          <ExportDialog sessions={sessions} />
-          <Link to="/blog">
-            <button className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors">
-              <BookOpen className="w-4 h-4" /> Blog
-            </button>
-          </Link>
-          <button
-            onClick={logout}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-destructive transition-colors"
-            title="Sign out"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
+          <h1 className="text-base sm:text-lg font-bold text-foreground tracking-tight truncate flex-1">
+            {projectName}
+          </h1>
+
+          {/* Dropdown menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
+                <Menu className="w-5 h-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
+                <Settings className="w-4 h-4 mr-2" /> Settings
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setOpenDialog('manual')}>
+                <Plus className="w-4 h-4 mr-2" /> Add Entry
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setOpenDialog('export')}>
+                <Download className="w-4 h-4 mr-2" /> Export
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem asChild>
+                <Link to="/blog" className="flex items-center w-full">
+                  <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
+                <LogOut className="w-4 h-4 mr-2" /> Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
+
+      {/* Dialogs driven by dropdown */}
+      <SettingsDialog
+        open={openDialog === 'settings'}
+        onOpenChange={o => setOpenDialog(o ? 'settings' : null)}
+        onProjectNameChange={setProjectName}
+        onTargetHoursChange={setTargetHours}
+        onSettingsSaved={() => {
+          fetchBuildStats().then(s => {
+            setProgressMode(s.progressMode || 'time');
+            setPackageProgressPct(s.progressPct);
+          }).catch(() => {});
+        }}
+      />
+      <ManualEntryDialog
+        open={openDialog === 'manual'}
+        onOpenChange={o => setOpenDialog(o ? 'manual' : null)}
+        onAdd={handleManualAdd}
+      />
+      <ExportDialog
+        sessions={sessions}
+        open={openDialog === 'export'}
+        onOpenChange={o => setOpenDialog(o ? 'export' : null)}
+      />
 
       <main className="container max-w-4xl py-6 space-y-6">
         <div className="bg-card border border-border rounded-xl p-8">

@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const Database = require('better-sqlite3');
 const multer = require('multer');
-const { Client: MinioClient } = require('minio');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const mqtt = require('mqtt');
@@ -41,13 +40,11 @@ function requireAuth(req, res, next) {
 
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
-const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'localhost';
-const MINIO_PORT = parseInt(process.env.MINIO_PORT || '9000');
-const MINIO_USE_SSL = process.env.MINIO_USE_SSL === 'true';
-const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY || 'minioadmin';
-const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY || 'minioadmin';
-const MINIO_BUCKET = process.env.MINIO_BUCKET || 'session-images';
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'rv10.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
+const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
+
+// Default general settings — single source of truth used as fallback in all getSetting('general') calls
+const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time' };
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [
@@ -67,11 +64,34 @@ app.use(cors());
 app.use(express.json());
 // Serve frontend build
 app.use(express.static(path.join(__dirname, "../dist")));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ─── SQLite setup ───────────────────────────────────────────────────
 const fs = require('fs');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+// ─── Local file storage setup ───────────────────────────────────────
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Serve uploaded images publicly (blog is public, so images are too)
+app.use('/files', express.static(UPLOADS_DIR));
+
+// Multer: disk storage with UUID filenames + MIME type validation
+const multerStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+const upload = multer({
+  storage: multerStorage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    allowed.includes(file.mimetype)
+      ? cb(null, true)
+      : cb(new Error('Only image files are allowed'));
+  },
+});
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -211,6 +231,11 @@ function publishMqttStats() {
 
     // Compute stats from DB
     const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
+    const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+    const excludedSections = new Set(
+      sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
+    );
+
     const sectionTotals = {};
     let totalMinutes = 0;
 
@@ -218,14 +243,14 @@ function publishMqttStats() {
       const sec = row.section;
       if (!sectionTotals[sec]) sectionTotals[sec] = 0;
       sectionTotals[sec] += row.duration_minutes;
-      totalMinutes += row.duration_minutes;
+      if (!excludedSections.has(sec)) totalMinutes += row.duration_minutes;
     }
 
     const totalHours = (totalMinutes / 60).toFixed(1);
     const sessionCount = rows.length;
 
     // Get target hours for progress calculation
-    const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 });
+    const generalSettings = getSetting('general', DEFAULT_GENERAL);
     const targetHours = generalSettings.targetHours || 2500;
     const buildProgress = Math.min(((totalMinutes / 60) / targetHours) * 100, 100).toFixed(1);
 
@@ -251,12 +276,7 @@ function publishMqttStats() {
     const lastSessionRow = db.prepare('SELECT image_urls FROM sessions ORDER BY start_time DESC LIMIT 1').get();
     if (lastSessionRow) {
       const lastSessionImages = JSON.parse(lastSessionRow.image_urls || '[]');
-      const imageUrls = lastSessionImages.map(url => {
-        // Convert relative URLs to absolute URLs
-        const objectName = url.replace(/^\/files\//, '');
-        return `http://${MINIO_ENDPOINT}:${MINIO_PORT}/${MINIO_BUCKET}/${objectName}`;
-      });
-      const imageUrlsJson = JSON.stringify(imageUrls);
+      const imageUrlsJson = JSON.stringify(lastSessionImages);
       console.log(`MQTT publish → ${prefix}/last_session_images`, imageUrlsJson);
       mqttClient.publish(`${prefix}/last_session_images`, imageUrlsJson, publishOptions, (err) => {
         if (err) console.error('MQTT publish error (last_session_images):', err.message);
@@ -292,12 +312,12 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
 
   const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
   const deviceId = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
-  const deviceName = getSetting('general', { projectName: 'Build Tracker' }).projectName || 'Build Tracker';
+  const deviceName = getSetting('general', DEFAULT_GENERAL).projectName || DEFAULT_GENERAL.projectName;
 
   const device = {
     identifiers: [deviceId],
     name: deviceName,
-    manufacturer: 'Build Tracker',
+    manufacturer: 'Benchlog',
     model: 'MQTT Stats',
   };
 
@@ -352,42 +372,6 @@ function publishHaDiscovery(settings, sectionConfigs, prefix) {
 // Connect on startup
 connectMqtt();
 
-// ─── MinIO setup ────────────────────────────────────────────────────
-const minio = new MinioClient({
-  endPoint: MINIO_ENDPOINT,
-  port: MINIO_PORT,
-  useSSL: MINIO_USE_SSL,
-  accessKey: MINIO_ACCESS_KEY,
-  secretKey: MINIO_SECRET_KEY,
-});
-
-// Ensure bucket exists on startup
-(async () => {
-  try {
-    const exists = await minio.bucketExists(MINIO_BUCKET);
-    if (!exists) {
-      await minio.makeBucket(MINIO_BUCKET);
-      const policy = {
-        Version: '2012-10-17',
-        Statement: [{
-          Effect: 'Allow',
-          Principal: { AWS: ['*'] },
-          Action: ['s3:GetObject'],
-          Resource: [`arn:aws:s3:::${MINIO_BUCKET}/*`],
-        }],
-      };
-      await minio.setBucketPolicy(MINIO_BUCKET, JSON.stringify(policy));
-      console.log(`Created bucket: ${MINIO_BUCKET}`);
-    }
-  } catch (err) {
-    console.error('MinIO bucket setup error:', err.message);
-  }
-})();
-
-// ─── Helper: build public URL for MinIO object ─────────────────────
-function getPublicUrl(objectName) {
-  return `/files/${objectName}`;
-}
 
 // ─── Auth Routes ────────────────────────────────────────────────────
 
@@ -428,11 +412,19 @@ app.get('/api/auth/status', (req, res) => {
 // ─── Public Stats API ───────────────────────────────────────────────
 app.get('/api/stats', (req, res) => {
   const rows = db.prepare('SELECT section, duration_minutes, start_time FROM sessions').all();
-  const totalMinutes = rows.reduce((sum, r) => sum + r.duration_minutes, 0);
-  const totalHours = totalMinutes / 60;
-  const generalSettings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
+  const generalSettings = getSetting('general', DEFAULT_GENERAL);
   const targetHours = generalSettings.targetHours || 2500;
   const progressMode = generalSettings.progressMode || 'time';
+
+  // Determine which sections count toward build hours
+  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+  const excludedSections = new Set(
+    sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
+  );
+
+  const countedRows = rows.filter(r => !excludedSections.has(r.section));
+  const totalMinutes = countedRows.reduce((sum, r) => sum + r.duration_minutes, 0);
+  const totalHours = totalMinutes / 60;
 
   // Calculate time-based progress
   const timePct = Math.min((totalHours / targetHours) * 100, 100);
@@ -454,8 +446,8 @@ app.get('/api/stats', (req, res) => {
 
   let estimatedFinish = null;
   let hoursPerWeek = null;
-  if (rows.length >= 2) {
-    const sorted = rows.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  if (countedRows.length >= 2) {
+    const sorted = [...countedRows].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
     const firstDate = new Date(sorted[0].start_time);
     const lastDate = new Date(sorted[sorted.length - 1].start_time);
     const spanWeeks = (lastDate - firstDate) / (7 * 24 * 60 * 60 * 1000);
@@ -552,10 +544,11 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
     const imageUrls = JSON.parse(row.image_urls || '[]');
     for (const url of imageUrls) {
       try {
-        const objectName = url.replace(/^\/files\//, '');
-        if (objectName) await minio.removeObject(MINIO_BUCKET, objectName);
+        const filename = path.basename(url);
+        const filePath = path.join(UPLOADS_DIR, filename);
+        if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } catch (err) {
-        console.error('Failed to delete image from MinIO:', err.message);
+        console.error('Failed to delete image file:', err.message);
       }
     }
   }
@@ -566,19 +559,10 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/upload — upload images (auth required)
-app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
-  const sessionId = req.body.sessionId || 'unknown';
-  const urls = [];
-
+// Multer writes files to UPLOADS_DIR with UUID filenames; we just return the URLs.
+app.post('/api/upload', requireAuth, upload.array('files', 10), (req, res) => {
   try {
-    for (const file of req.files) {
-      const ext = file.originalname.split('.').pop();
-      const objectName = `${sessionId}/${uuidv4()}.${ext}`;
-      await minio.putObject(MINIO_BUCKET, objectName, file.buffer, file.size, {
-        'Content-Type': file.mimetype,
-      });
-      urls.push(getPublicUrl(objectName));
-    }
+    const urls = req.files.map(file => `/files/${file.filename}`);
     res.json({ urls });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -586,14 +570,12 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
 });
 
 // DELETE /api/upload — delete an image (auth required)
-app.delete('/api/upload', requireAuth, async (req, res) => {
+app.delete('/api/upload', requireAuth, (req, res) => {
   const { url } = req.body;
   try {
-    const parts = url.split(`/${MINIO_BUCKET}/`);
-    if (parts.length > 1) {
-      const objectName = decodeURIComponent(parts[1]);
-      await minio.removeObject(MINIO_BUCKET, objectName);
-    }
+    const filename = path.basename(url || '');
+    const filePath = path.join(UPLOADS_DIR, filename);
+    if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -602,12 +584,12 @@ app.delete('/api/upload', requireAuth, async (req, res) => {
 
 // ─── General Settings API ────────────────────────────────────────────
 app.get('/api/settings/general', (req, res) => {
-  const settings = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
+  const settings = getSetting('general', DEFAULT_GENERAL);
   res.json(settings);
 });
 
 app.put('/api/settings/general', requireAuth, (req, res) => {
-  const current = getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
+  const current = getSetting('general', DEFAULT_GENERAL);
   const updates = req.body;
   const newSettings = {
     projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
@@ -810,21 +792,6 @@ app.put('/api/sections', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── Proxy MinIO files ──────────────────────────────────────────────
-app.get('/files/*', async (req, res) => {
-  const key = req.params[0];
-  try {
-    const stat = await minio.statObject(MINIO_BUCKET, key);
-    if (stat.metaData && stat.metaData['content-type']) {
-      res.setHeader('Content-Type', stat.metaData['content-type']);
-    }
-    const stream = await minio.getObject(MINIO_BUCKET, key);
-    stream.pipe(res);
-  } catch (err) {
-    console.error('File proxy error:', err.message);
-    res.status(404).send('File not found');
-  }
-});
 
 // ─── Export / Import ────────────────────────────────────────────────
 
@@ -841,7 +808,7 @@ app.get('/api/export', async (req, res) => {
 
   if (includeSettings) {
     exportData.settings = {
-      general: getSetting('general', { projectName: 'RV-10 Build Tracker', targetHours: 2500 }),
+      general: getSetting('general', DEFAULT_GENERAL),
       mqtt: getMqttSettings(),
       sections: getSetting('sections', DEFAULT_SECTIONS),
       flowchartStatus: getSetting('flowchart_status', {}),
@@ -867,23 +834,15 @@ app.get('/api/export', async (req, res) => {
       };
 
       // Embed images as base64
+      const ctMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
       for (const url of session.imageUrls) {
         try {
-          const objectName = url.replace(/^\/files\//, '');
-          if (objectName) {
-            const chunks = [];
-            const stream = await minio.getObject(MINIO_BUCKET, objectName);
-            for await (const chunk of stream) {
-              chunks.push(chunk);
-            }
-            const buffer = Buffer.concat(chunks);
-            const stat = await minio.statObject(MINIO_BUCKET, objectName);
-            const contentType = (stat.metaData && stat.metaData['content-type']) || 'image/jpeg';
-            session.images.push({
-              objectName,
-              contentType,
-              data: buffer.toString('base64'),
-            });
+          const filename = path.basename(url);
+          const filePath = path.join(UPLOADS_DIR, filename);
+          if (filename && fs.existsSync(filePath)) {
+            const buffer = await fs.promises.readFile(filePath);
+            const contentType = ctMap[path.extname(filename).toLowerCase()] || 'image/jpeg';
+            session.images.push({ objectName: filename, contentType, data: buffer.toString('base64') });
           }
         } catch (err) {
           console.error(`Export: failed to read image ${url}:`, err.message);
@@ -896,7 +855,7 @@ app.get('/api/export', async (req, res) => {
     exportData.sessions = sessions;
   }
 
-  const filename = `build-tracker-export-${new Date().toISOString().slice(0, 10)}.json`;
+  const filename = `benchlog-export-${new Date().toISOString().slice(0, 10)}.json`;
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Content-Type', 'application/json');
   res.json(exportData);
@@ -929,19 +888,19 @@ app.post('/api/import', requireAuth, express.json({ limit: '200mb' }), async (re
         // Check if session already exists
         const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
         
-        // Re-upload images
+        // Write imported images to disk with fresh UUID filenames
         const imageUrls = [];
         if (session.images && Array.isArray(session.images)) {
           for (const img of session.images) {
             try {
               const buffer = Buffer.from(img.data, 'base64');
-              await minio.putObject(MINIO_BUCKET, img.objectName, buffer, buffer.length, {
-                'Content-Type': img.contentType || 'image/jpeg',
-              });
-              imageUrls.push(`/files/${img.objectName}`);
+              const ext = path.extname(img.objectName || '').toLowerCase() || '.jpg';
+              const filename = `${uuidv4()}${ext}`;
+              fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
+              imageUrls.push(`/files/${filename}`);
               results.imagesImported++;
             } catch (err) {
-              console.error(`Import: failed to upload image ${img.objectName}:`, err.message);
+              console.error(`Import: failed to write image ${img.objectName}:`, err.message);
             }
           }
         }
@@ -1137,7 +1096,7 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
 });
 app.listen(PORT, () => {
-  console.log(`RV-10 Build Tracker API running on port ${PORT}`);
-  console.log(`MinIO: ${MINIO_ENDPOINT}:${MINIO_PORT} bucket=${MINIO_BUCKET}`);
+  console.log(`Benchlog API running on port ${PORT}`);
   console.log(`SQLite: ${DB_PATH}`);
+  console.log(`Uploads: ${UPLOADS_DIR}`);
 });

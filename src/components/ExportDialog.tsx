@@ -13,9 +13,11 @@ import { toast } from 'sonner';
 
 interface ExportDialogProps {
   sessions: WorkSession[];
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export function ExportDialog({ sessions }: ExportDialogProps) {
+export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: controlledOnOpenChange }: ExportDialogProps) {
   const { labels } = useSections();
   const [includeReferences, setIncludeReferences] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(false);
@@ -23,7 +25,9 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
   const [groupBy, setGroupBy] = useState<'chronological' | 'section'>('chronological');
   const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('txt');
   const [generating, setGenerating] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
 
   const formatTime = (minutes: number) => {
     const h = Math.floor(minutes / 60);
@@ -291,11 +295,13 @@ export function ExportDialog({ sessions }: ExportDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
-          <Download className="w-4 h-4" /> Export
-        </Button>
-      </DialogTrigger>
+      {controlledOpen === undefined && (
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Download className="w-4 h-4" /> Export
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Export Build Log</DialogTitle>

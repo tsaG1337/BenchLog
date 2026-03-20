@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X } from 'lucide-react';
+import { Wrench, PenSquare, Menu, X, Timer, LogIn } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
 import { BlogPostView } from '@/components/blog/BlogPostView';
@@ -20,7 +21,7 @@ export default function BlogPage() {
   const [view, setView] = useState<View>('list');
   const [activePost, setActivePost] = useState<BlogPost | null>(null);
   const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string }>({});
-  const [projectName, setProjectName] = useState('RV-10 Build Tracker');
+  const [projectName, setProjectName] = useState('Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stats, setStats] = useState<BuildStats | null>(null);
   const { isAuthenticated } = useAuth();
@@ -89,23 +90,34 @@ export default function BlogPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold text-foreground tracking-tight truncate">{projectName} — Blog</h1>
           </div>
-          {isAuthenticated && (
-            <Button variant="outline" size="sm" className="gap-2" onClick={() => { setActivePost(null); setView('editor'); }}>
-              <PenSquare className="w-4 h-4" /> New Post
-            </Button>
-          )}
-          {isAuthenticated ? (
-            <Link to="/">
-              <Button variant="ghost" size="sm">Tracker</Button>
-            </Link>
-          ) : (
-            <Link to="/login">
-              <Button variant="ghost" size="sm">Login</Button>
-            </Link>
-          )}
+          {/* Sidebar toggle (mobile only) */}
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
+
+          {/* Action dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
+                <Menu className="w-5 h-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              {isAuthenticated && (
+                <DropdownMenuItem onClick={() => { setActivePost(null); setView('editor'); }}>
+                  <PenSquare className="w-4 h-4 mr-2" /> New Post
+                </DropdownMenuItem>
+              )}
+              {isAuthenticated && <DropdownMenuSeparator />}
+              <DropdownMenuItem asChild>
+                <Link to={isAuthenticated ? '/' : '/login'} className="flex items-center w-full">
+                  {isAuthenticated
+                    ? <><Timer className="w-4 h-4 mr-2" /> Tracker</>
+                    : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
+                </Link>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 

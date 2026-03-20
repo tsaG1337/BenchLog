@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor } from 'lucide-react';
+import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
@@ -21,13 +21,17 @@ interface SettingsDialogProps {
   onProjectNameChange?: (name: string) => void;
   onTargetHoursChange?: (hours: number) => void;
   onSettingsSaved?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved }: SettingsDialogProps) {
+export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved, open: controlledOpen, onOpenChange: controlledOnOpenChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
-  const [open, setOpen] = useState(false);
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'RV-10 Build Tracker', targetHours: 2500, progressMode: 'time' });
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time' });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
@@ -88,6 +92,13 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     setSections([...sections, { id: `section-${Date.now()}`, label: '', icon: '📋' }]);
   };
 
+  const toggleSectionCounts = (index: number) => {
+    const updated = [...sections];
+    const current = updated[index].countTowardsBuildHours ?? true;
+    updated[index] = { ...updated[index], countTowardsBuildHours: !current };
+    setSections(updated);
+  };
+
   const updateSection = (index: number, field: keyof SectionConfig, value: string) => {
     const updated = [...sections];
     updated[index] = { ...updated[index], [field]: value };
@@ -112,11 +123,13 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
-          <Settings className="w-4 h-4" />
-        </Button>
-      </DialogTrigger>
+      {controlledOpen === undefined && (
+        <DialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="gap-2 text-muted-foreground">
+            <Settings className="w-4 h-4" />
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -134,7 +147,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
             <div className="pl-6 border-l-2 border-border">
               <Label className="text-xs text-muted-foreground mb-1 block">Project Name</Label>
               <Input
-                placeholder="RV-10 Build Tracker"
+                placeholder="Build Tracker"
                 value={general.projectName}
                 onChange={(e) => setGeneral({ ...general, projectName: e.target.value })}
                 className="bg-secondary border-border text-sm"
@@ -248,6 +261,14 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                     placeholder="Section name"
                     className="flex-1 bg-secondary border-border text-sm"
                   />
+                  <div className="flex items-center gap-1" title="Count towards build hours">
+                    <Clock className={`w-3 h-3 ${(sec.countTowardsBuildHours ?? true) ? 'text-primary' : 'text-muted-foreground/40'}`} />
+                    <Switch
+                      checked={sec.countTowardsBuildHours ?? true}
+                      onCheckedChange={() => toggleSectionCounts(i)}
+                      className="scale-75 origin-left"
+                    />
+                  </div>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -260,6 +281,11 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
               ))}
               {sections.length === 0 && (
                 <p className="text-xs text-muted-foreground/60 py-2">No sections defined. Click "Add" to create one.</p>
+              )}
+              {sections.length > 0 && (
+                <p className="text-xs text-muted-foreground/50 mt-1 flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> toggle controls whether section counts toward build hours
+                </p>
               )}
             </div>
           </div>

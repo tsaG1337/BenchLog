@@ -22,11 +22,15 @@ interface ManualEntryDialogProps {
     plansSection: string;
     plansStep: string;
   }) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
-export function ManualEntryDialog({ onAdd }: ManualEntryDialogProps) {
+export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: controlledOnOpenChange }: ManualEntryDialogProps) {
   const { sections: sectionConfigs } = useSections();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [section, setSection] = useState('');
   const [date, setDate] = useState<Date>(new Date());
   const [hours, setHours] = useState('');
@@ -56,11 +60,13 @@ export function ManualEntryDialog({ onAdd }: ManualEntryDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
-          <Plus className="w-4 h-4" /> Add Entry
-        </Button>
-      </DialogTrigger>
+      {controlledOpen === undefined && (
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Plus className="w-4 h-4" /> Add Entry
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add Manual Entry</DialogTitle>

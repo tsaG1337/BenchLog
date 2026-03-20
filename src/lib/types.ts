@@ -2,6 +2,7 @@ export interface SectionConfig {
   id: string;
   label: string;
   icon: string;
+  countTowardsBuildHours?: boolean; // defaults to true when absent
 }
 
 export interface WorkSession {

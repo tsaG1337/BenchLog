@@ -39,7 +39,7 @@ export default function LoginPage() {
           <div className="w-16 h-16 rounded-2xl bg-primary/15 flex items-center justify-center mx-auto mb-4 glow-amber">
             <Wrench className="w-8 h-8 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground">Build Tracker</h1>
+          <h1 className="text-2xl font-bold text-foreground">Benchlog</h1>
           <p className="text-sm text-muted-foreground mt-1">
             {needsSetup ? 'Set up your admin password' : 'Sign in to continue'}
           </p>

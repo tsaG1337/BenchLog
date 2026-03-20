@@ -1,6 +1,6 @@
 import { WorkSession } from './types';
 
-const SESSIONS_KEY = 'rv10-build-sessions';
+const SESSIONS_KEY = 'build-tracker-sessions';
 
 export function getSessions(): WorkSession[] {
   const raw = localStorage.getItem(SESSIONS_KEY);
