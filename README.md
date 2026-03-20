@@ -10,15 +10,15 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 
 | Blog & Sidebar | Build Progress |
 |---|---|
-| ![Blog](docs/screenshots/blog.png) | ![Build Progress](docs/screenshots/build-progress.png) |
+| ![Blog](docs/screenshots/blog.PNG) | ![Build Progress](docs/screenshots/build-progress.PNG) |
 
 | Dashboard | Time Tracker |
 |---|---|
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Tracker](docs/screenshots/tracker.png) |
+| ![Dashboard](docs/screenshots/dashboard.PNG) | ![Tracker](docs/screenshots/tracker.PNG) |
 
 | General Settings | MQTT & Export |
 |---|---|
-| ![Settings](docs/screenshots/settings.png) | ![MQTT](docs/screenshots/mqtt.png) |
+| ![Settings](docs/screenshots/settings.PNG) | ![MQTT](docs/screenshots/mqtt.PNG) |
 
 ---
 
