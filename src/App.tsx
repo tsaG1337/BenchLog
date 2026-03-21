@@ -59,6 +59,7 @@ const App = () => (
                 <Route path="/" element={<RootRedirect />} />
                 <Route path="/tracker" element={<ProtectedRoute><Index /></ProtectedRoute>} />
                 <Route path="/blog" element={<BlogPage />} />
+                <Route path="/blog/:postId" element={<BlogPage />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </BrowserRouter>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
@@ -15,6 +15,8 @@ import { toast } from 'sonner';
 type View = 'list' | 'post' | 'editor';
 
 export default function BlogPage() {
+  const { postId } = useParams<{ postId?: string }>();
+  const navigate = useNavigate();
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [archive, setArchive] = useState<BlogArchiveEntry[]>([]);
   const [view, setView] = useState<View>('list');
@@ -47,35 +49,68 @@ export default function BlogPage() {
     fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
+  // Open post from URL param on initial load
   useEffect(() => {
-    if (projectName) document.title = `${projectName} — Blog`;
-  }, [projectName]);
+    if (!postId) return;
+    if (postId.startsWith('session-')) {
+      // Session posts are in the list — wait for posts to load then find it
+      return;
+    }
+    fetchBlogPost(postId)
+      .then(full => { setActivePost({ ...full, source: 'blog' }); setView('post'); })
+      .catch(() => { toast.error('Post not found'); navigate('/blog', { replace: true }); });
+  }, [postId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // For session posts: once posts are loaded, find and open the session post from URL
+  useEffect(() => {
+    if (!postId?.startsWith('session-') || posts.length === 0 || activePost) return;
+    const found = posts.find((p: BlogPost) => p.id === postId);
+    if (found) { setActivePost(found); setView('post'); }
+    else { toast.error('Post not found'); navigate('/blog', { replace: true }); }
+  }, [postId, posts]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (activePost) document.title = `${activePost.title} — ${projectName}`;
+    else if (projectName) document.title = `${projectName} — Blog`;
+  }, [activePost, projectName]);
+
+  const openPost = (post: BlogPost) => {
+    setActivePost(post);
+    setView('post');
+    navigate(`/blog/${post.id}`, { replace: false });
+  };
 
   const handlePostClick = async (post: BlogPost) => {
     if (post.source === 'session') {
-      // Session posts are already fully loaded
-      setActivePost(post);
-      setView('post');
+      openPost(post);
       return;
     }
     try {
       const full = await fetchBlogPost(post.id);
-      setActivePost({ ...full, source: 'blog' });
-      setView('post');
+      openPost({ ...full, source: 'blog' });
     } catch {
       toast.error('Failed to load post');
     }
   };
 
+  const handleBack = () => {
+    setView('list');
+    setActivePost(null);
+    navigate('/blog', { replace: false });
+  };
+
   const handleFilterChange = (newFilters: { section?: string; year?: string; month?: string; plansSection?: string }) => {
     setFilters(newFilters);
     setView('list');
+    setActivePost(null);
+    navigate('/blog', { replace: false });
     setSidebarOpen(false);
   };
 
   const handleSaved = () => {
     setView('list');
     setActivePost(null);
+    navigate('/blog', { replace: false });
     loadPosts();
   };
 
@@ -187,7 +222,7 @@ export default function BlogPage() {
               <div className="bg-card border border-border rounded-xl p-6 md:p-8">
                 <BlogPostView
                   post={activePost}
-                  onBack={() => { setView('list'); setActivePost(null); }}
+                  onBack={handleBack}
                   onEdit={() => setView('editor')}
                   onDeleted={handleSaved}
                 />

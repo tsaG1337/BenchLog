@@ -1173,9 +1173,121 @@ app.put('/api/flowchart-packages', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── OpenGraph meta tag injection ───────────────────────────────────
+const distIndexPath = path.join(__dirname, '../dist/index.html');
+
+function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
+  const tags = [
+    `<meta property="og:type" content="website" />`,
+    `<meta property="og:title" content="${title}" />`,
+    `<meta property="og:description" content="${description}" />`,
+    pageUrl ? `<meta property="og:url" content="${pageUrl}" />` : '',
+    imageUrl ? `<meta property="og:image" content="${imageUrl}" />` : '',
+    `<meta name="twitter:card" content="${imageUrl ? 'summary_large_image' : 'summary'}" />`,
+    `<meta name="twitter:title" content="${title}" />`,
+    `<meta name="twitter:description" content="${description}" />`,
+    imageUrl ? `<meta name="twitter:image" content="${imageUrl}" />` : '',
+  ].filter(Boolean).join('\n    ');
+  return html.replace('</head>', `  ${tags}\n  </head>`);
+}
+
+function baseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  return `${proto}://${host}`;
+}
+
+app.get('/blog', (req, res) => {
+  if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
+  const html = fs.readFileSync(distIndexPath, 'utf8');
+  const general = getSetting('general', DEFAULT_GENERAL);
+  const projectName = general.projectName || 'Build Tracker';
+
+  // Get total hours and latest session image
+  const totalRow = db.prepare(`SELECT COALESCE(SUM(duration_minutes),0) as total FROM sessions`).get();
+  const totalHours = Math.round((totalRow?.total || 0) / 60 * 10) / 10;
+  const latestSession = db.prepare(`SELECT image_urls FROM sessions WHERE image_urls != '[]' ORDER BY start_time DESC LIMIT 1`).get();
+  const imageUrls = latestSession ? JSON.parse(latestSession.image_urls || '[]') : [];
+  const firstImage = imageUrls[0];
+  const base = baseUrl(req);
+  const imageUrl = firstImage ? `${base}${firstImage}` : null;
+
+  const injected = injectOgTags(html, {
+    title: `${projectName} — Build Journal`,
+    description: `${totalHours}h logged so far. Follow along on this RV-10 homebuilt aircraft build.`,
+    imageUrl,
+    pageUrl: `${base}/blog`,
+  });
+  res.type('html').send(injected);
+});
+
+app.get('/blog/:postId', (req, res) => {
+  if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
+  const html = fs.readFileSync(distIndexPath, 'utf8');
+  const general = getSetting('general', DEFAULT_GENERAL);
+  const projectName = general.projectName || 'Build Tracker';
+  const base = baseUrl(req);
+  const { postId } = req.params;
+
+  let title, description, imageUrl;
+
+  if (postId.startsWith('session-')) {
+    const sessionId = postId.replace('session-', '');
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    if (row) {
+      const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+      const label = (sectionConfigs.find(s => s.id === row.section)?.label) || row.section;
+      const hours = Math.floor(row.duration_minutes / 60);
+      const mins = Math.round(row.duration_minutes % 60);
+      const dur = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      title = `${label} — Work Session (${dur})`;
+      description = row.notes || `${dur} build session logged on ${new Date(row.start_time).toLocaleDateString()}`;
+      const imgs = JSON.parse(row.image_urls || '[]');
+      imageUrl = imgs[0] ? `${base}${imgs[0]}` : null;
+    }
+  } else {
+    const row = db.prepare('SELECT * FROM blog_posts WHERE id = ?').get(postId);
+    if (row) {
+      title = row.title;
+      const text = row.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      description = text.slice(0, 200) || `Build journal entry — ${projectName}`;
+      const imgs = JSON.parse(row.image_urls || '[]');
+      // Also check for inline images in content
+      const match = row.content.match(/src="(\/files\/[^"]+)"/);
+      imageUrl = imgs[0] ? `${base}${imgs[0]}` : match ? `${base}${match[1]}` : null;
+    }
+  }
+
+  if (!title) {
+    // Post not found — fall back to generic blog tags
+    return res.type('html').send(injectOgTags(html, {
+      title: `${projectName} — Build Journal`,
+      description: 'Follow along on this RV-10 homebuilt aircraft build.',
+      imageUrl: null, pageUrl: `${base}/blog`,
+    }));
+  }
+
+  res.type('html').send(injectOgTags(html, {
+    title: `${title} — ${projectName}`,
+    description,
+    imageUrl,
+    pageUrl: `${base}/blog/${postId}`,
+  }));
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../dist/index.html"));
+  if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
+  const html = fs.readFileSync(distIndexPath, 'utf8');
+  const general = getSetting('general', DEFAULT_GENERAL);
+  const projectName = general.projectName || 'Build Tracker';
+  const injected = injectOgTags(html, {
+    title: `${projectName} — BenchLog`,
+    description: 'Track your build project — log sessions, visualize progress, document your journey.',
+    imageUrl: null,
+    pageUrl: null,
+  });
+  res.type('html').send(injected);
 });
 app.listen(PORT, () => {
   console.log(`Benchlog API running on port ${PORT}`);
