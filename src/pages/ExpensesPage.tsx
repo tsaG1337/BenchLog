@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck } from 'lucide-react';
+import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { fetchExpenses, fetchExpenseStats, createExpense, updateExpense, deleteExpense, updateExpenseBudgets, EXPENSE_CATEGORIES, CURRENCIES, Expense, ExpenseStats } from '@/lib/api';
@@ -8,6 +8,7 @@ import { useSections } from '@/contexts/SectionsContext';
 import { ExpenseForm } from '@/components/expenses/ExpenseForm';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { jsPDF } from 'jspdf';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -83,6 +84,136 @@ export default function ExpensesPage() {
 
   const totalBudget = EXPENSE_CATEGORIES.reduce((s, c) => s + (parseFloat(budgetDraft[c.id] || '0') || 0), 0);
 
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+
+  const handleExportPdf = async () => {
+    setGeneratingPdf(true);
+    try {
+      const [allExpenses, expStats] = await Promise.all([fetchExpenses({}), fetchExpenseStats()]);
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 15;
+      let y = margin;
+
+      const checkPage = (needed: number) => {
+        if (y + needed > pageHeight - margin) { doc.addPage(); y = margin; }
+      };
+
+      // Title
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Expense Report', margin, y + 7);
+      y += 12;
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120);
+      doc.text(`Generated: ${format(new Date(), 'MMMM d, yyyy HH:mm')}`, margin, y);
+      y += 10;
+      doc.setTextColor(0);
+
+      // Summary
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.text('Summary', margin, y);
+      y += 7;
+
+      const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountEur, 0);
+      const rows: [string, string][] = [
+        ['Total Spent', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalEur)],
+        ['Number of Entries', String(expStats.count)],
+        ['LBA/EASA Relevant', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(lbaTotal)],
+      ];
+      doc.setFontSize(10);
+      for (const [label, value] of rows) {
+        checkPage(6);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(80);
+        doc.text(label, margin + 2, y);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0);
+        doc.text(value, pageWidth - margin, y, { align: 'right' });
+        y += 6;
+      }
+      y += 4;
+
+      // By Category
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(0);
+      checkPage(10);
+      doc.text('By Category', margin, y);
+      y += 7;
+      doc.setFontSize(10);
+      for (const cat of EXPENSE_CATEGORIES) {
+        const spent = expStats.byCategory[cat.id] ?? 0;
+        if (spent === 0) continue;
+        checkPage(6);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(60);
+        doc.text(`${cat.icon} ${cat.label}`, margin + 2, y);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0);
+        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(spent), pageWidth - margin, y, { align: 'right' });
+        y += 6;
+      }
+      checkPage(8);
+      y += 2;
+      doc.setDrawColor(200);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 5;
+      doc.setFontSize(11);
+      doc.setFont('helvetica', 'bold');
+      doc.text('TOTAL', margin + 2, y);
+      doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalEur), pageWidth - margin, y, { align: 'right' });
+      y += 12;
+
+      // Itemized list
+      checkPage(14);
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(0);
+      doc.text('All Expenses', margin, y);
+      y += 8;
+
+      const sorted = [...allExpenses].sort((a, b) => a.date.localeCompare(b.date));
+      doc.setFontSize(9);
+      for (const exp of sorted) {
+        checkPage(10);
+        const cur = CURRENCIES.find(c => c.code === exp.currency);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0);
+        doc.text(exp.description, margin + 2, y);
+        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(exp.amountEur), pageWidth - margin, y, { align: 'right' });
+        y += 4.5;
+
+        checkPage(5);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(100);
+        const cat = EXPENSE_CATEGORIES.find(c => c.id === exp.category);
+        const meta = [
+          format(new Date(exp.date), 'dd.MM.yyyy'),
+          cat?.label,
+          exp.vendor || null,
+          exp.currency !== 'EUR' ? `${cur?.symbol}${exp.amount.toFixed(2)} ${exp.currency}` : null,
+          exp.isCertificationRelevant ? 'LBA/EASA' : null,
+        ].filter(Boolean).join(' · ');
+        doc.text(meta, margin + 2, y);
+        y += 4;
+
+        doc.setDrawColor(230);
+        doc.line(margin + 2, y, pageWidth - margin - 2, y);
+        y += 4;
+      }
+
+      doc.save(`expenses-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+    } catch (err: any) {
+      toast.error('PDF generation failed: ' + err.message);
+    } finally {
+      setGeneratingPdf(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-card/50 sticky top-0 z-30">
@@ -95,6 +226,10 @@ export default function ExpensesPage() {
           </div>
           <Button size="sm" onClick={openNew} className="gap-1.5">
             <Plus className="w-4 h-4" /> Add Expense
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={generatingPdf} className="gap-1.5">
+            {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            PDF
           </Button>
           <Button variant="outline" size="sm" asChild>
             <a href={`${API_URL}/api/expenses/export/csv`} download="expenses.csv" className="gap-1.5 flex items-center">

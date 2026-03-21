@@ -10,6 +10,7 @@ import { Download, Loader2, ImagePlus, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import { toast } from 'sonner';
+import { fetchExpenses, fetchExpenseStats, EXPENSE_CATEGORIES, CURRENCIES } from '@/lib/api';
 
 interface ExportDialogProps {
   sessions: WorkSession[];
@@ -27,6 +28,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
   const [includeNotes, setIncludeNotes] = useState(false);
   const [includeImages, setIncludeImages] = useState(false);
   const [includeNonBillable, setIncludeNonBillable] = useState(false);
+  const [includeExpenses, setIncludeExpenses] = useState(false);
   const [includeLogo, setIncludeLogo] = useState(true);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -212,6 +214,106 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       y = Math.max(y, margin + logoHeight + 4);
       y += 6;
       doc.setTextColor(0);
+
+      // Expense section (inserted before "Time by Section")
+      if (includeExpenses) {
+        try {
+          const [allExpenses, expStats] = await Promise.all([fetchExpenses({}), fetchExpenseStats()]);
+          const fmtEur = (n: number) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(n);
+
+          checkPage(14);
+          doc.setFontSize(13);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(0);
+          doc.text('Expense Summary', margin, y);
+          y += 7;
+
+          // Summary rows
+          const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountEur, 0);
+          doc.setFontSize(10);
+          for (const [label, value] of [
+            ['Total Spent', fmtEur(expStats.totalEur)],
+            ['Number of Entries', String(expStats.count)],
+            ['LBA/EASA Relevant', fmtEur(lbaTotal)],
+          ] as [string, string][]) {
+            checkPage(6);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(80);
+            doc.text(label, margin + 2, y);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text(value, pageWidth - margin, y, { align: 'right' });
+            y += 6;
+          }
+          y += 4;
+
+          // By category
+          checkPage(10);
+          doc.setFontSize(11);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(0);
+          doc.text('By Category', margin, y);
+          y += 6;
+          doc.setFontSize(10);
+          for (const cat of EXPENSE_CATEGORIES) {
+            const spent = expStats.byCategory[cat.id] ?? 0;
+            if (spent === 0) continue;
+            checkPage(6);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(60);
+            doc.text(`${cat.icon} ${cat.label}`, margin + 2, y);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text(fmtEur(spent), pageWidth - margin, y, { align: 'right' });
+            y += 6;
+          }
+
+          // Itemized list
+          checkPage(14);
+          y += 4;
+          doc.setFontSize(11);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(0);
+          doc.text('All Expenses', margin, y);
+          y += 6;
+          const sortedExp = [...allExpenses].sort((a, b) => a.date.localeCompare(b.date));
+          doc.setFontSize(9);
+          for (const exp of sortedExp) {
+            checkPage(12);
+            const cur = CURRENCIES.find(c => c.code === exp.currency);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text(exp.description, margin + 2, y);
+            doc.text(fmtEur(exp.amountEur), pageWidth - margin, y, { align: 'right' });
+            y += 4.5;
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(100);
+            const cat = EXPENSE_CATEGORIES.find(c => c.id === exp.category);
+            const meta = [
+              format(new Date(exp.date), 'dd.MM.yyyy'),
+              cat?.label,
+              exp.vendor || null,
+              exp.currency !== 'EUR' ? `${cur?.symbol}${exp.amount.toFixed(2)} ${exp.currency}` : null,
+              exp.isCertificationRelevant ? 'LBA/EASA' : null,
+            ].filter(Boolean).join(' · ');
+            doc.text(meta, margin + 2, y);
+            y += 4;
+            doc.setDrawColor(230);
+            doc.line(margin + 2, y, pageWidth - margin - 2, y);
+            y += 4;
+          }
+
+          // Separator before build log
+          checkPage(16);
+          y += 4;
+          doc.setDrawColor(180);
+          doc.line(margin, y, pageWidth - margin, y);
+          y += 10;
+          doc.setTextColor(0);
+        } catch {
+          // skip expense section silently if fetch fails
+        }
+      }
 
       doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
@@ -488,6 +590,12 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               <div className="flex items-center gap-2">
                 <Checkbox id="include-nonbillable" checked={includeNonBillable} onCheckedChange={(v) => setIncludeNonBillable(v === true)} />
                 <Label htmlFor="include-nonbillable" className="text-sm text-muted-foreground cursor-pointer">Non-billable sections (e.g. Other)</Label>
+              </div>
+            )}
+            {exportFormat === 'pdf' && (
+              <div className="flex items-center gap-2">
+                <Checkbox id="include-expenses" checked={includeExpenses} onCheckedChange={(v) => setIncludeExpenses(v === true)} />
+                <Label htmlFor="include-expenses" className="text-sm text-muted-foreground cursor-pointer">Expense report</Label>
               </div>
             )}
           </div>
