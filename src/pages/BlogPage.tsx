@@ -123,7 +123,7 @@ export default function BlogPage() {
         </div>
       )}
       <header className="border-b border-border bg-card/50 sticky top-0 z-30">
-        <div className="container max-w-6xl py-4 flex items-center gap-3">
+        <div className="container max-w-7xl py-4 flex items-center gap-3">
           <Link to="/" className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center glow-amber shrink-0">
             <Wrench className="w-5 h-5 text-primary" />
           </Link>
@@ -168,7 +168,7 @@ export default function BlogPage() {
         </div>
       </header>
 
-      <div className="container max-w-6xl py-6">
+      <div className="container max-w-7xl py-6">
         <div className="flex gap-8">
           {/* Sidebar */}
           <div className={`
