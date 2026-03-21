@@ -64,7 +64,7 @@ export function SessionForm({
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.lang = navigator.language || 'en-US';
     recognition.onresult = (event: any) => {
       let interim = '';
       let final = '';
