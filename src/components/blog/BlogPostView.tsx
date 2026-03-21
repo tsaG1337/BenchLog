@@ -37,29 +37,27 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
   };
 
   return (
-    <article className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={onBack}>
-          <ArrowLeft className="w-5 h-5" />
-        </Button>
-        <div className="flex-1" />
-        {isAuthenticated && (
-          <>
-            <Button variant="ghost" size="icon" onClick={onEdit}>
-              <Pencil className="w-4 h-4" />
-            </Button>
-            {!isSession && (
-              <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
-                <Trash2 className="w-4 h-4" />
+    <article className="space-y-5">
+      <header>
+        <div className="flex items-start gap-2">
+          <Button variant="ghost" size="icon" onClick={onBack} className="-ml-2 shrink-0 mt-0.5">
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <h1 className="flex-1 text-2xl md:text-3xl font-bold text-foreground leading-tight">{post.title}</h1>
+          {isAuthenticated && (
+            <div className="flex items-center gap-1 shrink-0">
+              <Button variant="ghost" size="icon" onClick={onEdit}>
+                <Pencil className="w-4 h-4" />
               </Button>
-            )}
-          </>
-        )}
-      </div>
-
-      <header className="space-y-2">
-        <h1 className="text-2xl md:text-3xl font-bold text-foreground leading-tight">{post.title}</h1>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground flex-wrap">
+              {!isSession && (
+                <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-sm text-muted-foreground flex-wrap mt-1 ml-8">
           {isSession && <Wrench className="w-4 h-4" />}
           <time>{format(new Date(post.publishedAt), 'dd. MMMM yyyy')}</time>
           {post.section && (
