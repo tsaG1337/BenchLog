@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut } from 'lucide-react';
+import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
@@ -157,6 +157,17 @@ export default function BlogPage() {
               </DropdownMenuItem>
               {isAuthenticated && !demoMode && (
                 <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link to="/expenses" className="flex items-center w-full">
+                      <Wallet className="w-4 h-4 mr-2" /> Expenses
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/tracker" state={{ openSettings: true }} className="flex items-center w-full">
+                      <Settings className="w-4 h-4 mr-2" /> Settings
+                    </Link>
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
                     <LogOut className="w-4 h-4 mr-2" /> Sign out

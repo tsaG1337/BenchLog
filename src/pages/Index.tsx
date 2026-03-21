@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
 import { SessionForm } from '@/components/SessionForm';
@@ -19,7 +19,10 @@ import { toast } from 'sonner';
 
 const Index = () => {
   const { logout, demoMode } = useAuth();
-  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | 'about' | null>(null);
+  const location = useLocation();
+  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | 'about' | null>(
+    (location.state as any)?.openSettings ? 'settings' : null
+  );
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [section, setSection] = useState('fuselage');
