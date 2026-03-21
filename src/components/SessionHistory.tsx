@@ -18,9 +18,9 @@ interface SessionHistoryProps {
 }
 
 function parsePlansRef(ref?: string) {
-  const page = ref?.match(/Page\s+(\S+)/)?.[1] || '';
-  const section = ref?.match(/Section\s+(\S+)/)?.[1] || '';
-  const step = ref?.match(/Step\s+(\S+)/)?.[1] || '';
+  const page = (ref?.match(/Page\s+(\S+)/)?.[1] || '').replace(/,+$/, '');
+  const section = (ref?.match(/Section\s+(\S+)/)?.[1] || '').replace(/,+$/, '');
+  const step = (ref?.match(/Step\s+(\S+)/)?.[1] || '').replace(/,+$/, '');
   return { page, section, step };
 }
 
