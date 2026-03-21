@@ -1,0 +1,253 @@
+import { useState, useRef } from 'react';
+import { Expense, EXPENSE_CATEGORIES, CURRENCIES, uploadReceipts, deleteReceipt } from '@/lib/api';
+import { useSections } from '@/contexts/SectionsContext';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Loader2, X, Paperclip, FileText } from 'lucide-react';
+import { toast } from 'sonner';
+import { format } from 'date-fns';
+
+interface ExpenseFormProps {
+  expense?: Expense;
+  onSave: (data: Omit<Expense, 'id' | 'amountEur' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  onClose: () => void;
+}
+
+const DEFAULT_FORM = {
+  date: format(new Date(), 'yyyy-MM-dd'),
+  amount: '',
+  currency: 'EUR',
+  exchangeRate: '1.0',
+  description: '',
+  vendor: '',
+  category: 'other',
+  assemblySection: '',
+  partNumber: '',
+  isCertificationRelevant: false,
+  receiptUrls: [] as string[],
+  notes: '',
+  tags: [] as string[],
+};
+
+export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
+  const { sections } = useSections();
+  const [form, setForm] = useState(() => expense ? {
+    date: expense.date,
+    amount: String(expense.amount),
+    currency: expense.currency,
+    exchangeRate: String(expense.exchangeRate),
+    description: expense.description,
+    vendor: expense.vendor,
+    category: expense.category,
+    assemblySection: expense.assemblySection,
+    partNumber: expense.partNumber,
+    isCertificationRelevant: expense.isCertificationRelevant,
+    receiptUrls: expense.receiptUrls,
+    notes: expense.notes,
+    tags: expense.tags,
+  } : { ...DEFAULT_FORM });
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const set = (field: string, value: any) => setForm(f => ({ ...f, [field]: value }));
+
+  const selectedCurrency = CURRENCIES.find(c => c.code === form.currency);
+  const amountEur = parseFloat(form.amount || '0') * parseFloat(form.exchangeRate || '1');
+
+  const handleCurrencyChange = (code: string) => {
+    set('currency', code);
+    if (code === 'EUR') set('exchangeRate', '1.0');
+  };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    setUploading(true);
+    try {
+      const urls = await uploadReceipts(e.target.files);
+      set('receiptUrls', [...form.receiptUrls, ...urls]);
+      toast.success(`${urls.length} receipt(s) uploaded`);
+    } catch (err: any) {
+      toast.error('Upload failed: ' + err.message);
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const handleRemoveReceipt = async (url: string) => {
+    set('receiptUrls', form.receiptUrls.filter(u => u !== url));
+    try { await deleteReceipt(url); } catch {}
+  };
+
+  const handleSave = async () => {
+    if (!form.description.trim()) { toast.error('Description is required'); return; }
+    if (!form.amount || isNaN(parseFloat(form.amount))) { toast.error('Valid amount is required'); return; }
+    setSaving(true);
+    try {
+      await onSave({
+        date: form.date,
+        amount: parseFloat(form.amount),
+        currency: form.currency,
+        exchangeRate: parseFloat(form.exchangeRate || '1'),
+        description: form.description.trim(),
+        vendor: form.vendor.trim(),
+        category: form.category,
+        assemblySection: form.assemblySection,
+        partNumber: form.partNumber.trim(),
+        isCertificationRelevant: form.isCertificationRelevant,
+        receiptUrls: form.receiptUrls,
+        notes: form.notes.trim(),
+        tags: form.tags,
+      });
+      onClose();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{expense ? 'Edit Expense' : 'Add Expense'}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-5 py-2">
+          {/* Date + Amount + Currency */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Date</Label>
+              <Input type="date" value={form.date} onChange={e => set('date', e.target.value)} className="bg-secondary border-border" />
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Amount</Label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">{selectedCurrency?.symbol}</span>
+                <Input type="number" min="0" step="0.01" value={form.amount} onChange={e => set('amount', e.target.value)} className="bg-secondary border-border pl-7" placeholder="0.00" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Currency</Label>
+              <select value={form.currency} onChange={e => handleCurrencyChange(e.target.value)} className="w-full h-9 rounded-md border border-border bg-secondary px-3 text-sm">
+                {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.code} — {c.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Exchange rate + EUR total */}
+          {form.currency !== 'EUR' && (
+            <div className="flex items-center gap-3">
+              <div className="w-48">
+                <Label className="text-xs text-muted-foreground mb-1 block">Exchange Rate (1 {form.currency} = ? EUR)</Label>
+                <Input type="number" min="0" step="0.0001" value={form.exchangeRate} onChange={e => set('exchangeRate', e.target.value)} className="bg-secondary border-border" placeholder="e.g. 0.92" />
+              </div>
+              <div className="pt-5 text-sm text-muted-foreground">
+                = <span className="font-medium text-foreground">€{amountEur.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Description + Vendor */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Description *</Label>
+              <Input value={form.description} onChange={e => set('description', e.target.value)} className="bg-secondary border-border" placeholder="What was purchased?" />
+            </div>
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Vendor / Supplier</Label>
+              <Input value={form.vendor} onChange={e => set('vendor', e.target.value)} className="bg-secondary border-border" placeholder="e.g. Aircraft Spruce" />
+            </div>
+          </div>
+
+          {/* Category */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-2 block">Category</Label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {EXPENSE_CATEGORIES.map(cat => (
+                <button key={cat.id} type="button" onClick={() => set('category', cat.id)}
+                  className={`flex flex-col items-center gap-1 p-2 rounded-md text-xs border transition-all ${form.category === cat.id ? 'bg-primary/15 border-primary text-primary' : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+                  <span className="text-base">{cat.icon}</span>
+                  <span className="leading-tight text-center">{cat.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Assembly Section */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-2 block">Assembly Section</Label>
+            <div className="flex flex-wrap gap-1.5">
+              <button type="button" onClick={() => set('assemblySection', '')}
+                className={`px-3 py-1.5 rounded-md text-xs border transition-all ${!form.assemblySection ? 'bg-primary/15 border-primary text-primary' : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+                None
+              </button>
+              {sections.map(s => (
+                <button key={s.id} type="button" onClick={() => set('assemblySection', s.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border transition-all ${form.assemblySection === s.id ? 'bg-primary/15 border-primary text-primary' : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+                  <span>{s.icon}</span>{s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Part Number + Certification */}
+          <div className="flex items-end gap-4">
+            <div className="flex-1">
+              <Label className="text-xs text-muted-foreground mb-1 block">Part Number</Label>
+              <Input value={form.partNumber} onChange={e => set('partNumber', e.target.value)} className="bg-secondary border-border font-mono" placeholder="e.g. AN3-4A" />
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer pb-2">
+              <input type="checkbox" checked={form.isCertificationRelevant} onChange={e => set('isCertificationRelevant', e.target.checked)} className="w-4 h-4 rounded" />
+              <span className="text-sm text-muted-foreground">LBA/EASA relevant</span>
+            </label>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">Notes</Label>
+            <Textarea value={form.notes} onChange={e => set('notes', e.target.value)} className="bg-secondary border-border min-h-[60px]" placeholder="Any additional notes..." />
+          </div>
+
+          {/* Receipts */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-2 block">Receipts</Label>
+            {form.receiptUrls.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {form.receiptUrls.map(url => (
+                  <div key={url} className="relative group flex items-center gap-1.5 bg-secondary border border-border rounded-md px-2 py-1.5">
+                    {url.endsWith('.pdf')
+                      ? <FileText className="w-4 h-4 text-muted-foreground" />
+                      : <img src={url} alt="" className="w-8 h-8 object-cover rounded" />}
+                    <span className="text-xs text-muted-foreground truncate max-w-[80px]">{url.split('/').pop()}</span>
+                    <button onClick={() => handleRemoveReceipt(url)} className="ml-1 text-muted-foreground hover:text-destructive transition-colors">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="image/*,.pdf" multiple className="hidden" onChange={handleUpload} />
+            <Button variant="ghost" size="sm" onClick={() => fileRef.current?.click()} disabled={uploading} className="gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+              {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Paperclip className="w-3.5 h-3.5" />}
+              {uploading ? 'Uploading…' : 'Attach Receipt'}
+            </Button>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+            {expense ? 'Save Changes' : 'Add Expense'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

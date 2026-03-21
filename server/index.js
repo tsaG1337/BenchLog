@@ -95,9 +95,12 @@ app.use(express.static(path.join(__dirname, "../dist")));
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 // ─── Local file storage setup ───────────────────────────────────────
+const RECEIPTS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 // Serve uploaded images publicly (blog is public, so images are too)
 app.use('/files', express.static(UPLOADS_DIR));
+app.use('/receipts', express.static(RECEIPTS_DIR));
 
 // Multer: disk storage — always save as .jpg (sharp will process the content)
 const multerStorage = multer.diskStorage({
@@ -112,6 +115,23 @@ const upload = multer({
     allowed.includes(file.mimetype)
       ? cb(null, true)
       : cb(new Error('Only image files are allowed'));
+  },
+});
+
+// Multer for receipts — accepts images and PDFs
+const receiptStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, RECEIPTS_DIR),
+  filename: (req, file, cb) => {
+    const ext = file.mimetype === 'application/pdf' ? '.pdf' : '.jpg';
+    cb(null, `${uuidv4()}${ext}`);
+  },
+});
+const receiptUpload = multer({
+  storage: receiptStorage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only images and PDFs are allowed'));
   },
 });
 
@@ -161,6 +181,35 @@ db.exec(`
     image_urls TEXT DEFAULT '[]',
     published_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS expenses (
+    id TEXT PRIMARY KEY,
+    date TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    exchange_rate REAL NOT NULL DEFAULT 1.0,
+    amount_eur REAL NOT NULL,
+    description TEXT NOT NULL,
+    vendor TEXT DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    assembly_section TEXT DEFAULT '',
+    part_number TEXT DEFAULT '',
+    is_certification_relevant INTEGER DEFAULT 0,
+    receipt_urls TEXT DEFAULT '[]',
+    notes TEXT DEFAULT '',
+    tags TEXT DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS expense_budgets (
+    category TEXT PRIMARY KEY,
+    budget_amount REAL NOT NULL
   )
 `);
 
@@ -1171,6 +1220,166 @@ app.put('/api/flowchart-packages', requireAuth, (req, res) => {
   }
   setSetting('flowchart_packages', req.body);
   res.json({ ok: true });
+});
+
+// ─── Expenses API ────────────────────────────────────────────────────
+
+const EXPENSE_CATEGORIES = ['airframe','engine','avionics','landing-gear','paint','tools','certification','insurance','hangar','other'];
+
+function expenseRow(row) {
+  return {
+    id: row.id, date: row.date, amount: row.amount, currency: row.currency,
+    exchangeRate: row.exchange_rate, amountEur: row.amount_eur,
+    description: row.description, vendor: row.vendor || '',
+    category: row.category, assemblySection: row.assembly_section || '',
+    partNumber: row.part_number || '',
+    isCertificationRelevant: !!row.is_certification_relevant,
+    receiptUrls: JSON.parse(row.receipt_urls || '[]'),
+    notes: row.notes || '', tags: JSON.parse(row.tags || '[]'),
+    createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
+
+// GET /api/expenses
+app.get('/api/expenses', requireAuth, (req, res) => {
+  const { category, section, year, month, certification } = req.query;
+  let sql = 'SELECT * FROM expenses WHERE 1=1';
+  const params = [];
+  if (category) { sql += ' AND category = ?'; params.push(category); }
+  if (section) { sql += ' AND assembly_section = ?'; params.push(section); }
+  if (year) { sql += " AND strftime('%Y', date) = ?"; params.push(year); }
+  if (month) { sql += " AND strftime('%m', date) = ?"; params.push(month.padStart(2, '0')); }
+  if (certification === '1') { sql += ' AND is_certification_relevant = 1'; }
+  sql += ' ORDER BY date DESC, created_at DESC';
+  res.json(db.prepare(sql).all(...params).map(expenseRow));
+});
+
+// GET /api/expenses/stats
+app.get('/api/expenses/stats', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM expenses').all();
+  const totalEur = rows.reduce((s, r) => s + r.amount_eur, 0);
+  const byCategory = {};
+  const bySection = {};
+  for (const cat of EXPENSE_CATEGORIES) byCategory[cat] = 0;
+  for (const r of rows) {
+    byCategory[r.category] = (byCategory[r.category] || 0) + r.amount_eur;
+    if (r.assembly_section) bySection[r.assembly_section] = (bySection[r.assembly_section] || 0) + r.amount_eur;
+  }
+  const budgets = {};
+  for (const b of db.prepare('SELECT * FROM expense_budgets').all()) budgets[b.category] = b.budget_amount;
+  // Monthly totals for last 12 months
+  const monthly = db.prepare(`
+    SELECT strftime('%Y-%m', date) as month, SUM(amount_eur) as total
+    FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
+  `).all();
+  res.json({ totalEur, byCategory, bySection, budgets, monthly, count: rows.length });
+});
+
+// GET /api/expenses/export/csv
+app.get('/api/expenses/export/csv', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all();
+  const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes';
+  const lines = rows.map(r => [
+    r.date, `"${(r.description||'').replace(/"/g,'""')}"`, `"${(r.vendor||'').replace(/"/g,'""')}"`,
+    r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_eur.toFixed(2),
+    r.part_number || '', r.is_certification_relevant ? 'Yes' : 'No',
+    `"${(r.notes||'').replace(/"/g,'""')}"`
+  ].join(','));
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="expenses.csv"');
+  res.send([header, ...lines].join('\n'));
+});
+
+// GET /api/expenses/budgets
+app.get('/api/expenses/budgets', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM expense_budgets').all();
+  const budgets = {};
+  for (const r of rows) budgets[r.category] = r.budget_amount;
+  res.json(budgets);
+});
+
+// PUT /api/expenses/budgets
+app.put('/api/expenses/budgets', requireAuth, (req, res) => {
+  const budgets = req.body;
+  const upsert = db.prepare('INSERT OR REPLACE INTO expense_budgets (category, budget_amount) VALUES (?, ?)');
+  const del = db.prepare('DELETE FROM expense_budgets WHERE category = ?');
+  for (const cat of EXPENSE_CATEGORIES) {
+    if (budgets[cat] != null && budgets[cat] > 0) upsert.run(cat, budgets[cat]);
+    else del.run(cat);
+  }
+  res.json({ ok: true });
+});
+
+// GET /api/expenses/:id
+app.get('/api/expenses/:id', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  res.json(expenseRow(row));
+});
+
+// POST /api/expenses
+app.post('/api/expenses', requireAuth, (req, res) => {
+  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags } = req.body;
+  if (!date || !amount || !description) return res.status(400).json({ error: 'date, amount and description are required' });
+  const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const rate = exchangeRate || 1.0;
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_eur, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), now, now);
+  res.json({ ok: true, id });
+});
+
+// PUT /api/expenses/:id
+app.put('/api/expenses/:id', requireAuth, (req, res) => {
+  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags } = req.body;
+  const existing = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Not found' });
+  const rate = exchangeRate ?? existing.exchange_rate;
+  const amt = amount ?? existing.amount;
+  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_eur=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, updated_at=? WHERE id=?`)
+    .run(date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate, description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category, assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number, isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant, JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)), notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), new Date().toISOString(), req.params.id);
+  res.json({ ok: true });
+});
+
+// DELETE /api/expenses/:id
+app.delete('/api/expenses/:id', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT receipt_urls FROM expenses WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  for (const url of JSON.parse(row.receipt_urls || '[]')) {
+    try { const fp = path.join(RECEIPTS_DIR, path.basename(url)); if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+  }
+  db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// POST /api/expenses/upload — upload receipts (images + PDFs)
+app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), async (req, res) => {
+  try {
+    const urls = [];
+    for (const file of req.files) {
+      if (file.mimetype !== 'application/pdf') {
+        const buf = await sharp(file.path).rotate().resize(1920, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+        fs.writeFileSync(file.path, buf);
+      }
+      urls.push(`/receipts/${file.filename}`);
+    }
+    res.json({ urls });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/expenses/upload
+app.delete('/api/expenses/upload', requireAuth, (req, res) => {
+  const { url } = req.body;
+  try {
+    const fp = path.join(RECEIPTS_DIR, path.basename(url || ''));
+    if (fp && fs.existsSync(fp)) fs.unlinkSync(fp);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── OpenGraph meta tag injection ───────────────────────────────────

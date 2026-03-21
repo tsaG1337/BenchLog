@@ -260,3 +260,103 @@ export interface BuildStats {
 export async function fetchBuildStats(): Promise<BuildStats> {
   return request<BuildStats>('/api/stats');
 }
+
+// ─── Expenses ────────────────────────────────────────────────────────
+
+export const EXPENSE_CATEGORIES = [
+  { id: 'airframe',      label: 'Airframe',      icon: '✈️' },
+  { id: 'engine',        label: 'Engine',         icon: '⚙️' },
+  { id: 'avionics',      label: 'Avionics',       icon: '📡' },
+  { id: 'landing-gear',  label: 'Landing Gear',   icon: '🛞' },
+  { id: 'paint',         label: 'Paint & Finish',  icon: '🎨' },
+  { id: 'tools',         label: 'Tools',           icon: '🔧' },
+  { id: 'certification', label: 'Certification',   icon: '📋' },
+  { id: 'insurance',     label: 'Insurance',       icon: '🛡️' },
+  { id: 'hangar',        label: 'Hangar',          icon: '🏠' },
+  { id: 'other',         label: 'Other',           icon: '📦' },
+] as const;
+
+export const CURRENCIES = [
+  { code: 'EUR', symbol: '€', name: 'Euro' },
+  { code: 'USD', symbol: '$', name: 'US Dollar' },
+  { code: 'GBP', symbol: '£', name: 'British Pound' },
+  { code: 'CAD', symbol: 'CA$', name: 'Canadian Dollar' },
+  { code: 'AUD', symbol: 'AU$', name: 'Australian Dollar' },
+  { code: 'CHF', symbol: 'Fr.', name: 'Swiss Franc' },
+] as const;
+
+export interface Expense {
+  id: string;
+  date: string;
+  amount: number;
+  currency: string;
+  exchangeRate: number;
+  amountEur: number;
+  description: string;
+  vendor: string;
+  category: string;
+  assemblySection: string;
+  partNumber: string;
+  isCertificationRelevant: boolean;
+  receiptUrls: string[];
+  notes: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpenseStats {
+  totalEur: number;
+  byCategory: Record<string, number>;
+  bySection: Record<string, number>;
+  budgets: Record<string, number>;
+  monthly: { month: string; total: number }[];
+  count: number;
+}
+
+export async function fetchExpenses(filters?: { category?: string; section?: string; year?: string; month?: string; certification?: string }): Promise<Expense[]> {
+  const params = new URLSearchParams();
+  if (filters?.category) params.set('category', filters.category);
+  if (filters?.section) params.set('section', filters.section);
+  if (filters?.year) params.set('year', filters.year);
+  if (filters?.month) params.set('month', filters.month);
+  if (filters?.certification) params.set('certification', filters.certification);
+  const qs = params.toString();
+  return request<Expense[]>(`/api/expenses${qs ? `?${qs}` : ''}`);
+}
+
+export async function fetchExpenseStats(): Promise<ExpenseStats> {
+  return request<ExpenseStats>('/api/expenses/stats');
+}
+
+export async function createExpense(expense: Omit<Expense, 'id' | 'amountEur' | 'createdAt' | 'updatedAt'>): Promise<{ ok: boolean; id: string }> {
+  return request('/api/expenses', { method: 'POST', body: JSON.stringify(expense) });
+}
+
+export async function updateExpense(id: string, expense: Partial<Expense>): Promise<void> {
+  await request(`/api/expenses/${id}`, { method: 'PUT', body: JSON.stringify(expense) });
+}
+
+export async function deleteExpense(id: string): Promise<void> {
+  await request(`/api/expenses/${id}`, { method: 'DELETE' });
+}
+
+export async function fetchExpenseBudgets(): Promise<Record<string, number>> {
+  return request<Record<string, number>>('/api/expenses/budgets');
+}
+
+export async function updateExpenseBudgets(budgets: Record<string, number>): Promise<void> {
+  await request('/api/expenses/budgets', { method: 'PUT', body: JSON.stringify(budgets) });
+}
+
+export async function uploadReceipts(files: FileList): Promise<string[]> {
+  const formData = new FormData();
+  for (const file of Array.from(files)) formData.append('files', file);
+  const res = await fetch(`${API_URL}/api/expenses/upload`, { method: 'POST', headers: { ...getAuthHeaders() }, body: formData });
+  if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || res.statusText); }
+  return (await res.json()).urls;
+}
+
+export async function deleteReceipt(url: string): Promise<void> {
+  await request('/api/expenses/upload', { method: 'DELETE', body: JSON.stringify({ url }) });
+}

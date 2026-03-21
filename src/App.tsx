@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { fetchGeneralSettings } from "@/lib/api";
 import Index from "./pages/Index";
 import BlogPage from "./pages/BlogPage";
+import ExpensesPage from "./pages/ExpensesPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/NotFound";
 
@@ -58,6 +59,7 @@ const App = () => (
                 <Route path="/login" element={<LoginRoute />} />
                 <Route path="/" element={<RootRedirect />} />
                 <Route path="/tracker" element={<ProtectedRoute><Index /></ProtectedRoute>} />
+                <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
                 <Route path="/blog" element={<BlogPage />} />
                 <Route path="/blog/:postId" element={<BlogPage />} />
                 <Route path="*" element={<NotFound />} />

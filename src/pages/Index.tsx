@@ -9,7 +9,7 @@ import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info } from 'lucide-react';
+import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -210,6 +210,11 @@ const Index = () => {
               <DropdownMenuItem asChild>
                 <Link to="/blog" className="flex items-center w-full">
                   <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <Link to="/expenses" className="flex items-center w-full">
+                  <Wallet className="w-4 h-4 mr-2" /> Expenses
                 </Link>
               </DropdownMenuItem>
                       <DropdownMenuSeparator />
