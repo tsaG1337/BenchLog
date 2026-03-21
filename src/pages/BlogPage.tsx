@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
@@ -24,7 +23,7 @@ export default function BlogPage() {
   const [projectName, setProjectName] = useState('Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stats, setStats] = useState<BuildStats | null>(null);
-  const { isAuthenticated, demoMode } = useAuth();
+  const { isAuthenticated, demoMode, logout } = useAuth();
 
   const loadPosts = useCallback(async () => {
     try {
@@ -96,11 +95,6 @@ export default function BlogPage() {
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold text-foreground tracking-tight truncate">{projectName} — Blog</h1>
           </div>
-          {/* Sidebar toggle (mobile only) */}
-          <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
-            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </Button>
-
           {/* Action dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -109,12 +103,16 @@ export default function BlogPage() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
+              {/* Sidebar toggle — mobile only */}
+              <DropdownMenuItem className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
+                {sidebarOpen ? <><X className="w-4 h-4 mr-2" /> Close sidebar</> : <><Menu className="w-4 h-4 mr-2" /> Sections & Archive</>}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="lg:hidden" />
               {isAuthenticated && (
                 <DropdownMenuItem onClick={() => { setActivePost(null); setView('editor'); }}>
                   <PenSquare className="w-4 h-4 mr-2" /> New Post
                 </DropdownMenuItem>
               )}
-              {isAuthenticated && <DropdownMenuSeparator />}
               <DropdownMenuItem asChild>
                 <Link to={isAuthenticated ? '/' : '/login'} state={{ from: '/blog' }} className="flex items-center w-full">
                   {isAuthenticated
@@ -122,6 +120,14 @@ export default function BlogPage() {
                     : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
                 </Link>
               </DropdownMenuItem>
+              {isAuthenticated && !demoMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
+                    <LogOut className="w-4 h-4 mr-2" /> Sign out
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
