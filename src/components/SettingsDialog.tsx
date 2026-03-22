@@ -27,14 +27,13 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'mqtt' | 'data' | 'integrations' | 'debug';
+type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'data' | 'integrations' | 'debug';
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'general',      label: 'General',      icon: Type },
   { id: 'appearance',   label: 'Appearance',   icon: Sun },
   { id: 'expenses',     label: 'Expenses',     icon: Wallet },
   { id: 'sections',     label: 'Sections',     icon: Layers },
-  { id: 'mqtt',         label: 'MQTT',         icon: Wifi },
   { id: 'data',         label: 'Data',         icon: Database },
   { id: 'integrations', label: 'Integrations', icon: Smartphone },
   { id: 'debug',        label: 'Debug',        icon: Bug },
@@ -391,66 +390,6 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
               </div>
             </>}
 
-            {/* ── MQTT ────────────────────────────────────────── */}
-            {activeTab === 'mqtt' && <>
-              <div className="flex items-center justify-between">
-                <div>
-                  <Label className="text-sm font-medium">MQTT Publishing</Label>
-                  <p className="text-xs text-muted-foreground/60 mt-0.5">Publish build stats to an MQTT broker (e.g. Home Assistant)</p>
-                </div>
-                <Switch checked={mqtt.enabled} onCheckedChange={checked => setMqtt({ ...mqtt, enabled: checked })} />
-              </div>
-              {mqtt.enabled && <>
-                <Separator />
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1 block">Broker URL</Label>
-                  <Input placeholder="mqtt://192.168.1.2:1883" value={mqtt.brokerUrl}
-                    onChange={e => setMqtt({ ...mqtt, brokerUrl: e.target.value })}
-                    className="bg-secondary border-border font-mono text-sm" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-1 block">Username</Label>
-                    <Input placeholder="(optional)" value={mqtt.username}
-                      onChange={e => setMqtt({ ...mqtt, username: e.target.value })}
-                      className="bg-secondary border-border text-sm" />
-                  </div>
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-1 block">Password</Label>
-                    <Input type="password" placeholder="(optional)" value={mqtt.password}
-                      onChange={e => setMqtt({ ...mqtt, password: e.target.value })}
-                      className="bg-secondary border-border text-sm" />
-                  </div>
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground mb-1 block">Topic Prefix</Label>
-                  <Input placeholder="mybuild/stats" value={mqtt.topicPrefix}
-                    onChange={e => setMqtt({ ...mqtt, topicPrefix: e.target.value })}
-                    className="bg-secondary border-border font-mono text-sm" />
-                  <p className="text-xs text-muted-foreground/60 mt-1">
-                    Topics: {mqtt.topicPrefix || 'mybuild/stats'}/total_hours, …/fuselage, …/wings, etc.
-                  </p>
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label className="text-sm">Home Assistant Auto-Discovery</Label>
-                    <p className="text-xs text-muted-foreground/60">Publishes discovery configs so sensors appear automatically in HA</p>
-                  </div>
-                  <Switch checked={mqtt.haDiscovery} onCheckedChange={checked => setMqtt({ ...mqtt, haDiscovery: checked })} />
-                </div>
-                {mqtt.haDiscovery && (
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-1 block">Discovery Prefix</Label>
-                    <Input placeholder="homeassistant" value={mqtt.haDiscoveryPrefix}
-                      onChange={e => setMqtt({ ...mqtt, haDiscoveryPrefix: e.target.value })}
-                      className="bg-secondary border-border font-mono text-sm" />
-                    <p className="text-xs text-muted-foreground/60 mt-1">Default is "homeassistant". Only change if you customized HA's discovery prefix.</p>
-                  </div>
-                )}
-              </>}
-            </>}
-
             {/* ── Integrations ────────────────────────────────── */}
             {activeTab === 'integrations' && (() => {
               const baseUrl = window.location.origin;
@@ -523,6 +462,69 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                     </ol>
                     <p className="text-xs text-muted-foreground/60 mt-3">The timer will start in the section used in the most recent session (or Empennage if no sessions exist). Fill in notes and details later from the computer.</p>
                   </div>
+
+                  <Separator />
+
+                  <div>
+                    <h3 className="text-sm font-medium mb-1 flex items-center gap-2"><Wifi className="w-4 h-4" /> MQTT Publishing</h3>
+                    <p className="text-xs text-muted-foreground mb-4">Publish build stats to an MQTT broker after every session (e.g. Home Assistant).</p>
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label className="text-xs text-muted-foreground block">Enable MQTT</Label>
+                          <p className="text-xs text-muted-foreground/60">Publish stats after each session</p>
+                        </div>
+                        <Switch checked={mqtt.enabled} onCheckedChange={checked => setMqtt({ ...mqtt, enabled: checked })} />
+                      </div>
+                      {mqtt.enabled && <>
+                        <div>
+                          <Label className="text-xs text-muted-foreground mb-1 block">Broker URL</Label>
+                          <Input placeholder="mqtt://192.168.1.2:1883" value={mqtt.brokerUrl}
+                            onChange={e => setMqtt({ ...mqtt, brokerUrl: e.target.value })}
+                            className="bg-secondary border-border font-mono text-sm" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground mb-1 block">Username</Label>
+                            <Input placeholder="(optional)" value={mqtt.username}
+                              onChange={e => setMqtt({ ...mqtt, username: e.target.value })}
+                              className="bg-secondary border-border text-sm" />
+                          </div>
+                          <div>
+                            <Label className="text-xs text-muted-foreground mb-1 block">Password</Label>
+                            <Input type="password" placeholder="(optional)" value={mqtt.password}
+                              onChange={e => setMqtt({ ...mqtt, password: e.target.value })}
+                              className="bg-secondary border-border text-sm" />
+                          </div>
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground mb-1 block">Topic Prefix</Label>
+                          <Input placeholder="mybuild/stats" value={mqtt.topicPrefix}
+                            onChange={e => setMqtt({ ...mqtt, topicPrefix: e.target.value })}
+                            className="bg-secondary border-border font-mono text-sm" />
+                          <p className="text-xs text-muted-foreground/60 mt-1">
+                            Topics: {mqtt.topicPrefix || 'mybuild/stats'}/total_hours, …/fuselage, …/wings, etc.
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <Label className="text-xs text-muted-foreground block">Home Assistant Auto-Discovery</Label>
+                            <p className="text-xs text-muted-foreground/60">Sensors appear in HA automatically without YAML</p>
+                          </div>
+                          <Switch checked={mqtt.haDiscovery} onCheckedChange={checked => setMqtt({ ...mqtt, haDiscovery: checked })} />
+                        </div>
+                        {mqtt.haDiscovery && (
+                          <div>
+                            <Label className="text-xs text-muted-foreground mb-1 block">Discovery Prefix</Label>
+                            <Input placeholder="homeassistant" value={mqtt.haDiscoveryPrefix}
+                              onChange={e => setMqtt({ ...mqtt, haDiscoveryPrefix: e.target.value })}
+                              className="bg-secondary border-border font-mono text-sm" />
+                            <p className="text-xs text-muted-foreground/60 mt-1">Default is "homeassistant". Only change if you customized HA's discovery prefix.</p>
+                          </div>
+                        )}
+                      </>}
+                    </div>
+                  </div>
                 </div>
               );
             })()}
@@ -548,7 +550,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
           <Button onClick={handleSave} disabled={saving} className="flex-1">
             {saving ? 'Saving…' : 'Save Settings'}
           </Button>
-          {mqtt.enabled && activeTab === 'mqtt' && (
+          {mqtt.enabled && activeTab === 'integrations' && (
             <Button variant="outline" onClick={handleTest} disabled={testing} className="gap-2">
               <Send className="w-4 h-4" />
               {testing ? 'Publishing…' : 'Test MQTT'}
