@@ -16,11 +16,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   });
+  const text = await res.text();
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    let message = res.statusText;
+    try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
+    throw new Error(message);
   }
-  return res.json();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const preview = text.slice(0, 120).replace(/\n/g, ' ');
+    throw new Error(`Server returned non-JSON (${res.status}): ${preview}`);
+  }
 }
 
 export async function fetchSessions(): Promise<WorkSession[]> {

@@ -77,8 +77,14 @@ const DEFAULT_SECTIONS = [
 const SERVER_LOG_BUFFER = [];
 const SERVER_LOG_LIMIT = 500;
 
+function safeStringify(a) {
+  if (typeof a === 'string') return a;
+  if (a instanceof Error) return a.stack || a.message;
+  try { return JSON.stringify(a); } catch { return String(a); }
+}
+
 function appendServerLog(level, args) {
-  const message = args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.stack || a.message : JSON.stringify(a))).join(' ');
+  const message = args.map(safeStringify).join(' ');
   SERVER_LOG_BUFFER.push({ ts: Date.now(), level, message });
   if (SERVER_LOG_BUFFER.length > SERVER_LOG_LIMIT) SERVER_LOG_BUFFER.shift();
 }
