@@ -239,7 +239,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
               <div className="flex flex-wrap gap-2 mb-2">
                 {form.receiptUrls.map(url => (
                   <div key={url} className="relative group flex items-center gap-1.5 bg-secondary border border-border rounded-md px-2 py-1.5">
-                    {url.endsWith('.pdf') ? (
+                    {url.toLowerCase().endsWith('.pdf') ? (
                       <button
                         type="button"
                         className="flex items-center gap-1.5 hover:opacity-70 transition-opacity"
@@ -258,7 +258,10 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
                       </button>
                     ) : (
                       <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:opacity-70 transition-opacity">
-                        <img src={url} alt="" className="w-8 h-8 object-cover rounded" />
+                        <img src={url} alt="" className="w-8 h-8 object-cover rounded"
+                          onError={e => { const t = e.currentTarget; t.style.display = 'none'; t.nextElementSibling?.classList.remove('hidden'); }}
+                        />
+                        <FileText className="w-4 h-4 text-muted-foreground hidden" />
                         <span className="text-xs text-muted-foreground truncate max-w-[80px]">{(() => { const r = url.split('/').pop() ?? ''; const s = r.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, ''); return decodeURIComponent(s || r); })()}</span>
                       </a>
                     )}
