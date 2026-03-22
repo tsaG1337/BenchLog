@@ -220,13 +220,13 @@ db.exec(`
 `);
 try { db.exec(`ALTER TABLE expenses ADD COLUMN link TEXT DEFAULT ''`); } catch {} // no-op if already exists
 
-// Migration: rename amount_home → amount_home for existing databases
+// Migration: rename amount_eur → amount_home for existing databases
 {
   const cols = db.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
-  if (cols.includes('amount_home') && !cols.includes('amount_home')) {
+  if (cols.includes('amount_eur') && !cols.includes('amount_home')) {
     db.exec('ALTER TABLE expenses ADD COLUMN amount_home REAL NOT NULL DEFAULT 0');
-    db.exec('UPDATE expenses SET amount_home = amount_home');
-    console.log('[migration] Copied amount_home → amount_home for', db.prepare('SELECT COUNT(*) as n FROM expenses').get().n, 'rows');
+    db.exec('UPDATE expenses SET amount_home = amount_eur');
+    console.log('[migration] Copied amount_eur → amount_home for', db.prepare('SELECT COUNT(*) as n FROM expenses').get().n, 'rows');
   }
 }
 
