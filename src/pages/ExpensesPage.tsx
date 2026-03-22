@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut } from 'lucide-react';
+import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -436,7 +436,37 @@ export default function ExpensesPage() {
                           <td className="px-4 py-3 text-right font-medium whitespace-nowrap">{fmtEur(exp.amountEur)}</td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1 justify-end">
-                              {exp.receiptUrls.length > 0 && <span className="text-xs text-muted-foreground">📎{exp.receiptUrls.length}</span>}
+                              {exp.receiptUrls.length > 0 && (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <button className="p-1 text-muted-foreground hover:text-foreground transition-colors relative">
+                                      <Paperclip className="w-3.5 h-3.5" />
+                                      <span className="absolute -top-1 -right-1 text-[9px] leading-none bg-primary text-primary-foreground rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+                                        {exp.receiptUrls.length}
+                                      </span>
+                                    </button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-56">
+                                    {exp.receiptUrls.map(url => {
+                                      const isPdf = url.toLowerCase().endsWith('.pdf');
+                                      const name = decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? url);
+                                      return (
+                                        <DropdownMenuItem key={url} asChild={!isPdf} onClick={isPdf ? async () => {
+                                          const token = localStorage.getItem('auth_token');
+                                          const res = await fetch(`${API_URL}${url}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                                          if (!res.ok) { toast.error('Could not open file'); return; }
+                                          window.open(URL.createObjectURL(await res.blob()), '_blank');
+                                        } : undefined}>
+                                          {isPdf
+                                            ? <span className="flex items-center gap-2 w-full"><FileText className="w-3.5 h-3.5 shrink-0" /><span className="truncate text-xs">{name}</span></span>
+                                            : <a href={`${API_URL}${url}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 w-full"><Image className="w-3.5 h-3.5 shrink-0" /><span className="truncate text-xs">{name}</span></a>
+                                          }
+                                        </DropdownMenuItem>
+                                      );
+                                    })}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              )}
                               <button onClick={() => openEdit(exp)} className="p-1 text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
                               <button onClick={() => handleDelete(exp.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
                             </div>
