@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
@@ -16,6 +16,7 @@ import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
   fetchSections, updateSections, CURRENCIES,
+  fetchWebhookKey, regenerateWebhookKey,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -26,16 +27,17 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'mqtt' | 'data' | 'debug';
+type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'mqtt' | 'data' | 'integrations' | 'debug';
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'general',    label: 'General',    icon: Type },
-  { id: 'appearance', label: 'Appearance', icon: Sun },
-  { id: 'expenses',   label: 'Expenses',   icon: Wallet },
-  { id: 'sections',   label: 'Sections',   icon: Layers },
-  { id: 'mqtt',       label: 'MQTT',       icon: Wifi },
-  { id: 'data',       label: 'Data',       icon: Database },
-  { id: 'debug',      label: 'Debug',      icon: Bug },
+  { id: 'general',      label: 'General',      icon: Type },
+  { id: 'appearance',   label: 'Appearance',   icon: Sun },
+  { id: 'expenses',     label: 'Expenses',     icon: Wallet },
+  { id: 'sections',     label: 'Sections',     icon: Layers },
+  { id: 'mqtt',         label: 'MQTT',         icon: Wifi },
+  { id: 'data',         label: 'Data',         icon: Database },
+  { id: 'integrations', label: 'Integrations', icon: Smartphone },
+  { id: 'debug',        label: 'Debug',        icon: Bug },
 ];
 
 export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved, open: controlledOpen, onOpenChange: controlledOnOpenChange }: SettingsDialogProps) {
@@ -53,6 +55,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [sections, setSections] = useState<SectionConfig[]>([]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [webhookKey, setWebhookKey] = useState('');
+  const [webhookKeyLoading, setWebhookKeyLoading] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -61,6 +66,31 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
       fetchSections().then(setSections).catch(() => setSections([...contextSections]));
     }
   }, [open, contextSections]);
+
+  useEffect(() => {
+    if (open && activeTab === 'integrations' && !webhookKey) {
+      setWebhookKeyLoading(true);
+      fetchWebhookKey().then(setWebhookKey).catch(() => {}).finally(() => setWebhookKeyLoading(false));
+    }
+  }, [open, activeTab]);
+
+  const handleRegenerateKey = async () => {
+    setWebhookKeyLoading(true);
+    try {
+      const key = await regenerateWebhookKey();
+      setWebhookKey(key);
+      toast.success('Webhook key regenerated');
+    } catch (err: any) {
+      toast.error('Failed to regenerate key: ' + err.message);
+    }
+    setWebhookKeyLoading(false);
+  };
+
+  const copyToClipboard = (text: string, field: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -393,6 +423,82 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 )}
               </>}
             </>}
+
+            {/* ── Integrations ────────────────────────────────── */}
+            {activeTab === 'integrations' && (() => {
+              const baseUrl = window.location.origin;
+              const startUrl = `${baseUrl}/api/webhook/timer/start?key=${webhookKey}`;
+              const stopUrl = `${baseUrl}/api/webhook/timer/stop?key=${webhookKey}`;
+              const CopyBtn = ({ text, field }: { text: string; field: string }) => (
+                <button
+                  onClick={() => copyToClipboard(text, field)}
+                  className="shrink-0 p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+                  title="Copy"
+                >
+                  {copiedField === field ? <CheckCheck className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              );
+              return (
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-medium mb-1 flex items-center gap-2"><Smartphone className="w-4 h-4" /> Siri Shortcuts</h3>
+                    <p className="text-xs text-muted-foreground mb-4">Use these URLs in iOS Shortcuts to start and stop the timer via Siri — no login required. The key is permanent and never expires.</p>
+
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">API Key</Label>
+                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                          <code className="flex-1 text-xs font-mono break-all text-foreground">
+                            {webhookKeyLoading ? 'Loading…' : (webhookKey || '—')}
+                          </code>
+                          <CopyBtn text={webhookKey} field="key" />
+                          <button
+                            onClick={handleRegenerateKey}
+                            disabled={webhookKeyLoading}
+                            className="shrink-0 p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+                            title="Regenerate key"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${webhookKeyLoading ? 'animate-spin' : ''}`} />
+                          </button>
+                        </div>
+                        <p className="text-xs text-muted-foreground/60 mt-1">Regenerating invalidates the old key immediately.</p>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Start Timer URL</Label>
+                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                          <code className="flex-1 text-xs font-mono break-all text-foreground">{webhookKey ? startUrl : '—'}</code>
+                          {webhookKey && <CopyBtn text={startUrl} field="start" />}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Stop Timer URL</Label>
+                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                          <code className="flex-1 text-xs font-mono break-all text-foreground">{webhookKey ? stopUrl : '—'}</code>
+                          {webhookKey && <CopyBtn text={stopUrl} field="stop" />}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <h3 className="text-sm font-medium mb-2">iOS Shortcut Setup</h3>
+                    <ol className="space-y-2 text-xs text-muted-foreground list-decimal list-inside">
+                      <li>Open the <strong className="text-foreground">Shortcuts</strong> app on your iPhone or iPad.</li>
+                      <li>Tap <strong className="text-foreground">+</strong> to create a new shortcut.</li>
+                      <li>Add a <strong className="text-foreground">"Get Contents of URL"</strong> action.</li>
+                      <li>Paste the <strong className="text-foreground">Start Timer URL</strong> above as the URL.</li>
+                      <li>Tap <strong className="text-foreground">Add to Siri</strong> and record a phrase like <em>"Start build session"</em>.</li>
+                      <li>Repeat steps 2–5 for the Stop Timer URL with a phrase like <em>"Stop build session"</em>.</li>
+                    </ol>
+                    <p className="text-xs text-muted-foreground/60 mt-3">The timer will start in the section used in the most recent session (or Empennage if no sessions exist). Fill in notes and details later from the computer.</p>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ── Debug ───────────────────────────────────────── */}
             {activeTab === 'debug' && <DiagnosticsPanel />}

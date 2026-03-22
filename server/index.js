@@ -53,6 +53,14 @@ function requireAuth(req, res, next) {
   next();
 }
 
+function requireWebhookKey(req, res, next) {
+  const key = req.query.key || req.headers['x-webhook-key'];
+  if (!key) return res.status(401).json({ error: 'Missing webhook key' });
+  const stored = getSetting('webhook_api_key', null);
+  if (!stored || key !== stored) return res.status(401).json({ error: 'Invalid webhook key' });
+  next();
+}
+
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
@@ -1657,6 +1665,63 @@ app.get('/api/debug/stats', requireAuth, (req, res) => {
 app.get('/api/debug/logs', requireAuth, (req, res) => {
   const since = parseInt(req.query.since) || 0;
   res.json(since ? SERVER_LOG_BUFFER.filter(e => e.ts > since) : SERVER_LOG_BUFFER);
+});
+
+// ─── Webhook API Key management ──────────────────────────────────────
+app.get('/api/settings/webhook-key', requireAuth, (req, res) => {
+  let key = getSetting('webhook_api_key', null);
+  if (!key) {
+    key = crypto.randomBytes(32).toString('hex');
+    setSetting('webhook_api_key', key);
+    console.log('[webhook] Generated new API key');
+  }
+  res.json({ key });
+});
+
+app.post('/api/settings/webhook-key/regenerate', requireAuth, (req, res) => {
+  const key = crypto.randomBytes(32).toString('hex');
+  setSetting('webhook_api_key', key);
+  console.log('[webhook] Regenerated API key');
+  res.json({ key });
+});
+
+// ─── Webhook Timer endpoints (no JWT — use permanent API key) ─────────
+// GET/POST /api/webhook/timer/start?key=<key>
+app.all('/api/webhook/timer/start', requireWebhookKey, (req, res) => {
+  // Use section from query/body, else last used section, else 'empennage'
+  const requestedSection = (req.query.section || req.body?.section || '').trim();
+  let section = requestedSection;
+  if (!section) {
+    const lastSession = db.prepare('SELECT section FROM sessions ORDER BY end_time DESC LIMIT 1').get();
+    section = lastSession ? lastSession.section : 'empennage';
+  }
+
+  const startTime = new Date().toISOString();
+  db.prepare('DELETE FROM active_timer').run();
+  db.prepare('INSERT INTO active_timer (id, section, start_time) VALUES (1, ?, ?)').run(section, startTime);
+  console.log(`[webhook] Timer started — section: ${section}`);
+  res.json({ ok: true, section, startedAt: startTime });
+});
+
+// GET/POST /api/webhook/timer/stop?key=<key>
+app.all('/api/webhook/timer/stop', requireWebhookKey, (req, res) => {
+  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
+  if (!row) return res.status(404).json({ error: 'No active timer' });
+
+  const endTime = new Date();
+  const startTime = new Date(row.start_time);
+  const durationMinutes = (endTime - startTime) / (1000 * 60);
+  const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  db.prepare(`
+    INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, '', null, JSON.stringify([]));
+
+  db.prepare('DELETE FROM active_timer WHERE id = 1').run();
+  publishMqttStats();
+  console.log(`[webhook] Timer stopped — section: ${row.section}, duration: ${durationMinutes.toFixed(1)} min`);
+  res.json({ ok: true, sessionId, durationMinutes, section: row.section });
 });
 
 // ─── Start ──────────────────────────────────────────────────────────

@@ -439,3 +439,14 @@ export async function fetchDebugLogs(since?: number): Promise<ServerLogEntry[]> 
   const qs = since ? `?since=${since}` : '';
   return request<ServerLogEntry[]>(`/api/debug/logs${qs}`);
 }
+
+// ─── Webhook / Integrations ──────────────────────────────────────────
+export async function fetchWebhookKey(): Promise<string> {
+  const data = await request<{ key: string }>('/api/settings/webhook-key');
+  return data.key;
+}
+
+export async function regenerateWebhookKey(): Promise<string> {
+  const data = await request<{ key: string }>('/api/settings/webhook-key/regenerate', { method: 'POST' });
+  return data.key;
+}
