@@ -1573,6 +1573,12 @@ app.get('/api/debug/stats', requireAuth, (req, res) => {
   });
 });
 
+// ─── Debug logs endpoint ─────────────────────────────────────────────
+app.get('/api/debug/logs', requireAuth, (req, res) => {
+  const since = parseInt(req.query.since) || 0;
+  res.json(since ? SERVER_LOG_BUFFER.filter(e => e.ts > since) : SERVER_LOG_BUFFER);
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
 app.get("*", (_req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
@@ -1586,11 +1592,6 @@ app.get("*", (_req, res) => {
     pageUrl: null,
   });
   res.type('html').send(injected);
-});
-// ─── Debug logs endpoint ─────────────────────────────────────────────
-app.get('/api/debug/logs', requireAuth, (req, res) => {
-  const since = parseInt(req.query.since) || 0;
-  res.json(since ? SERVER_LOG_BUFFER.filter(e => e.ts > since) : SERVER_LOG_BUFFER);
 });
 
 // ─── Global error handler (logs uncaught route errors) ───────────────
