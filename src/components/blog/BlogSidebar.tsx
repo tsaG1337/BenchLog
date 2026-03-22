@@ -141,11 +141,11 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
         </div>
       </div>
 
-      {/* Activity Heatmap */}
-      {showActivity && <ActivityHeatmap compact />}
-
       {/* Build Progress Flowchart */}
       <BuildFlowchart projectName={projectName} onPlansSectionFilter={plansSection => onFilterChange({ plansSection })} />
+
+      {/* Activity Heatmap */}
+      {showActivity && <ActivityHeatmap compact />}
     </aside>
   );
 }
