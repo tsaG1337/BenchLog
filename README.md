@@ -66,6 +66,24 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 
 ---
 
+### 💰 Expense Tracker
+
+Track every euro (or dollar) spent on the build, from raw materials to tools to certification fees.
+
+- **Multi-currency support** — log expenses in EUR, USD, GBP, CAD, AUD, or CHF; all amounts are converted to your configured home currency for totals and reporting
+- **Flexible currency conversion** — enter the exchange rate directly, or just the total you were charged in your home currency and let the app back-calculate the rate
+- **10 expense categories** — Airframe, Engine, Avionics, Landing Gear, Paint & Finish, Tools, Certification, Insurance, Hangar, Other
+- **Assembly section tagging** — link each expense to the build section it belongs to
+- **Part number field** — for cross-referencing with the manufacturer's plans
+- **LBA/EASA certification flag** — mark items relevant for airworthiness documentation and filter them separately
+- **Receipt attachments** — attach images and PDFs per expense; stored server-side alongside session photos
+- **Budget tracking** — set a per-category budget; dashboard shows progress bars and remaining amounts
+- **Filtering** — filter by category, assembly section, or certification relevance
+- **CSV and PDF export** — CSV for spreadsheets; PDF report with a formatted summary, category breakdown, and full itemized list sorted by date; suitable for accountants or certification paperwork
+- **Included in backups** — expenses and receipts are part of the ZIP export/import
+
+---
+
 ### ⚙️ Settings
 
 - **Project name** and **target build hours** (default: 2500h for an RV-10)
@@ -73,15 +91,40 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 - **Image resizing** — configure maximum upload width or disable resizing entirely
 - **Assembly Sections** — add, remove, reorder, and set emoji icons; toggle whether a section counts toward total build hours
 - **Theme** — Light, Dark, or system default (Auto)
+- **Home Currency** — set the currency used as the base for expense conversion (default: EUR)
+- **Blog Visibility** — individually toggle the activity heatmap, build stats bar, and progress bar on the public blog
 - **MQTT publishing** — publish build stats to any MQTT broker after every session:
   - Total hours, progress %, session count, last session images
   - Per-section hours (one topic per section)
 - **Home Assistant Auto-Discovery** — sensors appear in HA automatically without YAML configuration
-- **Export / Import** — full JSON backup and restore including sessions, settings, flowchart state, and base64-embedded images
+- **Export / Import** — full ZIP backup and restore including sessions, expenses, blog posts, settings, and all uploaded files
+- **Integrations** — generate a permanent webhook API key for use with Siri Shortcuts or any HTTP client (see below)
 
 | General Settings | MQTT & Export |
 |---|---|
 | ![Settings](docs/screenshots/settings.PNG) | ![MQTT](docs/screenshots/mqtt.PNG) |
+
+---
+
+### 🍎 Siri Shortcuts Integration
+
+Start and stop the build timer hands-free using Siri on iPhone or iPad — no login required.
+
+A permanent webhook API key (Settings → Integrations) gives access to two unauthenticated endpoints:
+
+| Method | Path | Description |
+|---|---|---|
+| GET\|POST | `/api/webhook/timer/start?key=<key>` | Start the timer; defaults to the last used section (or Empennage) |
+| GET\|POST | `/api/webhook/timer/stop?key=<key>` | Stop the timer and save the session |
+
+**iOS Shortcuts setup:**
+
+1. Open the **Shortcuts** app → tap **+** → add a *Get Contents of URL* action
+2. Paste the **Start Timer URL** from Settings → Integrations
+3. Tap **Add to Siri** and record a phrase, e.g. *"Start build session"*
+4. Repeat for the Stop Timer URL with a phrase like *"Stop build session"*
+
+Notes and section details can be filled in later from the computer.
 
 ---
 
@@ -244,13 +287,32 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 | GET | `/api/settings/mqtt` | Get MQTT settings |
 | PUT | `/api/settings/mqtt` | Update MQTT settings |
 | POST | `/api/settings/mqtt/test` | Publish a test MQTT message |
+| GET | `/api/settings/webhook-key` | Get the current webhook API key (auto-generates on first call) |
+| POST | `/api/settings/webhook-key/regenerate` | Regenerate the webhook API key |
 | PUT | `/api/sections` | Update assembly section configuration |
 | PUT | `/api/flowchart-status` | Update build progress statuses |
 | PUT | `/api/flowchart-packages` | Update build progress package tree |
-| GET | `/api/export` | Export full backup (JSON with embedded images) |
-| POST | `/api/import` | Restore from a backup |
+| GET | `/api/expenses` | List expenses (filterable) |
+| POST | `/api/expenses` | Create an expense |
+| PUT | `/api/expenses/:id` | Update an expense |
+| DELETE | `/api/expenses/:id` | Delete an expense |
+| GET | `/api/expenses/stats` | Expense totals, by-category breakdown, monthly trend |
+| GET | `/api/expenses/budgets` | Get category budgets |
+| PUT | `/api/expenses/budgets` | Update category budgets |
+| GET | `/api/expenses/export/csv` | Download all expenses as CSV |
+| POST | `/api/expenses/upload` | Upload a receipt (image or PDF) |
+| DELETE | `/api/expenses/upload` | Delete a receipt |
+| GET | `/api/export` | Export full backup (ZIP with all data and files) |
+| POST | `/api/import` | Restore from a backup (ZIP or legacy JSON) |
 | POST | `/api/auth/login` | Authenticate and receive a JWT |
 | POST | `/api/auth/setup` | Set the initial password (first run only) |
+
+### Webhook endpoints (API key required — no JWT)
+
+| Method | Path | Description |
+|---|---|---|
+| GET\|POST | `/api/webhook/timer/start?key=<key>` | Start the timer (defaults to last used section) |
+| GET\|POST | `/api/webhook/timer/stop?key=<key>` | Stop the timer and save the session |
 
 ---
 
@@ -263,7 +325,7 @@ volumes:
   - ./data:/data
 ```
 
-Uploaded images are stored inside the `/data` volume alongside the database, so a single volume mount covers everything. The Export function embeds all images as base64 in the JSON backup so you can restore everything from a single file.
+Uploaded images are stored inside the `/data` volume alongside the database, so a single volume mount covers everything. The Export function produces a ZIP archive containing all sessions, expenses, blog posts, settings, and uploaded files — a single file that covers a complete restore.
 
 ---
 
