@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet } from 'lucide-react';
+import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet, Info } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { AboutDialog } from '@/components/AboutDialog';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
 import { BlogPostCard } from '@/components/blog/BlogPostCard';
 import { BlogPostView } from '@/components/blog/BlogPostView';
@@ -24,6 +25,7 @@ export default function BlogPage() {
   const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string; plansSection?: string }>({});
   const [projectName, setProjectName] = useState('Build Tracker');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [stats, setStats] = useState<BuildStats | null>(null);
   const { isAuthenticated, demoMode, logout } = useAuth();
 
@@ -176,6 +178,11 @@ export default function BlogPage() {
                   </DropdownMenuItem>
                 </>
               )}
+              {/* About */}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setShowAbout(true)}>
+                <Info className="w-4 h-4 mr-2" /> About
+              </DropdownMenuItem>
               {/* Sign out */}
               {isAuthenticated && !demoMode && (
                 <>
@@ -273,6 +280,7 @@ export default function BlogPage() {
           </div>
         </div>
       </div>
+      <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
     </div>
   );
 }

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image } from 'lucide-react';
+import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/contexts/AuthContext';
+import { AboutDialog } from '@/components/AboutDialog';
 import { fetchExpenses, fetchExpenseStats, createExpense, updateExpense, deleteExpense, updateExpenseBudgets, EXPENSE_CATEGORIES, CURRENCIES, Expense, ExpenseStats } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { ExpenseForm } from '@/components/expenses/ExpenseForm';
@@ -26,6 +27,7 @@ function CategoryBadge({ category }: { category: string }) {
 export default function ExpensesPage() {
   const { sections, labels, icons } = useSections();
   const { demoMode, logout } = useAuth();
+  const [showAbout, setShowAbout] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [stats, setStats] = useState<ExpenseStats | null>(null);
   const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
@@ -268,6 +270,11 @@ export default function ExpensesPage() {
                   </DropdownMenuItem>
                 </>
               )}
+              {/* About */}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setShowAbout(true)}>
+                <Info className="w-4 h-4 mr-2" /> About
+              </DropdownMenuItem>
               {/* Sign out */}
               {!demoMode && (
                 <>
@@ -533,6 +540,7 @@ export default function ExpensesPage() {
       {showForm && (
         <ExpenseForm expense={editingExpense} onSave={handleSave} onClose={() => { setShowForm(false); setEditingExpense(undefined); }} />
       )}
+      <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
     </div>
   );
 }
