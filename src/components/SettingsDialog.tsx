@@ -14,7 +14,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
-  fetchSections, updateSections,
+  fetchSections, updateSections, CURRENCIES,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -303,6 +303,28 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
             <p className="text-xs text-muted-foreground/60 pl-6">
               Where visiting <span className="font-mono">/</span> redirects to.
             </p>
+          </div>
+
+          <Separator />
+
+          {/* Home Currency */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Settings className="w-4 h-4 text-muted-foreground" />
+              <Label className="text-sm font-medium">Home Currency</Label>
+            </div>
+            <div className="pl-6">
+              <select
+                value={general.homeCurrency || 'EUR'}
+                onChange={e => setGeneral({ ...general, homeCurrency: e.target.value })}
+                className="h-9 rounded-md border border-border bg-secondary px-3 text-sm w-48"
+              >
+                {CURRENCIES.map(c => (
+                  <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground/60 mt-1.5">Used as the default currency in the expense tracker.</p>
+            </div>
           </div>
 
           <Separator />

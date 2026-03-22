@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image, Info } from 'lucide-react';
+import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image, Info, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -443,6 +443,11 @@ export default function ExpensesPage() {
                           <td className="px-4 py-3 text-right font-medium whitespace-nowrap">{fmtEur(exp.amountEur)}</td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1 justify-end">
+                              {exp.link && (
+                                <a href={exp.link} target="_blank" rel="noreferrer" className="p-1 text-muted-foreground hover:text-foreground transition-colors" title={exp.link}>
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              )}
                               {exp.receiptUrls.length > 0 && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>

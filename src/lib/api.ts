@@ -85,6 +85,7 @@ export interface GeneralSettings {
   imageMaxWidth?: number;
   timeFormat?: '24h' | '12h';
   landingPage?: 'tracker' | 'blog';
+  homeCurrency?: string;
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
@@ -301,6 +302,7 @@ export interface Expense {
   receiptUrls: string[];
   notes: string;
   tags: string[];
+  link: string;
   createdAt: string;
   updatedAt: string;
 }

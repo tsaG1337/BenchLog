@@ -59,7 +59,7 @@ if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations ar
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
-const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker' };
+const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker', homeCurrency: 'EUR' };
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [
@@ -213,10 +213,12 @@ db.exec(`
     receipt_urls TEXT DEFAULT '[]',
     notes TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
+    link TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )
 `);
+try { db.exec(`ALTER TABLE expenses ADD COLUMN link TEXT DEFAULT ''`); } catch {} // no-op if already exists
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS expense_budgets (
@@ -723,6 +725,7 @@ app.put('/api/settings/general', requireAuth, (req, res) => {
     imageMaxWidth: updates.imageMaxWidth !== undefined ? updates.imageMaxWidth : (current.imageMaxWidth || 1920),
     timeFormat: updates.timeFormat !== undefined ? updates.timeFormat : (current.timeFormat || '24h'),
     landingPage: updates.landingPage !== undefined ? updates.landingPage : (current.landingPage || 'tracker'),
+    homeCurrency: updates.homeCurrency !== undefined ? updates.homeCurrency : (current.homeCurrency || 'EUR'),
   };
   setSetting('general', newSettings);
   res.json({ ok: true });
@@ -1248,6 +1251,7 @@ function expenseRow(row) {
     isCertificationRelevant: !!row.is_certification_relevant,
     receiptUrls: JSON.parse(row.receipt_urls || '[]'),
     notes: row.notes || '', tags: JSON.parse(row.tags || '[]'),
+    link: row.link || '',
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -1290,12 +1294,12 @@ app.get('/api/expenses/stats', requireAuth, (req, res) => {
 // GET /api/expenses/export/csv
 app.get('/api/expenses/export/csv', requireAuth, (req, res) => {
   const rows = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all();
-  const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes';
+  const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes,Link';
   const lines = rows.map(r => [
     r.date, `"${(r.description||'').replace(/"/g,'""')}"`, `"${(r.vendor||'').replace(/"/g,'""')}"`,
     r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_eur.toFixed(2),
     r.part_number || '', r.is_certification_relevant ? 'Yes' : 'No',
-    `"${(r.notes||'').replace(/"/g,'""')}"`
+    `"${(r.notes||'').replace(/"/g,'""')}"`, r.link || ''
   ].join(','));
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="expenses.csv"');
@@ -1331,26 +1335,26 @@ app.get('/api/expenses/:id', requireAuth, (req, res) => {
 
 // POST /api/expenses
 app.post('/api/expenses', requireAuth, (req, res) => {
-  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags } = req.body;
+  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
   if (!date || !amount || !description) return res.status(400).json({ error: 'date, amount and description are required' });
   const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const rate = exchangeRate || 1.0;
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_eur, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), now, now);
+  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_eur, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, link, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), link || '', now, now);
   res.json({ ok: true, id });
 });
 
 // PUT /api/expenses/:id
 app.put('/api/expenses/:id', requireAuth, (req, res) => {
-  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags } = req.body;
+  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
   const existing = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const rate = exchangeRate ?? existing.exchange_rate;
   const amt = amount ?? existing.amount;
-  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_eur=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, updated_at=? WHERE id=?`)
-    .run(date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate, description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category, assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number, isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant, JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)), notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), new Date().toISOString(), req.params.id);
+  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_eur=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, link=?, updated_at=? WHERE id=?`)
+    .run(date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate, description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category, assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number, isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant, JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)), notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), link ?? existing.link ?? '', new Date().toISOString(), req.params.id);
   res.json({ ok: true });
 });
 

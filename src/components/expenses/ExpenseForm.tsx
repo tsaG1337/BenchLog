@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { Expense, EXPENSE_CATEGORIES, CURRENCIES, uploadReceipts, deleteReceipt } from '@/lib/api';
+import { useState, useRef, useEffect } from 'react';
+import { Expense, EXPENSE_CATEGORIES, CURRENCIES, uploadReceipts, deleteReceipt, fetchGeneralSettings } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,10 +16,10 @@ interface ExpenseFormProps {
   onClose: () => void;
 }
 
-const DEFAULT_FORM = {
+const makeDefaultForm = (homeCurrency = 'EUR') => ({
   date: format(new Date(), 'yyyy-MM-dd'),
   amount: '',
-  currency: 'EUR',
+  currency: homeCurrency,
   exchangeRate: '1.0',
   description: '',
   vendor: '',
@@ -30,10 +30,23 @@ const DEFAULT_FORM = {
   receiptUrls: [] as string[],
   notes: '',
   tags: [] as string[],
-};
+  link: '',
+});
 
 export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
   const { sections } = useSections();
+  const [homeCurrency, setHomeCurrency] = useState('EUR');
+  const [conversionMode, setConversionMode] = useState<'rate' | 'total'>('rate');
+  const [totalInHome, setTotalInHome] = useState('');
+
+  useEffect(() => {
+    fetchGeneralSettings().then(s => {
+      const hc = s.homeCurrency || 'EUR';
+      setHomeCurrency(hc);
+      if (!expense) setForm(f => ({ ...f, currency: hc }));
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [form, setForm] = useState(() => expense ? {
     date: expense.date,
     amount: String(expense.amount),
@@ -48,7 +61,8 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
     receiptUrls: expense.receiptUrls,
     notes: expense.notes,
     tags: expense.tags,
-  } : { ...DEFAULT_FORM });
+    link: expense.link,
+  } : makeDefaultForm());
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [pendingDeletes, setPendingDeletes] = useState<string[]>([]);
@@ -58,12 +72,30 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
   const set = (field: string, value: any) => setForm(f => ({ ...f, [field]: value }));
 
   const selectedCurrency = CURRENCIES.find(c => c.code === form.currency);
-  const amountEur = parseFloat(form.amount || '0') * parseFloat(form.exchangeRate || '1');
+
+  const isForeign = form.currency !== homeCurrency;
 
   const handleCurrencyChange = (code: string) => {
     set('currency', code);
-    if (code === 'EUR') set('exchangeRate', '1.0');
+    if (code === homeCurrency) {
+      set('exchangeRate', '1.0');
+      setConversionMode('rate');
+      setTotalInHome('');
+    }
   };
+
+  // When in 'total' mode, derive exchange rate from the entered home-currency total
+  const effectiveRate = (() => {
+    if (!isForeign) return 1;
+    if (conversionMode === 'total') {
+      const total = parseFloat(totalInHome);
+      const amt = parseFloat(form.amount);
+      if (total > 0 && amt > 0) return total / amt;
+      return parseFloat(form.exchangeRate || '1') || 1;
+    }
+    return parseFloat(form.exchangeRate || '1') || 1;
+  })();
+  const amountEur = parseFloat(form.amount || '0') * effectiveRate;
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
@@ -110,7 +142,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
         date: form.date,
         amount: parseFloat(form.amount),
         currency: form.currency,
-        exchangeRate: parseFloat(form.exchangeRate || '1'),
+        exchangeRate: effectiveRate,
         description: form.description.trim(),
         vendor: form.vendor.trim(),
         category: form.category,
@@ -120,6 +152,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
         receiptUrls: form.receiptUrls,
         notes: form.notes.trim(),
         tags: form.tags,
+        link: form.link.trim(),
       });
       onClose();
     } catch (err: any) {
@@ -158,15 +191,44 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
             </div>
           </div>
 
-          {/* Exchange rate + EUR total */}
-          {form.currency !== 'EUR' && (
-            <div className="flex items-center gap-3">
-              <div className="w-48">
-                <Label className="text-xs text-muted-foreground mb-1 block">Exchange Rate (1 {form.currency} = ? EUR)</Label>
-                <Input type="number" min="0" step="0.0001" value={form.exchangeRate} onChange={e => set('exchangeRate', e.target.value)} className="bg-secondary border-border" placeholder="e.g. 0.92" />
+          {/* Conversion — only when foreign currency selected */}
+          {isForeign && (
+            <div className="space-y-2">
+              {/* Mode toggle */}
+              <div className="flex gap-1">
+                <button type="button"
+                  onClick={() => setConversionMode('rate')}
+                  className={`flex-1 h-7 rounded-md border text-xs transition-colors ${conversionMode === 'rate' ? 'bg-primary/15 border-primary text-primary' : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+                  Exchange rate
+                </button>
+                <button type="button"
+                  onClick={() => setConversionMode('total')}
+                  className={`flex-1 h-7 rounded-md border text-xs transition-colors ${conversionMode === 'total' ? 'bg-primary/15 border-primary text-primary' : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+                  Total in {homeCurrency}
+                </button>
               </div>
-              <div className="pt-5 text-sm text-muted-foreground">
-                = <span className="font-medium text-foreground">€{amountEur.toFixed(2)}</span>
+              <div className="flex items-end gap-3">
+                {conversionMode === 'rate' ? (
+                  <div className="flex-1">
+                    <Label className="text-xs text-muted-foreground mb-1 block">1 {form.currency} = ? {homeCurrency}</Label>
+                    <Input type="number" min="0" step="0.0001" value={form.exchangeRate}
+                      onChange={e => set('exchangeRate', e.target.value)}
+                      className="bg-secondary border-border" placeholder="e.g. 0.92" />
+                  </div>
+                ) : (
+                  <div className="flex-1">
+                    <Label className="text-xs text-muted-foreground mb-1 block">Amount charged in {homeCurrency}</Label>
+                    <Input type="number" min="0" step="0.01" value={totalInHome}
+                      onChange={e => setTotalInHome(e.target.value)}
+                      className="bg-secondary border-border" placeholder={`e.g. 1250.00`} />
+                  </div>
+                )}
+                <div className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
+                  = <span className="font-medium text-foreground">{CURRENCIES.find(c => c.code === homeCurrency)?.symbol}{amountEur.toFixed(2)}</span>
+                  {conversionMode === 'total' && parseFloat(form.amount) > 0 && parseFloat(totalInHome) > 0 && (
+                    <span className="ml-2 text-xs opacity-60">(rate: {effectiveRate.toFixed(4)})</span>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -224,6 +286,12 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
               <input type="checkbox" checked={form.isCertificationRelevant} onChange={e => set('isCertificationRelevant', e.target.checked)} className="w-4 h-4 rounded" />
               <span className="text-sm text-muted-foreground">LBA/EASA relevant</span>
             </label>
+          </div>
+
+          {/* Link */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">Link (URL)</Label>
+            <Input value={form.link} onChange={e => set('link', e.target.value)} className="bg-secondary border-border" placeholder="https://..." type="url" />
           </div>
 
           {/* Notes */}
