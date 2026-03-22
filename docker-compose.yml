@@ -15,3 +15,9 @@ services:
 
     volumes:
       - ./data:/data
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"   # rotate each log file at 10 MB
+        max-file: "3"     # keep at most 3 rotated files (30 MB total cap)

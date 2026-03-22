@@ -73,6 +73,25 @@ const DEFAULT_SECTIONS = [
   { id: 'other', label: 'Other', icon: '📋' },
 ];
 
+// ─── Server-side log capture ─────────────────────────────────────────
+const SERVER_LOG_BUFFER = [];
+const SERVER_LOG_LIMIT = 500;
+
+function appendServerLog(level, args) {
+  const message = args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.stack || a.message : JSON.stringify(a))).join(' ');
+  SERVER_LOG_BUFFER.push({ ts: Date.now(), level, message });
+  if (SERVER_LOG_BUFFER.length > SERVER_LOG_LIMIT) SERVER_LOG_BUFFER.shift();
+}
+
+const _origLog   = console.log.bind(console);
+const _origInfo  = console.info.bind(console);
+const _origWarn  = console.warn.bind(console);
+const _origError = console.error.bind(console);
+console.log   = (...a) => { _origLog(...a);   appendServerLog('log',   a); };
+console.info  = (...a) => { _origInfo(...a);  appendServerLog('info',  a); };
+console.warn  = (...a) => { _origWarn(...a);  appendServerLog('warn',  a); };
+console.error = (...a) => { _origError(...a); appendServerLog('error', a); };
+
 // ─── Express setup ──────────────────────────────────────────────────
 const app = express();
 app.use(cors());
@@ -1562,6 +1581,19 @@ app.get("*", (_req, res) => {
   });
   res.type('html').send(injected);
 });
+// ─── Debug logs endpoint ─────────────────────────────────────────────
+app.get('/api/debug/logs', requireAuth, (req, res) => {
+  const since = parseInt(req.query.since) || 0;
+  res.json(since ? SERVER_LOG_BUFFER.filter(e => e.ts > since) : SERVER_LOG_BUFFER);
+});
+
+// ─── Global error handler (logs uncaught route errors) ───────────────
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  console.error('[unhandled]', err.message, err.stack);
+  res.status(500).json({ error: err.message });
+});
+
 app.listen(PORT, () => {
   console.log(`Benchlog API running on port ${PORT}`);
   console.log(`SQLite: ${DB_PATH}`);

@@ -395,3 +395,14 @@ export interface DebugStats {
 export async function fetchDebugStats(): Promise<DebugStats> {
   return request<DebugStats>('/api/debug/stats');
 }
+
+export interface ServerLogEntry {
+  ts: number;
+  level: 'log' | 'info' | 'warn' | 'error';
+  message: string;
+}
+
+export async function fetchDebugLogs(since?: number): Promise<ServerLogEntry[]> {
+  const qs = since ? `?since=${since}` : '';
+  return request<ServerLogEntry[]>(`/api/debug/logs${qs}`);
+}
