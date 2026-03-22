@@ -9,6 +9,7 @@ import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
 import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
 import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
+import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
 import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -218,6 +219,9 @@ export default function BlogPage() {
           <div className="flex-1 min-w-0 space-y-4">
             {/* Build stats bar */}
             <BlogStatsBar stats={stats} />
+
+            {/* Activity heatmap */}
+            {view === 'list' && <ActivityHeatmap />}
 
             {view === 'list' && (
               <div className="space-y-4">
