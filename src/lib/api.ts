@@ -415,6 +415,7 @@ export interface DebugStats {
   };
   uploads: {
     sessionImages: number;
+    sessionThumbs: number;
     receipts: number;
   };
   node: {

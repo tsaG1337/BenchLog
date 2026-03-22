@@ -275,15 +275,16 @@ export function DiagnosticsPanel() {
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Database & Files</p>
           <div className="grid grid-cols-3 gap-2">
             {([
-              { label: 'Sessions',       value: stats.db.sessions },
-              { label: 'Expenses',       value: stats.db.expenses },
-              { label: 'Blog Posts',     value: stats.db.blogPosts },
-              { label: 'Session Images', value: stats.uploads.sessionImages },
-              { label: 'Receipts',       value: stats.uploads.receipts },
-            ]).map(({ label, value }) => (
+              { label: 'Sessions',        value: stats.db.sessions },
+              { label: 'Expenses',        value: stats.db.expenses },
+              { label: 'Blog Posts',      value: stats.db.blogPosts },
+              { label: 'Photos',          value: stats.uploads.sessionImages, note: `+ ${stats.uploads.sessionThumbs} thumbs` },
+              { label: 'Receipts',        value: stats.uploads.receipts },
+            ]).map(({ label, value, note }) => (
               <div key={label} className="bg-secondary/40 rounded-lg px-3 py-2">
                 <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wide">{label}</p>
                 <p className="font-mono font-semibold text-foreground">{value}</p>
+                {note && <p className="text-[9px] text-muted-foreground/50">{note}</p>}
               </div>
             ))}
           </div>

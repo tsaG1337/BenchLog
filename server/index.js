@@ -1623,7 +1623,7 @@ app.get('/api/debug/stats', requireAuth, (req, res) => {
     blogPosts: db.prepare("SELECT COUNT(*) as n FROM blog_posts").get().n,
   };
   // Count files in upload directories
-  const countFiles = (dir) => { try { return fs.readdirSync(dir).length; } catch { return 0; } };
+  const countFiles = (dir, filter) => { try { const files = fs.readdirSync(dir); return filter ? files.filter(filter).length : files.length; } catch { return 0; } };
   res.json({
     timestamp: Date.now(),
     uptime: process.uptime(),
@@ -1641,7 +1641,8 @@ app.get('/api/debug/stats', requireAuth, (req, res) => {
       blogPosts: counts.blogPosts,
     },
     uploads: {
-      sessionImages: countFiles(UPLOADS_DIR),
+      sessionImages: countFiles(UPLOADS_DIR, f => !f.includes('_thumb')),
+      sessionThumbs: countFiles(UPLOADS_DIR, f => f.includes('_thumb')),
       receipts: countFiles(RECEIPTS_DIR),
     },
     node: {
