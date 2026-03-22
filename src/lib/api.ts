@@ -362,3 +362,36 @@ export async function uploadReceipts(files: FileList): Promise<string[]> {
 export async function deleteReceipt(url: string): Promise<void> {
   await request('/api/expenses/upload', { method: 'DELETE', body: JSON.stringify({ url }) });
 }
+
+// ─── Debug / Diagnostics ─────────────────────────────────────────────
+
+export interface DebugStats {
+  timestamp: number;
+  uptime: number;
+  memory: {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers: number;
+  };
+  db: {
+    path: string;
+    sessions: number;
+    expenses: number;
+    blogPosts: number;
+  };
+  uploads: {
+    sessionImages: number;
+    receipts: number;
+  };
+  node: {
+    version: string;
+    platform: string;
+    arch: string;
+  };
+}
+
+export async function fetchDebugStats(): Promise<DebugStats> {
+  return request<DebugStats>('/api/debug/stats');
+}

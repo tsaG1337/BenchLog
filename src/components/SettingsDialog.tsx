@@ -5,10 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, WifiOff, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Home, Wallet, Database } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
+import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import {
@@ -25,7 +26,7 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'mqtt' | 'data';
+type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'mqtt' | 'data' | 'debug';
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'general',    label: 'General',    icon: Type },
@@ -34,6 +35,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'sections',   label: 'Sections',   icon: Layers },
   { id: 'mqtt',       label: 'MQTT',       icon: Wifi },
   { id: 'data',       label: 'Data',       icon: Database },
+  { id: 'debug',      label: 'Debug',      icon: Bug },
 ];
 
 export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved, open: controlledOpen, onOpenChange: controlledOnOpenChange }: SettingsDialogProps) {
@@ -391,6 +393,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 )}
               </>}
             </>}
+
+            {/* ── Debug ───────────────────────────────────────── */}
+            {activeTab === 'debug' && <DiagnosticsPanel />}
 
             {/* ── Data ────────────────────────────────────────── */}
             {activeTab === 'data' && (

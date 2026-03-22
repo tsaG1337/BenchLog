@@ -1510,8 +1510,46 @@ app.get('/blog/:postId', (req, res) => {
   }));
 });
 
+// ─── Debug / Diagnostics ────────────────────────────────────────────
+app.get('/api/debug/stats', requireAuth, (req, res) => {
+  const mem = process.memoryUsage();
+  const counts = {
+    sessions: db.prepare('SELECT COUNT(*) as n FROM sessions').get().n,
+    expenses: db.prepare("SELECT COUNT(*) as n FROM expenses").get().n,
+    blogPosts: db.prepare("SELECT COUNT(*) as n FROM blog_posts").get().n,
+  };
+  // Count files in upload directories
+  const countFiles = (dir) => { try { return fs.readdirSync(dir).length; } catch { return 0; } };
+  res.json({
+    timestamp: Date.now(),
+    uptime: process.uptime(),
+    memory: {
+      rss: mem.rss,
+      heapTotal: mem.heapTotal,
+      heapUsed: mem.heapUsed,
+      external: mem.external,
+      arrayBuffers: mem.arrayBuffers,
+    },
+    db: {
+      path: DB_PATH,
+      sessions: counts.sessions,
+      expenses: counts.expenses,
+      blogPosts: counts.blogPosts,
+    },
+    uploads: {
+      sessionImages: countFiles(UPLOADS_DIR),
+      receipts: countFiles(RECEIPTS_DIR),
+    },
+    node: {
+      version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+    },
+  });
+});
+
 // ─── Start ──────────────────────────────────────────────────────────
-app.get("*", (req, res) => {
+app.get("*", (_req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
   const html = fs.readFileSync(distIndexPath, 'utf8');
   const general = getSetting('general', DEFAULT_GENERAL);
