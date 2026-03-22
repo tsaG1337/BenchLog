@@ -236,12 +236,12 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
                         }}
                       >
                         <FileText className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? '')}</span>
+                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{(() => { const r = url.split('/').pop() ?? ''; const s = r.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, ''); return decodeURIComponent(s || r); })()}</span>
                       </button>
                     ) : (
                       <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:opacity-70 transition-opacity">
                         <img src={url} alt="" className="w-8 h-8 object-cover rounded" />
-                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? '')}</span>
+                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{(() => { const r = url.split('/').pop() ?? ''; const s = r.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, ''); return decodeURIComponent(s || r); })()}</span>
                       </a>
                     )}
                     <button onClick={() => handleRemoveReceipt(url)} className="ml-1 text-muted-foreground hover:text-destructive transition-colors">

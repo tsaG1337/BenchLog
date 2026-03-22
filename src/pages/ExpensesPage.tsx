@@ -449,7 +449,9 @@ export default function ExpensesPage() {
                                   <DropdownMenuContent align="end" className="w-56">
                                     {exp.receiptUrls.map(url => {
                                       const isPdf = url.toLowerCase().endsWith('.pdf');
-                                      const name = decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? url);
+                                      const rawName = url.split('/').pop() ?? '';
+                                      const stripped = rawName.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, '');
+                                      const name = decodeURIComponent(stripped || rawName);
                                       return (
                                         <DropdownMenuItem key={url} asChild={!isPdf} onClick={isPdf ? async () => {
                                           const token = localStorage.getItem('auth_token');
