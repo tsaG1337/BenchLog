@@ -211,13 +211,11 @@ const Index = () => {
                   <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
                 </Link>
               </DropdownMenuItem>
-              {!demoMode && (
-                <DropdownMenuItem asChild>
-                  <Link to="/expenses" className="flex items-center w-full">
-                    <Wallet className="w-4 h-4 mr-2" /> Expenses
-                  </Link>
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem asChild>
+                <Link to="/expenses" className="flex items-center w-full">
+                  <Wallet className="w-4 h-4 mr-2" /> Expenses
+                </Link>
+              </DropdownMenuItem>
               {/* Settings */}
               {!demoMode && (
                 <>

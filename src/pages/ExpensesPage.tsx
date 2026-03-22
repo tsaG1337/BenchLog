@@ -27,6 +27,7 @@ function CategoryBadge({ category }: { category: string }) {
 export default function ExpensesPage() {
   const { sections, labels, icons } = useSections();
   const { demoMode, logout } = useAuth();
+  const readOnly = demoMode;
   const [showAbout, setShowAbout] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [stats, setStats] = useState<ExpenseStats | null>(null);
@@ -229,9 +230,11 @@ export default function ExpensesPage() {
           <div className="flex-1">
             <h1 className="text-lg font-bold text-foreground tracking-tight">Expense Tracker</h1>
           </div>
-          <Button size="sm" onClick={openNew} className="gap-1.5">
-            <Plus className="w-4 h-4" /> Add Expense
-          </Button>
+          {!readOnly && (
+            <Button size="sm" onClick={openNew} className="gap-1.5">
+              <Plus className="w-4 h-4" /> Add Expense
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={generatingPdf} className="gap-1.5">
             {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             PDF
@@ -410,7 +413,7 @@ export default function ExpensesPage() {
               <div className="text-center py-16 text-muted-foreground">
                 <p className="text-lg">No expenses yet</p>
                 <p className="text-sm mt-1">Add your first expense to start tracking build costs.</p>
-                <Button className="mt-4" onClick={openNew}><Plus className="w-4 h-4 mr-2" /> Add Expense</Button>
+                {!readOnly && <Button className="mt-4" onClick={openNew}><Plus className="w-4 h-4 mr-2" /> Add Expense</Button>}
               </div>
             ) : (
               <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -481,8 +484,10 @@ export default function ExpensesPage() {
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               )}
-                              <button onClick={() => openEdit(exp)} className="p-1 text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
-                              <button onClick={() => handleDelete(exp.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                              {!readOnly && <>
+                                <button onClick={() => openEdit(exp)} className="p-1 text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+                                <button onClick={() => handleDelete(exp.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                              </>}
                             </div>
                           </td>
                         </tr>
@@ -526,8 +531,9 @@ export default function ExpensesPage() {
                     <div className="relative">
                       <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
                       <input type="number" min="0" step="100" value={budgetDraft[cat.id] ?? ''}
-                        onChange={e => setBudgetDraft(d => ({ ...d, [cat.id]: e.target.value }))}
-                        className="w-full h-9 rounded-md border border-border bg-secondary pl-6 pr-3 text-sm"
+                        onChange={e => !readOnly && setBudgetDraft(d => ({ ...d, [cat.id]: e.target.value }))}
+                        readOnly={readOnly}
+                        className={`w-full h-9 rounded-md border border-border bg-secondary pl-6 pr-3 text-sm ${readOnly ? 'opacity-60 cursor-not-allowed' : ''}`}
                         placeholder="No budget" />
                     </div>
                   </div>
@@ -535,7 +541,7 @@ export default function ExpensesPage() {
               })}
               <div className="flex items-center justify-between pt-2 border-t border-border">
                 <span className="text-sm font-medium">Total budget: {fmtEur(totalBudget)}</span>
-                <Button onClick={handleSaveBudgets}>Save Budgets</Button>
+                {!readOnly && <Button onClick={handleSaveBudgets}>Save Budgets</Button>}
               </div>
             </div>
           </TabsContent>
