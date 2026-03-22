@@ -222,6 +222,12 @@ export default function ExpensesPage() {
 
   return (
     <div className="min-h-screen bg-background">
+      {readOnly && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+          <Eye className="w-4 h-4 shrink-0" />
+          <span>Demo mode — read only. No data can be created or changed.</span>
+        </div>
+      )}
       <header className="border-b border-border bg-card/50 sticky top-0 z-30">
         <div className="container max-w-7xl py-4 flex items-center gap-3">
           <Link to="/" className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
