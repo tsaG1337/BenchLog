@@ -195,32 +195,40 @@ const Index = () => {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
-              {!demoMode && (
-                <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
-                  <Settings className="w-4 h-4 mr-2" /> Settings
-                </DropdownMenuItem>
-              )}
+              {/* Page-specific actions */}
               {!demoMode && (
                 <DropdownMenuItem onClick={() => setOpenDialog('manual')}>
                   <Plus className="w-4 h-4 mr-2" /> Add Entry
                 </DropdownMenuItem>
               )}
-              {!demoMode && <DropdownMenuSeparator />}
               <DropdownMenuItem onClick={() => setOpenDialog('export')}>
                 <Download className="w-4 h-4 mr-2" /> Build Report
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              {/* Navigation */}
               <DropdownMenuItem asChild>
                 <Link to="/blog" className="flex items-center w-full">
                   <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
                 </Link>
               </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <Link to="/expenses" className="flex items-center w-full">
-                  <Wallet className="w-4 h-4 mr-2" /> Expenses
-                </Link>
-              </DropdownMenuItem>
-                      <DropdownMenuSeparator />
+              {!demoMode && (
+                <DropdownMenuItem asChild>
+                  <Link to="/expenses" className="flex items-center w-full">
+                    <Wallet className="w-4 h-4 mr-2" /> Expenses
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              {/* Settings */}
+              {!demoMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
+                    <Settings className="w-4 h-4 mr-2" /> Settings
+                  </DropdownMenuItem>
+                </>
+              )}
+              {/* About / Sign out */}
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setOpenDialog('about')}>
                 <Info className="w-4 h-4 mr-2" /> About
               </DropdownMenuItem>

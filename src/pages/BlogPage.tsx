@@ -143,31 +143,42 @@ export default function BlogPage() {
                 {sidebarOpen ? <><X className="w-4 h-4 mr-2" /> Close sidebar</> : <><Menu className="w-4 h-4 mr-2" /> Sections & Archive</>}
               </DropdownMenuItem>
               <DropdownMenuSeparator className="lg:hidden" />
+              {/* Page-specific actions */}
               {isAuthenticated && (
                 <DropdownMenuItem onClick={() => { setActivePost(null); setView('editor'); }}>
                   <PenSquare className="w-4 h-4 mr-2" /> New Post
                 </DropdownMenuItem>
               )}
+              {isAuthenticated && <DropdownMenuSeparator />}
+              {/* Navigation */}
               <DropdownMenuItem asChild>
                 <Link to={isAuthenticated ? '/' : '/login'} state={{ from: '/blog' }} className="flex items-center w-full">
                   {isAuthenticated
-                    ? <><Timer className="w-4 h-4 mr-2" /> Tracker</>
+                    ? <><Timer className="w-4 h-4 mr-2" /> Build Tracker</>
                     : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
                 </Link>
               </DropdownMenuItem>
               {isAuthenticated && !demoMode && (
+                <DropdownMenuItem asChild>
+                  <Link to="/expenses" className="flex items-center w-full">
+                    <Wallet className="w-4 h-4 mr-2" /> Expenses
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              {/* Settings */}
+              {isAuthenticated && !demoMode && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link to="/expenses" className="flex items-center w-full">
-                      <Wallet className="w-4 h-4 mr-2" /> Expenses
-                    </Link>
-                  </DropdownMenuItem>
                   <DropdownMenuItem asChild>
                     <Link to="/tracker" state={{ openSettings: true }} className="flex items-center w-full">
                       <Settings className="w-4 h-4 mr-2" /> Settings
                     </Link>
                   </DropdownMenuItem>
+                </>
+              )}
+              {/* Sign out */}
+              {isAuthenticated && !demoMode && (
+                <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
                     <LogOut className="w-4 h-4 mr-2" /> Sign out

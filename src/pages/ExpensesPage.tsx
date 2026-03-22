@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2 } from 'lucide-react';
+import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuth } from '@/contexts/AuthContext';
 import { fetchExpenses, fetchExpenseStats, createExpense, updateExpense, deleteExpense, updateExpenseBudgets, EXPENSE_CATEGORIES, CURRENCIES, Expense, ExpenseStats } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { ExpenseForm } from '@/components/expenses/ExpenseForm';
@@ -23,6 +25,7 @@ function CategoryBadge({ category }: { category: string }) {
 
 export default function ExpensesPage() {
   const { sections, labels, icons } = useSections();
+  const { demoMode, logout } = useAuth();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [stats, setStats] = useState<ExpenseStats | null>(null);
   const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
@@ -236,6 +239,46 @@ export default function ExpensesPage() {
               <Download className="w-4 h-4" /> CSV
             </a>
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
+                <Menu className="w-5 h-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              {/* Navigation */}
+              <DropdownMenuItem asChild>
+                <Link to="/" className="flex items-center w-full">
+                  <Timer className="w-4 h-4 mr-2" /> Build Tracker
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <Link to="/blog" className="flex items-center w-full">
+                  <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
+                </Link>
+              </DropdownMenuItem>
+              {/* Settings */}
+              {!demoMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link to="/tracker" state={{ openSettings: true }} className="flex items-center w-full">
+                      <Settings className="w-4 h-4 mr-2" /> Settings
+                    </Link>
+                  </DropdownMenuItem>
+                </>
+              )}
+              {/* Sign out */}
+              {!demoMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
+                    <LogOut className="w-4 h-4 mr-2" /> Sign out
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
