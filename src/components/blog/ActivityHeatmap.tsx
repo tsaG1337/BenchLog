@@ -14,7 +14,11 @@ const GAP = 2;
 const STEP = CELL + GAP;
 const DAY_LABELS = ['', 'M', '', 'W', '', 'F', ''];
 
-export function ActivityHeatmap() {
+interface ActivityHeatmapProps {
+  compact?: boolean;
+}
+
+export function ActivityHeatmap({ compact = false }: ActivityHeatmapProps) {
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [loaded, setLoaded] = useState(false);
 
@@ -23,6 +27,8 @@ export function ActivityHeatmap() {
       .then(p => { setPosts(p); setLoaded(true); })
       .catch(() => setLoaded(true));
   }, []);
+
+  const weeksToShow = compact ? 16 : 53;
 
   const { weeks, monthLabels, totalThisYear } = useMemo(() => {
     const countMap: Record<string, number> = {};
@@ -40,7 +46,7 @@ export function ActivityHeatmap() {
 
     // Align start to Sunday, 52 weeks back
     const startDate = new Date(today);
-    startDate.setDate(startDate.getDate() - 364);
+    startDate.setDate(startDate.getDate() - (weeksToShow - 1) * 7);
     startDate.setDate(startDate.getDate() - startDate.getDay());
 
     const weeks: { date: Date; count: number; isFuture: boolean }[][] = [];
@@ -48,7 +54,7 @@ export function ActivityHeatmap() {
     let current = new Date(startDate);
     let lastMonth = -1;
 
-    while (current <= today && weeks.length <= 53) {
+    while (current <= today && weeks.length <= weeksToShow) {
       const week: { date: Date; count: number; isFuture: boolean }[] = [];
       for (let d = 0; d < 7; d++) {
         const dateStr = current.toISOString().slice(0, 10);
@@ -66,12 +72,12 @@ export function ActivityHeatmap() {
     }
 
     return { weeks, monthLabels, totalThisYear };
-  }, [posts]);
+  }, [posts, weeksToShow]);
 
   return (
-    <div className="bg-card border border-border rounded-xl p-4">
+    <div className={compact ? '' : 'bg-card border border-border rounded-xl p-4'}>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground">Build Activity</h3>
+        <h3 className={`font-medium text-foreground ${compact ? 'text-sm font-semibold text-muted-foreground uppercase tracking-wider' : 'text-sm'}`}>Build Activity</h3>
         {loaded && (
           <span className="text-xs text-muted-foreground">
             {totalThisYear} session{totalThisYear !== 1 ? 's' : ''} in {new Date().getFullYear()}
@@ -133,22 +139,24 @@ export function ActivityHeatmap() {
       </div>
 
       {/* Legend */}
-      <div className="flex items-center gap-1.5 mt-3 justify-end">
-        <span className="text-[9px] text-muted-foreground/50">Less</span>
-        {[0, 1, 2, 3].map(level => (
-          <div
-            key={level}
-            style={{ width: '10px', height: '10px' }}
-            className={`rounded-sm ${
-              level === 0 ? 'bg-secondary' :
-              level === 1 ? 'bg-amber-300 dark:bg-amber-800' :
-              level === 2 ? 'bg-amber-500 dark:bg-amber-600' :
-              'bg-amber-700 dark:bg-amber-400'
-            }`}
-          />
-        ))}
-        <span className="text-[9px] text-muted-foreground/50">More</span>
-      </div>
+      {!compact && (
+        <div className="flex items-center gap-1.5 mt-3 justify-end">
+          <span className="text-[9px] text-muted-foreground/50">Less</span>
+          {[0, 1, 2, 3].map(level => (
+            <div
+              key={level}
+              style={{ width: '10px', height: '10px' }}
+              className={`rounded-sm ${
+                level === 0 ? 'bg-secondary' :
+                level === 1 ? 'bg-amber-300 dark:bg-amber-800' :
+                level === 2 ? 'bg-amber-500 dark:bg-amber-600' :
+                'bg-amber-700 dark:bg-amber-400'
+              }`}
+            />
+          ))}
+          <span className="text-[9px] text-muted-foreground/50">More</span>
+        </div>
+      )}
     </div>
   );
 }

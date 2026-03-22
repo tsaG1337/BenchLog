@@ -47,7 +47,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [activeTab, setActiveTab] = useState<Tab>('general');
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, landingPage: 'tracker', homeCurrency: 'EUR' });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, landingPage: 'tracker', homeCurrency: 'EUR', blogShowActivity: true, blogShowStats: true, blogShowProgress: true });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false, brokerUrl: 'mqtt://localhost:1883', username: '', password: '',
     topicPrefix: 'mybuild/stats', haDiscovery: false, haDiscoveryPrefix: 'homeassistant',
@@ -301,6 +301,33 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground/60 mt-1">Where visiting <span className="font-mono">/</span> redirects to.</p>
+              </div>
+              <Separator />
+              <div>
+                <Label className="text-xs text-muted-foreground mb-3 block">Blog Visibility</Label>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-xs text-muted-foreground block">Build Activity</Label>
+                      <p className="text-xs text-muted-foreground/60">Show the session heatmap in the blog sidebar</p>
+                    </div>
+                    <Switch checked={general.blogShowActivity ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowActivity: checked })} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-xs text-muted-foreground block">Build Stats</Label>
+                      <p className="text-xs text-muted-foreground/60">Show total hours, estimated finish, and pace</p>
+                    </div>
+                    <Switch checked={general.blogShowStats ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowStats: checked })} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-xs text-muted-foreground block">Progress Bar</Label>
+                      <p className="text-xs text-muted-foreground/60">Show the overall build progress bar (only when Build Stats is on)</p>
+                    </div>
+                    <Switch checked={general.blogShowProgress ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowProgress: checked })} />
+                  </div>
+                </div>
               </div>
             </>}
 

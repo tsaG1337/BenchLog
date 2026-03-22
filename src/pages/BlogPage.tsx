@@ -9,7 +9,6 @@ import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
 import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
 import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
-import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
 import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -28,6 +27,9 @@ export default function BlogPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [stats, setStats] = useState<BuildStats | null>(null);
+  const [blogShowActivity, setBlogShowActivity] = useState(true);
+  const [blogShowStats, setBlogShowStats] = useState(true);
+  const [blogShowProgress, setBlogShowProgress] = useState(true);
   const { isAuthenticated, demoMode, logout } = useAuth();
 
   const loadPosts = useCallback(async () => {
@@ -48,7 +50,12 @@ export default function BlogPage() {
   }, [loadPosts]);
 
   useEffect(() => {
-    fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
+    fetchGeneralSettings().then(s => {
+      setProjectName(s.projectName);
+      setBlogShowActivity(s.blogShowActivity ?? true);
+      setBlogShowStats(s.blogShowStats ?? true);
+      setBlogShowProgress(s.blogShowProgress ?? true);
+    }).catch(() => {});
     fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
@@ -213,15 +220,13 @@ export default function BlogPage() {
               onFilterChange={handleFilterChange}
               projectName={projectName}
               sectionHours={stats?.sectionHours ?? {}}
+              showActivity={blogShowActivity}
             />
           </div>
 
           <div className="flex-1 min-w-0 space-y-4">
             {/* Build stats bar */}
-            <BlogStatsBar stats={stats} />
-
-            {/* Activity heatmap */}
-            {view === 'list' && <ActivityHeatmap />}
+            {blogShowStats && <BlogStatsBar stats={stats} showProgress={blogShowProgress} />}
 
             {view === 'list' && (
               <div className="space-y-4">

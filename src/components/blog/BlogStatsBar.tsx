@@ -3,9 +3,10 @@ import { BuildStats } from '@/lib/api';
 
 interface BlogStatsBarProps {
   stats: BuildStats | null;
+  showProgress?: boolean;
 }
 
-export function BlogStatsBar({ stats }: BlogStatsBarProps) {
+export function BlogStatsBar({ stats, showProgress = true }: BlogStatsBarProps) {
   if (!stats) return null;
 
   const finishDate = stats.estimatedFinish
@@ -47,13 +48,17 @@ export function BlogStatsBar({ stats }: BlogStatsBarProps) {
           </>
         )}
       </div>
-      <div className="h-2 bg-secondary rounded-full overflow-hidden">
-        <div
-          className="h-full bg-primary rounded-full transition-all"
-          style={{ width: `${stats.progressPct}%` }}
-        />
-      </div>
-      <p className="text-xs text-muted-foreground text-right">{stats.progressPct}% complete</p>
+      {showProgress && (
+        <>
+          <div className="h-2 bg-secondary rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all"
+              style={{ width: `${stats.progressPct}%` }}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground text-right">{stats.progressPct}% complete</p>
+        </>
+      )}
     </div>
   );
 }

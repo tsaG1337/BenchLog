@@ -4,6 +4,7 @@ import { BlogArchiveEntry } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { cn } from '@/lib/utils';
 import { BuildFlowchart } from './BuildFlowchart';
+import { ActivityHeatmap } from './ActivityHeatmap';
 
 interface BlogSidebarProps {
   archive: BlogArchiveEntry[];
@@ -13,11 +14,12 @@ interface BlogSidebarProps {
   onFilterChange: (filters: { section?: string; year?: string; month?: string; plansSection?: string }) => void;
   projectName?: string;
   sectionHours?: Record<string, number>;
+  showActivity?: boolean;
 }
 
 const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange, projectName, sectionHours = {} }: BlogSidebarProps) {
+export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, onFilterChange, projectName, sectionHours = {}, showActivity = true }: BlogSidebarProps) {
   const { sections } = useSections();
   const [expandedYears, setExpandedYears] = useState<Set<string>>(() => {
     const years = new Set<string>();
@@ -138,6 +140,9 @@ export function BlogSidebar({ archive, activeSection, activeYear, activeMonth, o
           })}
         </div>
       </div>
+
+      {/* Activity Heatmap */}
+      {showActivity && <ActivityHeatmap compact />}
 
       {/* Build Progress Flowchart */}
       <BuildFlowchart projectName={projectName} onPlansSectionFilter={plansSection => onFilterChange({ plansSection })} />

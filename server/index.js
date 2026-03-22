@@ -69,7 +69,7 @@ if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations ar
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
-const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker', homeCurrency: 'EUR' };
+const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker', homeCurrency: 'EUR', blogShowActivity: true, blogShowStats: true, blogShowProgress: true };
 
 // ─── Default sections configuration ─────────────────────────────────
 const DEFAULT_SECTIONS = [

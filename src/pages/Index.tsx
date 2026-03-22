@@ -7,6 +7,7 @@ import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
 import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
+import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet } from 'lucide-react';
@@ -302,6 +303,8 @@ const Index = () => {
             demoMode={demoMode}
           />
         </div>
+
+        <ActivityHeatmap />
 
         <Tabs defaultValue="dashboard" className="w-full">
           <TabsList className="w-full bg-card border border-border">

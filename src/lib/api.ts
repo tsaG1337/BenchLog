@@ -93,6 +93,9 @@ export interface GeneralSettings {
   timeFormat?: '24h' | '12h';
   landingPage?: 'tracker' | 'blog';
   homeCurrency?: string;
+  blogShowActivity?: boolean;
+  blogShowStats?: boolean;
+  blogShowProgress?: boolean;
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {
