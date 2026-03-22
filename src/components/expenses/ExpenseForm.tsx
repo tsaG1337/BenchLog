@@ -221,10 +221,29 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
               <div className="flex flex-wrap gap-2 mb-2">
                 {form.receiptUrls.map(url => (
                   <div key={url} className="relative group flex items-center gap-1.5 bg-secondary border border-border rounded-md px-2 py-1.5">
-                    {url.endsWith('.pdf')
-                      ? <FileText className="w-4 h-4 text-muted-foreground" />
-                      : <img src={url} alt="" className="w-8 h-8 object-cover rounded" />}
-                    <span className="text-xs text-muted-foreground truncate max-w-[80px]">{url.split('/').pop()}</span>
+                    {url.endsWith('.pdf') ? (
+                      <button
+                        type="button"
+                        className="flex items-center gap-1.5 hover:opacity-70 transition-opacity"
+                        onClick={async () => {
+                          const token = localStorage.getItem('auth_token');
+                          const API_URL = import.meta.env.VITE_API_URL || '';
+                          const res = await fetch(`${API_URL}${url}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                          if (!res.ok) { toast.error('Could not open PDF'); return; }
+                          const blob = await res.blob();
+                          const blobUrl = URL.createObjectURL(blob);
+                          window.open(blobUrl, '_blank');
+                        }}
+                      >
+                        <FileText className="w-4 h-4 text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? '')}</span>
+                      </button>
+                    ) : (
+                      <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:opacity-70 transition-opacity">
+                        <img src={url} alt="" className="w-8 h-8 object-cover rounded" />
+                        <span className="text-xs text-muted-foreground truncate max-w-[80px]">{decodeURIComponent(url.split('/').pop()?.replace(/^[^-]+-/, '') ?? '')}</span>
+                      </a>
+                    )}
                     <button onClick={() => handleRemoveReceipt(url)} className="ml-1 text-muted-foreground hover:text-destructive transition-colors">
                       <X className="w-3 h-3" />
                     </button>

@@ -100,7 +100,18 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 // Serve uploaded images publicly (blog is public, so images are too)
 app.use('/files', express.static(UPLOADS_DIR));
-app.use('/receipts', express.static(RECEIPTS_DIR));
+// Serve receipts: PDFs require auth, images are public
+app.get('/receipts/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(RECEIPTS_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  if (path.extname(filename).toLowerCase() === '.pdf') {
+    const auth = req.headers.authorization;
+    const payload = auth && auth.startsWith('Bearer ') ? verifyToken(auth.slice(7)) : null;
+    if (!payload) return res.status(401).send('Unauthorized');
+  }
+  res.sendFile(filePath);
+});
 
 // Multer: disk storage — always save as .jpg (sharp will process the content)
 const multerStorage = multer.diskStorage({
@@ -122,8 +133,9 @@ const upload = multer({
 const receiptStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, RECEIPTS_DIR),
   filename: (req, file, cb) => {
-    const ext = file.mimetype === 'application/pdf' ? '.pdf' : '.jpg';
-    cb(null, `${uuidv4()}${ext}`);
+    // Keep original filename but prefix with UUID to avoid collisions
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${uuidv4()}-${safeName}`);
   },
 });
 const receiptUpload = multer({
