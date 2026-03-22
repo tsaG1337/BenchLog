@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchDebugStats, fetchDebugLogs, DebugStats } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Trash2, Circle } from 'lucide-react';
+import { RefreshCw, Trash2, Circle, Download } from 'lucide-react';
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -174,6 +174,33 @@ export function DiagnosticsPanel() {
   const serverCount = logs.filter(l => l.source === 'server').length;
   const clientCount = logs.filter(l => l.source === 'client').length;
 
+  const exportLogs = () => {
+    const header = [
+      `Benchlog Diagnostics Export`,
+      `Generated: ${new Date().toISOString()}`,
+      stats ? `Node: ${stats.node.version} · ${stats.node.platform}/${stats.node.arch}` : '',
+      stats ? `Uptime: ${fmtUptime(stats.uptime)}` : '',
+      stats ? `Heap Used: ${fmt(stats.memory.heapUsed)} / ${fmt(stats.memory.heapTotal)}  RSS: ${fmt(stats.memory.rss)}` : '',
+      `Entries: ${logs.length} total (${serverCount} server, ${clientCount} client)`,
+      '─'.repeat(80),
+    ].filter(Boolean).join('\n');
+
+    const body = logs.map(e => {
+      const time = new Date(e.ts).toISOString();
+      const src  = e.source === 'server' ? 'SRV' : 'CLI';
+      const lvl  = e.level.toUpperCase().padEnd(5);
+      return `${time}  ${src}  ${lvl}  ${e.message}`;
+    }).join('\n');
+
+    const blob = new Blob([header + '\n' + body + '\n'], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `benchlog-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-5 text-sm">
 
@@ -298,7 +325,10 @@ export function DiagnosticsPanel() {
                 {f}
               </button>
             ))}
-            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground ml-1" onClick={() => setLogs([])}>
+            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground ml-1" title="Export log" onClick={exportLogs}>
+              <Download className="w-3 h-3" />
+            </Button>
+            <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground" title="Clear log" onClick={() => setLogs([])}>
               <Trash2 className="w-3 h-3" />
             </Button>
           </div>
