@@ -51,6 +51,8 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
   } : { ...DEFAULT_FORM });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [pendingDeletes, setPendingDeletes] = useState<string[]>([]);
+  const [pendingUploads, setPendingUploads] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const set = (field: string, value: any) => setForm(f => ({ ...f, [field]: value }));
@@ -69,6 +71,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
     try {
       const urls = await uploadReceipts(e.target.files);
       set('receiptUrls', [...form.receiptUrls, ...urls]);
+      setPendingUploads(p => [...p, ...urls]);
       toast.success(`${urls.length} receipt(s) uploaded`);
     } catch (err: any) {
       toast.error('Upload failed: ' + err.message);
@@ -78,9 +81,22 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
     }
   };
 
-  const handleRemoveReceipt = async (url: string) => {
+  const handleRemoveReceipt = (url: string) => {
     set('receiptUrls', form.receiptUrls.filter(u => u !== url));
-    try { await deleteReceipt(url); } catch {}
+    if (pendingUploads.includes(url)) {
+      // Uploaded this session — delete immediately, no need to defer
+      setPendingUploads(p => p.filter(u => u !== url));
+      deleteReceipt(url).catch(() => {});
+    } else {
+      // Defer deletion until save is confirmed
+      setPendingDeletes(p => [...p, url]);
+    }
+  };
+
+  const handleCancel = () => {
+    // Clean up any files uploaded during this session that won't be saved
+    for (const url of pendingUploads) deleteReceipt(url).catch(() => {});
+    onClose();
   };
 
   const handleSave = async () => {
@@ -88,6 +104,8 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
     if (!form.amount || isNaN(parseFloat(form.amount))) { toast.error('Valid amount is required'); return; }
     setSaving(true);
     try {
+      // Now confirmed — delete the removed receipts
+      for (const url of pendingDeletes) deleteReceipt(url).catch(() => {});
       await onSave({
         date: form.date,
         amount: parseFloat(form.amount),
@@ -112,7 +130,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
   };
 
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={handleCancel}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{expense ? 'Edit Expense' : 'Add Expense'}</DialogTitle>
@@ -260,7 +278,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={handleCancel}>Cancel</Button>
           <Button onClick={handleSave} disabled={saving}>
             {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             {expense ? 'Save Changes' : 'Add Expense'}
