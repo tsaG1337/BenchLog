@@ -124,7 +124,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-w-3xl max-h-[90vh] p-0 overflow-hidden flex flex-col">
+      <DialogContent className="max-w-3xl max-h-[90vh] p-0 overflow-hidden flex flex-col" aria-describedby={undefined}>
         <DialogHeader className="px-6 pt-5 pb-4 border-b border-border shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Settings className="w-5 h-5" /> Settings

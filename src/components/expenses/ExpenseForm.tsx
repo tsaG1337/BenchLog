@@ -164,7 +164,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
 
   return (
     <Dialog open onOpenChange={handleCancel}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>{expense ? 'Edit Expense' : 'Add Expense'}</DialogTitle>
         </DialogHeader>

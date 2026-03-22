@@ -482,7 +482,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>Create Build Report</DialogTitle>
         </DialogHeader>

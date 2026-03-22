@@ -99,7 +99,7 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>Add Manual Entry</DialogTitle>
         </DialogHeader>
