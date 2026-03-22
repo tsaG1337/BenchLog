@@ -292,7 +292,7 @@ export interface Expense {
   amount: number;
   currency: string;
   exchangeRate: number;
-  amountEur: number;
+  amountHome: number;
   description: string;
   vendor: string;
   category: string;
@@ -308,7 +308,7 @@ export interface Expense {
 }
 
 export interface ExpenseStats {
-  totalEur: number;
+  totalHome: number;
   byCategory: Record<string, number>;
   bySection: Record<string, number>;
   budgets: Record<string, number>;
@@ -331,7 +331,7 @@ export async function fetchExpenseStats(): Promise<ExpenseStats> {
   return request<ExpenseStats>('/api/expenses/stats');
 }
 
-export async function createExpense(expense: Omit<Expense, 'id' | 'amountEur' | 'createdAt' | 'updatedAt'>): Promise<{ ok: boolean; id: string }> {
+export async function createExpense(expense: Omit<Expense, 'id' | 'amountHome' | 'createdAt' | 'updatedAt'>): Promise<{ ok: boolean; id: string }> {
   return request('/api/expenses', { method: 'POST', body: JSON.stringify(expense) });
 }
 

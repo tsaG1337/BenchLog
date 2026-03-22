@@ -229,10 +229,10 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           y += 7;
 
           // Summary rows
-          const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountEur, 0);
+          const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0);
           doc.setFontSize(10);
           for (const [label, value] of [
-            ['Total Spent', fmtEur(expStats.totalEur)],
+            ['Total Spent', fmtEur(expStats.totalHome)],
             ['Number of Entries', String(expStats.count)],
             ['LBA/EASA Relevant', fmtEur(lbaTotal)],
           ] as [string, string][]) {
@@ -284,7 +284,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
             doc.setFont('helvetica', 'bold');
             doc.setTextColor(0);
             doc.text(exp.description, margin + 2, y);
-            doc.text(fmtEur(exp.amountEur), pageWidth - margin, y, { align: 'right' });
+            doc.text(fmtEur(exp.amountHome), pageWidth - margin, y, { align: 'right' });
             y += 4.5;
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(100);

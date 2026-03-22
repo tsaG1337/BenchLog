@@ -203,7 +203,7 @@ db.exec(`
     amount REAL NOT NULL,
     currency TEXT NOT NULL DEFAULT 'EUR',
     exchange_rate REAL NOT NULL DEFAULT 1.0,
-    amount_eur REAL NOT NULL,
+    amount_home REAL NOT NULL,
     description TEXT NOT NULL,
     vendor TEXT DEFAULT '',
     category TEXT NOT NULL DEFAULT 'other',
@@ -219,6 +219,16 @@ db.exec(`
   )
 `);
 try { db.exec(`ALTER TABLE expenses ADD COLUMN link TEXT DEFAULT ''`); } catch {} // no-op if already exists
+
+// Migration: rename amount_home → amount_home for existing databases
+{
+  const cols = db.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
+  if (cols.includes('amount_home') && !cols.includes('amount_home')) {
+    db.exec('ALTER TABLE expenses ADD COLUMN amount_home REAL NOT NULL DEFAULT 0');
+    db.exec('UPDATE expenses SET amount_home = amount_home');
+    console.log('[migration] Copied amount_home → amount_home for', db.prepare('SELECT COUNT(*) as n FROM expenses').get().n, 'rows');
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS expense_budgets (
@@ -1244,7 +1254,7 @@ const EXPENSE_CATEGORIES = ['airframe','engine','avionics','landing-gear','paint
 function expenseRow(row) {
   return {
     id: row.id, date: row.date, amount: row.amount, currency: row.currency,
-    exchangeRate: row.exchange_rate, amountEur: row.amount_eur,
+    exchangeRate: row.exchange_rate, amountHome: row.amount_home,
     description: row.description, vendor: row.vendor || '',
     category: row.category, assemblySection: row.assembly_section || '',
     partNumber: row.part_number || '',
@@ -1273,22 +1283,22 @@ app.get('/api/expenses', requireAuth, (req, res) => {
 // GET /api/expenses/stats
 app.get('/api/expenses/stats', requireAuth, (req, res) => {
   const rows = db.prepare('SELECT * FROM expenses').all();
-  const totalEur = rows.reduce((s, r) => s + r.amount_eur, 0);
+  const totalHome = rows.reduce((s, r) => s + r.amount_home, 0);
   const byCategory = {};
   const bySection = {};
   for (const cat of EXPENSE_CATEGORIES) byCategory[cat] = 0;
   for (const r of rows) {
-    byCategory[r.category] = (byCategory[r.category] || 0) + r.amount_eur;
-    if (r.assembly_section) bySection[r.assembly_section] = (bySection[r.assembly_section] || 0) + r.amount_eur;
+    byCategory[r.category] = (byCategory[r.category] || 0) + r.amount_home;
+    if (r.assembly_section) bySection[r.assembly_section] = (bySection[r.assembly_section] || 0) + r.amount_home;
   }
   const budgets = {};
   for (const b of db.prepare('SELECT * FROM expense_budgets').all()) budgets[b.category] = b.budget_amount;
   // Monthly totals for last 12 months
   const monthly = db.prepare(`
-    SELECT strftime('%Y-%m', date) as month, SUM(amount_eur) as total
+    SELECT strftime('%Y-%m', date) as month, SUM(amount_home) as total
     FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
   `).all();
-  res.json({ totalEur, byCategory, bySection, budgets, monthly, count: rows.length });
+  res.json({ totalHome, byCategory, bySection, budgets, monthly, count: rows.length });
 });
 
 // GET /api/expenses/export/csv
@@ -1297,7 +1307,7 @@ app.get('/api/expenses/export/csv', requireAuth, (req, res) => {
   const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes,Link';
   const lines = rows.map(r => [
     r.date, `"${(r.description||'').replace(/"/g,'""')}"`, `"${(r.vendor||'').replace(/"/g,'""')}"`,
-    r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_eur.toFixed(2),
+    r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_home.toFixed(2),
     r.part_number || '', r.is_certification_relevant ? 'Yes' : 'No',
     `"${(r.notes||'').replace(/"/g,'""')}"`, r.link || ''
   ].join(','));
@@ -1340,7 +1350,7 @@ app.post('/api/expenses', requireAuth, (req, res) => {
   const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const rate = exchangeRate || 1.0;
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_eur, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, link, created_at, updated_at)
+  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_home, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, link, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), link || '', now, now);
   res.json({ ok: true, id });
@@ -1353,7 +1363,7 @@ app.put('/api/expenses/:id', requireAuth, (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' });
   const rate = exchangeRate ?? existing.exchange_rate;
   const amt = amount ?? existing.amount;
-  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_eur=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, link=?, updated_at=? WHERE id=?`)
+  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_home=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, link=?, updated_at=? WHERE id=?`)
     .run(date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate, description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category, assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number, isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant, JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)), notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), link ?? existing.link ?? '', new Date().toISOString(), req.params.id);
   res.json({ ok: true });
 });

@@ -12,7 +12,7 @@ import { format } from 'date-fns';
 
 interface ExpenseFormProps {
   expense?: Expense;
-  onSave: (data: Omit<Expense, 'id' | 'amountEur' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  onSave: (data: Omit<Expense, 'id' | 'amountHome' | 'createdAt' | 'updatedAt'>) => Promise<void>;
   onClose: () => void;
 }
 
@@ -95,7 +95,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
     }
     return parseFloat(form.exchangeRate || '1') || 1;
   })();
-  const amountEur = parseFloat(form.amount || '0') * effectiveRate;
+  const amountHome = parseFloat(form.amount || '0') * effectiveRate;
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
@@ -224,7 +224,7 @@ export function ExpenseForm({ expense, onSave, onClose }: ExpenseFormProps) {
                   </div>
                 )}
                 <div className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
-                  = <span className="font-medium text-foreground">{CURRENCIES.find(c => c.code === homeCurrency)?.symbol}{amountEur.toFixed(2)}</span>
+                  = <span className="font-medium text-foreground">{CURRENCIES.find(c => c.code === homeCurrency)?.symbol}{amountHome.toFixed(2)}</span>
                   {conversionMode === 'total' && parseFloat(form.amount) > 0 && parseFloat(totalInHome) > 0 && (
                     <span className="ml-2 text-xs opacity-60">(rate: {effectiveRate.toFixed(4)})</span>
                   )}

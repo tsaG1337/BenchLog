@@ -53,7 +53,7 @@ export default function ExpensesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleSave = async (data: Omit<Expense, 'id' | 'amountEur' | 'createdAt' | 'updatedAt'>) => {
+  const handleSave = async (data: Omit<Expense, 'id' | 'amountHome' | 'createdAt' | 'updatedAt'>) => {
     if (editingExpense) {
       await updateExpense(editingExpense.id, data);
       toast.success('Expense updated');
@@ -123,9 +123,9 @@ export default function ExpensesPage() {
       doc.text('Summary', margin, y);
       y += 7;
 
-      const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountEur, 0);
+      const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0);
       const rows: [string, string][] = [
-        ['Total Spent', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalEur)],
+        ['Total Spent', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalHome)],
         ['Number of Entries', String(expStats.count)],
         ['LBA/EASA Relevant', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(lbaTotal)],
       ];
@@ -170,7 +170,7 @@ export default function ExpensesPage() {
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.text('TOTAL', margin + 2, y);
-      doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalEur), pageWidth - margin, y, { align: 'right' });
+      doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalHome), pageWidth - margin, y, { align: 'right' });
       y += 12;
 
       // Itemized list
@@ -189,7 +189,7 @@ export default function ExpensesPage() {
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(0);
         doc.text(exp.description, margin + 2, y);
-        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(exp.amountEur), pageWidth - margin, y, { align: 'right' });
+        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(exp.amountHome), pageWidth - margin, y, { align: 'right' });
         y += 4.5;
 
         checkPage(5);
@@ -303,7 +303,7 @@ export default function ExpensesPage() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-card border border-border rounded-xl p-4">
                 <p className="text-xs text-muted-foreground mb-1">Total Spent</p>
-                <p className="text-2xl font-bold text-foreground">{fmtEur(stats?.totalEur ?? 0)}</p>
+                <p className="text-2xl font-bold text-foreground">{fmtEur(stats?.totalHome ?? 0)}</p>
                 <p className="text-xs text-muted-foreground mt-1">{stats?.count ?? 0} entries</p>
               </div>
               <div className="bg-card border border-border rounded-xl p-4">
@@ -313,15 +313,15 @@ export default function ExpensesPage() {
               </div>
               <div className="bg-card border border-border rounded-xl p-4">
                 <p className="text-xs text-muted-foreground mb-1">Remaining</p>
-                <p className={`text-2xl font-bold ${totalBudget > 0 && (stats?.totalEur ?? 0) > totalBudget ? 'text-destructive' : 'text-foreground'}`}>
-                  {fmtEur(Math.max(0, totalBudget - (stats?.totalEur ?? 0)))}
+                <p className={`text-2xl font-bold ${totalBudget > 0 && (stats?.totalHome ?? 0) > totalBudget ? 'text-destructive' : 'text-foreground'}`}>
+                  {fmtEur(Math.max(0, totalBudget - (stats?.totalHome ?? 0)))}
                 </p>
-                {totalBudget > 0 && <p className="text-xs text-muted-foreground mt-1">{Math.round(((stats?.totalEur ?? 0) / totalBudget) * 100)}% used</p>}
+                {totalBudget > 0 && <p className="text-xs text-muted-foreground mt-1">{Math.round(((stats?.totalHome ?? 0) / totalBudget) * 100)}% used</p>}
               </div>
               <div className="bg-card border border-border rounded-xl p-4">
                 <p className="text-xs text-muted-foreground mb-1">LBA Relevant</p>
                 <p className="text-2xl font-bold text-foreground">
-                  {fmtEur(expenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountEur, 0))}
+                  {fmtEur(expenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0))}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">{expenses.filter(e => e.isCertificationRelevant).length} entries</p>
               </div>
@@ -440,7 +440,7 @@ export default function ExpensesPage() {
                           <td className="px-4 py-3"><CategoryBadge category={exp.category} /></td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">{exp.assemblySection ? `${icons[exp.assemblySection] || ''} ${labels[exp.assemblySection] || exp.assemblySection}` : '—'}</td>
                           <td className="px-4 py-3 text-right whitespace-nowrap">{cur?.symbol}{exp.amount.toFixed(2)} {exp.currency !== 'EUR' && <span className="text-xs text-muted-foreground">{exp.currency}</span>}</td>
-                          <td className="px-4 py-3 text-right font-medium whitespace-nowrap">{fmtEur(exp.amountEur)}</td>
+                          <td className="px-4 py-3 text-right font-medium whitespace-nowrap">{fmtEur(exp.amountHome)}</td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1 justify-end">
                               {exp.link && (
@@ -492,7 +492,7 @@ export default function ExpensesPage() {
                   <tfoot>
                     <tr className="bg-secondary/50">
                       <td colSpan={5} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">Total</td>
-                      <td className="px-4 py-2.5 text-right font-bold">{fmtEur(expenses.reduce((s, e) => s + e.amountEur, 0))}</td>
+                      <td className="px-4 py-2.5 text-right font-bold">{fmtEur(expenses.reduce((s, e) => s + e.amountHome, 0))}</td>
                       <td />
                     </tr>
                   </tfoot>
