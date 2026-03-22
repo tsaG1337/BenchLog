@@ -8,6 +8,8 @@ const fs = require('fs');
 const mqtt = require('mqtt');
 const crypto = require('crypto');
 const sharp = require('sharp');
+const archiver = require('archiver');
+const unzipper = require('unzipper');
 
 // ─── Auth helpers ───────────────────────────────────────────────────
 function loadOrCreateJwtSecret() {
@@ -961,19 +963,48 @@ app.put('/api/sections', requireAuth, (req, res) => {
 
 // ─── Export / Import ────────────────────────────────────────────────
 
-// GET /api/export?settings=1&sessions=1
-app.get('/api/export', async (req, res) => {
-  const includeSettings = req.query.settings === '1';
-  const includeSessions = req.query.sessions === '1';
+// Multer for ZIP backup uploads (disk storage, up to 4 GB)
+const backupUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const tmp = path.join(path.dirname(DB_PATH), 'tmp_import');
+      fs.mkdirSync(tmp, { recursive: true });
+      cb(null, tmp);
+    },
+    filename: (_req, _file, cb) => cb(null, `import-${Date.now()}.zip`),
+  }),
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
+});
 
-  if (!includeSettings && !includeSessions) {
-    return res.status(400).json({ error: 'Nothing selected for export' });
-  }
+// GET /api/export  — streams a ZIP archive
+app.get('/api/export', requireAuth, async (req, res) => {
+  const includeSettings = req.query.settings !== '0';
+  const includeSessions = req.query.sessions !== '0';
+  const includeExpenses = req.query.expenses !== '0';
+  const includeBlog     = req.query.blog !== '0';
 
-  const exportData = { version: 1, exportedAt: new Date().toISOString() };
+  const dateStr = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Disposition', `attachment; filename="benchlog-backup-${dateStr}.zip"`);
+  res.setHeader('Content-Type', 'application/zip');
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', err => { console.error('[export] archive error:', err.message); res.end(); });
+  archive.pipe(res);
+
+  const data = { version: 2, exportedAt: new Date().toISOString() };
+  const addedFiles = new Set();
+
+  const addFile = (dir, filename, archiveFolder) => {
+    if (!filename || addedFiles.has(filename)) return;
+    const fp = path.join(dir, filename);
+    if (fs.existsSync(fp)) {
+      archive.file(fp, { name: `uploads/${archiveFolder}/${filename}` });
+      addedFiles.add(filename);
+    }
+  };
 
   if (includeSettings) {
-    exportData.settings = {
+    data.settings = {
       general: getSetting('general', DEFAULT_GENERAL),
       mqtt: getMqttSettings(),
       sections: getSetting('sections', DEFAULT_SECTIONS),
@@ -983,112 +1014,160 @@ app.get('/api/export', async (req, res) => {
   }
 
   if (includeSessions) {
-    const rows = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all();
-    const sessions = [];
-
-    for (const row of rows) {
-      const session = {
-        id: row.id,
-        section: row.section,
-        startTime: row.start_time,
-        endTime: row.end_time,
-        durationMinutes: row.duration_minutes,
-        notes: row.notes,
-        plansReference: row.plans_reference,
-        imageUrls: JSON.parse(row.image_urls || '[]'),
-        images: [],
+    data.sessions = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all().map(row => {
+      const imageUrls = JSON.parse(row.image_urls || '[]');
+      imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+      return {
+        id: row.id, section: row.section,
+        startTime: row.start_time, endTime: row.end_time,
+        durationMinutes: row.duration_minutes, notes: row.notes,
+        plansReference: row.plans_reference, imageUrls,
       };
-
-      // Embed images as base64
-      const ctMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
-      for (const url of session.imageUrls) {
-        try {
-          const filename = path.basename(url);
-          const filePath = path.join(UPLOADS_DIR, filename);
-          if (filename && fs.existsSync(filePath)) {
-            const buffer = await fs.promises.readFile(filePath);
-            const contentType = ctMap[path.extname(filename).toLowerCase()] || 'image/jpeg';
-            session.images.push({ objectName: filename, contentType, data: buffer.toString('base64') });
-          }
-        } catch (err) {
-          console.error(`Export: failed to read image ${url}:`, err.message);
-        }
-      }
-
-      sessions.push(session);
-    }
-
-    exportData.sessions = sessions;
+    });
   }
 
-  const filename = `benchlog-export-${new Date().toISOString().slice(0, 10)}.json`;
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.setHeader('Content-Type', 'application/json');
-  res.json(exportData);
+  if (includeExpenses) {
+    data.expenses = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all().map(row => {
+      const receiptUrls = JSON.parse(row.receipt_urls || '[]');
+      receiptUrls.forEach(u => addFile(RECEIPTS_DIR, path.basename(u), 'receipts'));
+      return expenseRow(row);
+    });
+  }
+
+  if (includeBlog) {
+    data.blogPosts = db.prepare('SELECT * FROM blog_posts ORDER BY published_at DESC').all().map(row => {
+      const imageUrls = JSON.parse(row.image_urls || '[]');
+      imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+      return {
+        id: row.id, title: row.title, content: row.content,
+        section: row.section, imageUrls,
+        publishedAt: row.published_at, updatedAt: row.updated_at,
+      };
+    });
+  }
+
+  archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
+  await archive.finalize();
 });
 
-// POST /api/import (auth required)
-app.post('/api/import', requireAuth, async (req, res) => {
-  const { settings, sessions } = req.body;
-  const results = { settingsImported: false, sessionsImported: 0, imagesImported: 0 };
+// Helper: apply settings from import data
+function applySettings(settings) {
+  if (settings.general) setSetting('general', settings.general);
+  if (settings.mqtt) {
+    const cur = getMqttSettings();
+    const m = { ...settings.mqtt };
+    if (!m.password) m.password = cur.password;
+    setSetting('mqtt', m);
+  }
+  if (settings.sections)          setSetting('sections', settings.sections);
+  if (settings.flowchartStatus)   setSetting('flowchart_status', settings.flowchartStatus);
+  if (settings.flowchartPackages) setSetting('flowchart_packages', settings.flowchartPackages);
+  connectMqtt();
+}
+
+// Helper: import structured data object into the DB
+function applyImportData(data, results) {
+  if (data.settings) { applySettings(data.settings); results.settingsImported = true; }
+
+  for (const session of (data.sessions || [])) {
+    const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
+    const urls = JSON.stringify(session.imageUrls || []);
+    if (existing) {
+      db.prepare(`UPDATE sessions SET section=?,start_time=?,end_time=?,duration_minutes=?,notes=?,plans_reference=?,image_urls=? WHERE id=?`)
+        .run(session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls, session.id);
+    } else {
+      db.prepare(`INSERT INTO sessions(id,section,start_time,end_time,duration_minutes,notes,plans_reference,image_urls) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(session.id, session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls);
+    }
+    results.sessionsImported++;
+  }
+
+  for (const exp of (data.expenses || [])) {
+    const existing = db.prepare('SELECT id FROM expenses WHERE id = ?').get(exp.id);
+    const rUrls = JSON.stringify(exp.receiptUrls || []);
+    const tags  = JSON.stringify(exp.tags || []);
+    if (existing) {
+      db.prepare(`UPDATE expenses SET date=?,amount=?,currency=?,exchange_rate=?,amount_home=?,description=?,vendor=?,category=?,assembly_section=?,part_number=?,is_certification_relevant=?,receipt_urls=?,notes=?,tags=?,link=?,updated_at=? WHERE id=?`)
+        .run(exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.updatedAt, exp.id);
+    } else {
+      db.prepare(`INSERT INTO expenses(id,date,amount,currency,exchange_rate,amount_home,description,vendor,category,assembly_section,part_number,is_certification_relevant,receipt_urls,notes,tags,link,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(exp.id, exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.createdAt, exp.updatedAt);
+    }
+    results.expensesImported++;
+  }
+
+  for (const post of (data.blogPosts || [])) {
+    const existing = db.prepare('SELECT id FROM blog_posts WHERE id = ?').get(post.id);
+    const iUrls = JSON.stringify(post.imageUrls || []);
+    if (existing) {
+      db.prepare(`UPDATE blog_posts SET title=?,content=?,section=?,image_urls=?,updated_at=? WHERE id=?`)
+        .run(post.title, post.content, post.section||'', iUrls, post.updatedAt, post.id);
+    } else {
+      db.prepare(`INSERT INTO blog_posts(id,title,content,section,image_urls,published_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(post.id, post.title, post.content, post.section||'', iUrls, post.publishedAt, post.updatedAt);
+    }
+    results.blogPostsImported++;
+  }
+
+  publishMqttStats();
+}
+
+// POST /api/import — accepts a .zip backup or legacy .json file
+app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, res) => {
+  const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0 };
+
+  // Legacy JSON path (no file uploaded, body contains JSON)
+  if (!req.file) {
+    try {
+      const data = req.body;
+      if (!data || !data.version) return res.status(400).json({ error: 'No backup file provided' });
+      applyImportData(data, results);
+      return res.json({ ok: true, ...results });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  const zipPath = req.file.path;
+  const extractDir = path.join(path.dirname(DB_PATH), `tmp_extract_${Date.now()}`);
 
   try {
-    if (settings) {
-      if (settings.general) setSetting('general', settings.general);
-      if (settings.mqtt) {
-        const currentMqtt = getMqttSettings();
-        // Don't overwrite password if empty in import
-        const newMqtt = { ...settings.mqtt };
-        if (!newMqtt.password) newMqtt.password = currentMqtt.password;
-        setSetting('mqtt', newMqtt);
+    // Extract ZIP
+    await fs.createReadStream(zipPath)
+      .pipe(unzipper.Extract({ path: extractDir }))
+      .promise();
+
+    // Parse data.json
+    const dataJsonPath = path.join(extractDir, 'data.json');
+    if (!fs.existsSync(dataJsonPath)) throw new Error('Invalid backup: data.json not found in ZIP');
+    const data = JSON.parse(fs.readFileSync(dataJsonPath, 'utf8'));
+
+    // Copy session images
+    const sessDir = path.join(extractDir, 'uploads', 'sessions');
+    if (fs.existsSync(sessDir)) {
+      for (const file of fs.readdirSync(sessDir)) {
+        const dst = path.join(UPLOADS_DIR, file);
+        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(sessDir, file), dst); results.filesImported++; }
       }
-      if (settings.sections) setSetting('sections', settings.sections);
-      if (settings.flowchartStatus) setSetting('flowchart_status', settings.flowchartStatus);
-      if (settings.flowchartPackages) setSetting('flowchart_packages', settings.flowchartPackages);
-      results.settingsImported = true;
-      connectMqtt();
     }
 
-    if (sessions && Array.isArray(sessions)) {
-      for (const session of sessions) {
-        // Check if session already exists
-        const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
-        
-        // Write imported images to disk with fresh UUID filenames
-        const imageUrls = [];
-        if (session.images && Array.isArray(session.images)) {
-          for (const img of session.images) {
-            try {
-              const buffer = Buffer.from(img.data, 'base64');
-              const ext = path.extname(img.objectName || '').toLowerCase() || '.jpg';
-              const filename = `${uuidv4()}${ext}`;
-              fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
-              imageUrls.push(`/files/${filename}`);
-              results.imagesImported++;
-            } catch (err) {
-              console.error(`Import: failed to write image ${img.objectName}:`, err.message);
-            }
-          }
-        }
-
-        const finalImageUrls = imageUrls.length > 0 ? imageUrls : (session.imageUrls || []);
-
-        if (existing) {
-          // Update existing session
-          db.prepare(`UPDATE sessions SET section=?, start_time=?, end_time=?, duration_minutes=?, notes=?, plans_reference=?, image_urls=? WHERE id=?`)
-            .run(session.section, session.startTime, session.endTime, session.durationMinutes, session.notes || '', session.plansReference || null, JSON.stringify(finalImageUrls), session.id);
-        } else {
-          db.prepare(`INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(session.id, session.section, session.startTime, session.endTime, session.durationMinutes, session.notes || '', session.plansReference || null, JSON.stringify(finalImageUrls));
-        }
-        results.sessionsImported++;
+    // Copy receipts
+    const recDir = path.join(extractDir, 'uploads', 'receipts');
+    if (fs.existsSync(recDir)) {
+      for (const file of fs.readdirSync(recDir)) {
+        const dst = path.join(RECEIPTS_DIR, file);
+        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(recDir, file), dst); results.filesImported++; }
       }
-      publishMqttStats();
     }
 
+    applyImportData(data, results);
     res.json({ ok: true, ...results });
   } catch (err) {
+    console.error('[import]', err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    try { fs.unlinkSync(zipPath); } catch {}
+    try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch {}
   }
 });
 

@@ -175,15 +175,28 @@ export async function getTimerStatus(): Promise<TimerStatus> {
 }
 
 // ─── Import / Export ────────────────────────────────────────────────
-export async function exportData(includeSettings: boolean, includeSessions: boolean): Promise<Blob> {
-  const params = new URLSearchParams();
-  if (includeSettings) params.set('settings', '1');
-  if (includeSessions) params.set('sessions', '1');
+export interface ExportOptions {
+  settings?: boolean;
+  sessions?: boolean;
+  expenses?: boolean;
+  blog?: boolean;
+}
 
-  const res = await fetch(`${API_URL}/api/export?${params.toString()}`);
+export async function exportData(options: ExportOptions): Promise<Blob> {
+  const params = new URLSearchParams();
+  if (options.settings === false) params.set('settings', '0');
+  if (options.sessions === false) params.set('sessions', '0');
+  if (options.expenses === false) params.set('expenses', '0');
+  if (options.blog     === false) params.set('blog',     '0');
+  const qs = params.toString();
+  const res = await fetch(`${API_URL}/api/export${qs ? `?${qs}` : ''}`, {
+    headers: { ...getAuthHeaders() },
+  });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const text = await res.text();
+    let message = res.statusText;
+    try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
+    throw new Error(message);
   }
   return res.blob();
 }
@@ -192,14 +205,26 @@ export interface ImportResult {
   ok: boolean;
   settingsImported: boolean;
   sessionsImported: number;
-  imagesImported: number;
+  expensesImported: number;
+  blogPostsImported: number;
+  filesImported: number;
 }
 
-export async function importData(data: object): Promise<ImportResult> {
-  return request<ImportResult>('/api/import', {
+export async function importData(file: File): Promise<ImportResult> {
+  const form = new FormData();
+  form.append('backup', file);
+  const res = await fetch(`${API_URL}/api/import`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    headers: { ...getAuthHeaders() },
+    body: form,
   });
+  const text = await res.text();
+  if (!res.ok) {
+    let message = res.statusText;
+    try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
+    throw new Error(message);
+  }
+  return JSON.parse(text);
 }
 
 // ─── Blog Posts ─────────────────────────────────────────────────────
