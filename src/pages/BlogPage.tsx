@@ -168,7 +168,7 @@ export default function BlogPage() {
                     : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
                 </Link>
               </DropdownMenuItem>
-              {isAuthenticated && !demoMode && (
+              {isAuthenticated && (
                 <DropdownMenuItem asChild>
                   <Link to="/expenses" className="flex items-center w-full">
                     <Wallet className="w-4 h-4 mr-2" /> Expenses
