@@ -11,17 +11,19 @@ interface ImportExportSectionProps {
 }
 
 const CATEGORIES = [
-  { key: 'settings', label: 'Settings',      desc: 'General, MQTT, sections' },
-  { key: 'sessions', label: 'Build sessions', desc: 'All sessions + photos' },
-  { key: 'expenses', label: 'Expenses',       desc: 'All expenses + receipts' },
-  { key: 'blog',     label: 'Blog posts',     desc: 'All posts + images' },
+  { key: 'settings',     label: 'Settings',        desc: 'General, MQTT, sections' },
+  { key: 'sessions',     label: 'Build sessions',   desc: 'All sessions + photos' },
+  { key: 'expenses',     label: 'Expenses',         desc: 'All expenses + receipts' },
+  { key: 'blog',         label: 'Blog posts',       desc: 'All posts + images' },
+  { key: 'workPackages', label: 'Work packages',    desc: 'Build progress package tree' },
+  { key: 'signOffs',     label: 'Sign-offs',        desc: 'Inspector sign-off records' },
 ] as const;
 
 type CategoryKey = typeof CATEGORIES[number]['key'];
 
 export function ImportExportSection({ onImportComplete }: ImportExportSectionProps) {
   const [selected, setSelected] = useState<Record<CategoryKey, boolean>>({
-    settings: true, sessions: true, expenses: true, blog: true,
+    settings: true, sessions: true, expenses: true, blog: true, workPackages: true, signOffs: true,
   });
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -35,10 +37,12 @@ export function ImportExportSection({ onImportComplete }: ImportExportSectionPro
     setExporting(true);
     try {
       const blob = await exportData({
-        settings: selected.settings,
-        sessions: selected.sessions,
-        expenses: selected.expenses,
-        blog:     selected.blog,
+        settings:     selected.settings,
+        sessions:     selected.sessions,
+        expenses:     selected.expenses,
+        blog:         selected.blog,
+        workPackages: selected.workPackages,
+        signOffs:     selected.signOffs,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -67,6 +71,8 @@ export function ImportExportSection({ onImportComplete }: ImportExportSectionPro
       if (result.expensesImported > 0)  parts.push(`${result.expensesImported} expenses`);
       if (result.blogPostsImported > 0) parts.push(`${result.blogPostsImported} blog posts`);
       if (result.filesImported > 0)     parts.push(`${result.filesImported} files`);
+      if (result.workPackagesImported)  parts.push('work packages');
+      if (result.signOffsImported > 0)  parts.push(`${result.signOffsImported} sign-offs`);
       toast.success(`Imported: ${parts.join(', ') || 'nothing'}`);
       onImportComplete?.();
     } catch (err: any) {

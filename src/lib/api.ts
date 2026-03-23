@@ -183,14 +183,18 @@ export interface ExportOptions {
   sessions?: boolean;
   expenses?: boolean;
   blog?: boolean;
+  workPackages?: boolean;
+  signOffs?: boolean;
 }
 
 export async function exportData(options: ExportOptions): Promise<Blob> {
   const params = new URLSearchParams();
-  if (options.settings === false) params.set('settings', '0');
-  if (options.sessions === false) params.set('sessions', '0');
-  if (options.expenses === false) params.set('expenses', '0');
-  if (options.blog     === false) params.set('blog',     '0');
+  if (options.settings     === false) params.set('settings',     '0');
+  if (options.sessions     === false) params.set('sessions',     '0');
+  if (options.expenses     === false) params.set('expenses',     '0');
+  if (options.blog         === false) params.set('blog',         '0');
+  if (options.workPackages === false) params.set('workPackages', '0');
+  if (options.signOffs     === false) params.set('signOffs',     '0');
   const qs = params.toString();
   const res = await fetch(`${API_URL}/api/export${qs ? `?${qs}` : ''}`, {
     headers: { ...getAuthHeaders() },
@@ -211,6 +215,8 @@ export interface ImportResult {
   expensesImported: number;
   blogPostsImported: number;
   filesImported: number;
+  workPackagesImported: boolean;
+  signOffsImported: number;
 }
 
 export async function importData(file: File): Promise<ImportResult> {

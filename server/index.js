@@ -1044,10 +1044,12 @@ const backupUpload = multer({
 
 // GET /api/export  — streams a ZIP archive
 app.get('/api/export', requireAuth, async (req, res) => {
-  const includeSettings = req.query.settings !== '0';
-  const includeSessions = req.query.sessions !== '0';
-  const includeExpenses = req.query.expenses !== '0';
-  const includeBlog     = req.query.blog !== '0';
+  const includeSettings     = req.query.settings     !== '0';
+  const includeSessions     = req.query.sessions     !== '0';
+  const includeExpenses     = req.query.expenses     !== '0';
+  const includeBlog         = req.query.blog         !== '0';
+  const includeWorkPackages = req.query.workPackages !== '0';
+  const includeSignOffs     = req.query.signOffs     !== '0';
 
   const dateStr = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Disposition', `attachment; filename="benchlog-backup-${dateStr}.zip"`);
@@ -1075,8 +1077,11 @@ app.get('/api/export', requireAuth, async (req, res) => {
       mqtt: getMqttSettings(),
       sections: getSetting('sections', DEFAULT_SECTIONS),
       flowchartStatus: getSetting('flowchart_status', {}),
-      flowchartPackages: getSetting('flowchart_packages', {}),
     };
+  }
+
+  if (includeWorkPackages) {
+    data.workPackages = getSetting('flowchart_packages', {});
   }
 
   if (includeSessions) {
@@ -1112,7 +1117,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
     });
   }
 
-  data.signOffs = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC').all().map(r => ({
+  if (includeSignOffs) data.signOffs = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC').all().map(r => ({
     id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
     date: r.date, inspectorName: r.inspector_name,
     inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
@@ -1142,6 +1147,7 @@ function applySettings(settings) {
 // Helper: import structured data object into the DB
 function applyImportData(data, results) {
   if (data.settings) { applySettings(data.settings); results.settingsImported = true; }
+  if (data.workPackages) { setSetting('flowchart_packages', data.workPackages); results.workPackagesImported = true; }
 
   for (const session of (data.sessions || [])) {
     const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
@@ -1192,6 +1198,7 @@ function applyImportData(data, results) {
       db.prepare(`INSERT INTO sign_offs(id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(s.id, s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.createdAt);
     }
+    results.signOffsImported++;
   }
 
   publishMqttStats();
@@ -1199,7 +1206,7 @@ function applyImportData(data, results) {
 
 // POST /api/import — accepts a .zip backup or legacy .json file
 app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, res) => {
-  const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0 };
+  const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0, workPackagesImported: false, signOffsImported: 0 };
 
   // Legacy JSON path (no file uploaded, body contains JSON)
   if (!req.file) {
