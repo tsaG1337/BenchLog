@@ -9,7 +9,7 @@ import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
 import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
 import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
-import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
+import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, trackPageView, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
@@ -83,6 +83,16 @@ export default function BlogPage() {
     if (activePost) document.title = `${activePost.title} — ${projectName}`;
     else if (projectName) document.title = `${projectName} — Blog`;
   }, [activePost, projectName]);
+
+  // Track blog list view once on initial mount (captures external referrer)
+  useEffect(() => { trackPageView('/blog', undefined, document.referrer); }, []);
+
+  // Track individual post views
+  useEffect(() => {
+    if (view === 'post' && activePost) {
+      trackPageView(`/blog/${activePost.id}`, activePost.id);
+    }
+  }, [view, activePost?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openPost = (post: BlogPost) => {
     setActivePost(post);

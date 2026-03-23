@@ -273,6 +273,18 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS visitor_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    country TEXT NOT NULL DEFAULT 'XX',
+    referrer TEXT DEFAULT '',
+    post_id TEXT DEFAULT ''
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_visitor_stats_ts ON visitor_stats (ts)`);
+
 // ─── Settings helpers ───────────────────────────────────────────────
 function getSetting(key, defaultValue = null) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -1621,6 +1633,74 @@ app.get('/blog/:postId', (req, res) => {
     imageUrl,
     pageUrl: `${base}/blog/${postId}`,
   }));
+});
+
+// ─── Visitor tracking ────────────────────────────────────────────────
+app.post('/api/track', (req, res) => {
+  // Skip bots
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  if (/bot|crawler|spider|scraper|headless|prerender|curl|wget/.test(ua)) return res.json({ ok: true });
+
+  const country = ((req.headers['cf-ipcountry'] || 'XX') + '').toUpperCase().slice(0, 2);
+  const { path: pagePath = '/blog', postId = '', referrer: clientReferrer = '' } = req.body || {};
+
+  // Prefer client-sent referrer (document.referrer, captures external source even for SPA nav)
+  // Fall back to HTTP Referer header for direct loads
+  let referrer = '';
+  const refSource = clientReferrer || req.headers['referer'] || '';
+  try {
+    if (refSource) {
+      const url = new URL(refSource);
+      const host = (req.headers['host'] || '').split(':')[0];
+      if (host && !url.hostname.endsWith(host)) referrer = url.hostname;
+    }
+  } catch {}
+
+  db.prepare('INSERT INTO visitor_stats (ts, path, country, referrer, post_id) VALUES (?, ?, ?, ?, ?)')
+    .run(Date.now(), pagePath, country, referrer, postId || '');
+  res.json({ ok: true });
+});
+
+// ─── Visitor stats ────────────────────────────────────────────────────
+app.get('/api/stats/visitors', requireAuth, (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 30, 365);
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  const total = db.prepare('SELECT COUNT(*) as n FROM visitor_stats').get().n;
+  const totalPeriod = db.prepare('SELECT COUNT(*) as n FROM visitor_stats WHERE ts > ?').get(since).n;
+
+  const countries = db.prepare(`
+    SELECT country, COUNT(*) as count FROM visitor_stats
+    WHERE ts > ? AND country NOT IN ('XX','T1')
+    GROUP BY country ORDER BY count DESC LIMIT 20
+  `).all(since);
+
+  const referrers = db.prepare(`
+    SELECT referrer as domain, COUNT(*) as count FROM visitor_stats
+    WHERE ts > ? AND referrer != ''
+    GROUP BY referrer ORDER BY count DESC LIMIT 20
+  `).all(since);
+
+  const topPosts = db.prepare(`
+    SELECT v.post_id, b.title, COUNT(*) as count
+    FROM visitor_stats v
+    LEFT JOIN blog_posts b ON b.id = v.post_id
+    WHERE v.ts > ? AND v.post_id != ''
+    GROUP BY v.post_id ORDER BY count DESC LIMIT 10
+  `).all(since);
+
+  const daily = db.prepare(`
+    SELECT date(ts / 1000, 'unixepoch') as date, COUNT(*) as count
+    FROM visitor_stats WHERE ts > ?
+    GROUP BY date ORDER BY date ASC
+  `).all(since);
+
+  res.json({ total, totalPeriod, countries, referrers, topPosts, daily, days });
+});
+
+app.delete('/api/stats/visitors', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM visitor_stats').run();
+  res.json({ ok: true });
 });
 
 // ─── Debug / Diagnostics ────────────────────────────────────────────

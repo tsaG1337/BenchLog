@@ -453,3 +453,31 @@ export async function regenerateWebhookKey(): Promise<string> {
   const data = await request<{ key: string }>('/api/settings/webhook-key/regenerate', { method: 'POST' });
   return data.key;
 }
+
+// ─── Visitor Stats ───────────────────────────────────────────────────
+export interface VisitorStats {
+  total: number;
+  totalPeriod: number;
+  days: number;
+  countries: { country: string; count: number }[];
+  referrers: { domain: string; count: number }[];
+  topPosts: { post_id: string; title: string | null; count: number }[];
+  daily: { date: string; count: number }[];
+}
+
+export async function fetchVisitorStats(days = 30): Promise<VisitorStats> {
+  return request<VisitorStats>(`/api/stats/visitors?days=${days}`);
+}
+
+export async function clearVisitorStats(): Promise<void> {
+  await request('/api/stats/visitors', { method: 'DELETE' });
+}
+
+export function trackPageView(pagePath: string, postId?: string, referrer?: string): void {
+  // Fire-and-forget — never throws
+  fetch(`${API_URL}/api/track`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: pagePath, postId: postId || '', referrer: referrer || '' }),
+  }).catch(() => {});
+}
