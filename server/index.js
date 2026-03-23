@@ -285,6 +285,24 @@ db.exec(`
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_visitor_stats_ts ON visitor_stats (ts)`);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sign_offs (
+    id TEXT PRIMARY KEY,
+    package_id TEXT NOT NULL,
+    package_label TEXT NOT NULL,
+    section_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    inspector_name TEXT DEFAULT '',
+    inspection_completed INTEGER DEFAULT 0,
+    no_critical_issues INTEGER DEFAULT 0,
+    execution_satisfactory INTEGER DEFAULT 0,
+    rework_needed INTEGER DEFAULT 0,
+    comments TEXT DEFAULT '',
+    signature_png TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
 // Prune visitor stats older than 1 year — runs on startup and every 24h
 function pruneVisitorStats() {
   const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
@@ -1076,6 +1094,14 @@ app.get('/api/export', requireAuth, async (req, res) => {
     });
   }
 
+  data.signOffs = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC').all().map(r => ({
+    id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
+    date: r.date, inspectorName: r.inspector_name,
+    inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
+    executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
+    comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
+  }));
+
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
   await archive.finalize();
 });
@@ -1137,6 +1163,17 @@ function applyImportData(data, results) {
         .run(post.id, post.title, post.content, post.section||'', iUrls, post.publishedAt, post.updatedAt);
     }
     results.blogPostsImported++;
+  }
+
+  for (const s of (data.signOffs || [])) {
+    const existing = db.prepare('SELECT id FROM sign_offs WHERE id = ?').get(s.id);
+    if (existing) {
+      db.prepare(`UPDATE sign_offs SET package_id=?,package_label=?,section_id=?,date=?,inspector_name=?,inspection_completed=?,no_critical_issues=?,execution_satisfactory=?,rework_needed=?,comments=?,signature_png=? WHERE id=?`)
+        .run(s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.id);
+    } else {
+      db.prepare(`INSERT INTO sign_offs(id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(s.id, s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.createdAt);
+    }
   }
 
   publishMqttStats();
@@ -1642,6 +1679,36 @@ app.get('/blog/:postId', (req, res) => {
     imageUrl,
     pageUrl: `${base}/blog/${postId}`,
   }));
+});
+
+// ─── Sign-offs ───────────────────────────────────────────────────────
+app.get('/api/signoffs', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC, created_at DESC').all();
+  res.json(rows.map(r => ({
+    id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
+    date: r.date, inspectorName: r.inspector_name,
+    inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
+    executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
+    comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
+  })));
+});
+
+app.post('/api/signoffs', requireAuth, (req, res) => {
+  const { id, packageId, packageLabel, sectionId, date, inspectorName,
+    inspectionCompleted, noCriticalIssues, executionSatisfactory, reworkNeeded,
+    comments, signaturePng } = req.body;
+  if (!packageId || !packageLabel || !date || !signaturePng) return res.status(400).json({ error: 'Missing required fields' });
+  db.prepare(`INSERT INTO sign_offs (id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id || uuidv4(), packageId, packageLabel, sectionId || '', date,
+      inspectorName || '', inspectionCompleted?1:0, noCriticalIssues?1:0,
+      executionSatisfactory?1:0, reworkNeeded?1:0, comments || '', signaturePng);
+  res.json({ ok: true });
+});
+
+app.delete('/api/signoffs/:id', requireAuth, (req, res) => {
+  db.prepare('DELETE FROM sign_offs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 // ─── Visitor tracking ────────────────────────────────────────────────

@@ -6,15 +6,18 @@ import { SessionForm } from '@/components/SessionForm';
 import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
 import { WorkSession } from '@/lib/types';
-import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus, fetchSignOffs, SignOff } from '@/lib/api';
 import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, BookOpen, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet } from 'lucide-react';
+import { Wrench, BarChart3, Clock, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet, ClipboardCheck } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { AboutDialog } from '@/components/AboutDialog';
+import { SignOffDialog } from '@/components/SignOffDialog';
+import { SignOffsList } from '@/components/SignOffsList';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
@@ -38,6 +41,12 @@ const Index = () => {
   const [timeFormat, setTimeFormat] = useState<'24h' | '12h'>('24h');
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
   const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
+  const [signOffs, setSignOffs] = useState<SignOff[]>([]);
+  const [showSignOff, setShowSignOff] = useState(false);
+
+  const loadSignOffs = useCallback(async () => {
+    try { setSignOffs(await fetchSignOffs()); } catch { /* not critical */ }
+  }, []);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -65,6 +74,8 @@ const Index = () => {
       setPackageProgressPct(s.progressPct);
     }).catch(() => {});
     
+    loadSignOffs();
+
     // Check for active timer on mount
     getTimerStatus().then(status => {
       if (status.running && status.section) {
@@ -202,6 +213,11 @@ const Index = () => {
                   <Plus className="w-4 h-4 mr-2" /> Add Entry
                 </DropdownMenuItem>
               )}
+              {!demoMode && (
+                <DropdownMenuItem onClick={() => setShowSignOff(true)}>
+                  <ClipboardCheck className="w-4 h-4 mr-2" /> Sign Off
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => setOpenDialog('export')}>
                 <Download className="w-4 h-4 mr-2" /> Build Report
               </DropdownMenuItem>
@@ -273,6 +289,11 @@ const Index = () => {
         open={openDialog === 'about'}
         onOpenChange={o => setOpenDialog(o ? 'about' : null)}
       />
+      <SignOffDialog
+        open={showSignOff}
+        onOpenChange={setShowSignOff}
+        onSaved={loadSignOffs}
+      />
 
       <main className="container max-w-4xl py-6 space-y-6">
         <div className="bg-card border border-border rounded-xl p-8">
@@ -314,12 +335,28 @@ const Index = () => {
             <TabsTrigger value="history" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
               <Clock className="w-4 h-4" /> History
             </TabsTrigger>
+            <TabsTrigger value="signoffs" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
+              <ClipboardCheck className="w-4 h-4" /> Sign-offs
+              {signOffs.length > 0 && (
+                <span className="ml-1 text-xs bg-primary/20 text-primary rounded-full px-1.5 py-0.5 leading-none">{signOffs.length}</span>
+              )}
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="dashboard" className="mt-4">
             <Dashboard sessions={sessions} targetHours={targetHours} progressMode={progressMode} packageProgressPct={packageProgressPct} />
           </TabsContent>
           <TabsContent value="history" className="mt-4">
             <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} timeFormat={timeFormat} />
+          </TabsContent>
+          <TabsContent value="signoffs" className="mt-4">
+            {!demoMode && (
+              <div className="flex justify-end mb-3">
+                <Button size="sm" onClick={() => setShowSignOff(true)} className="gap-1.5">
+                  <ClipboardCheck className="w-4 h-4" /> New Sign-Off
+                </Button>
+              </div>
+            )}
+            <SignOffsList signOffs={signOffs} onDeleted={loadSignOffs} readOnly={demoMode} />
           </TabsContent>
         </Tabs>
       </main>

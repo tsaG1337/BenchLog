@@ -454,6 +454,42 @@ export async function regenerateWebhookKey(): Promise<string> {
   return data.key;
 }
 
+// ─── Sign-offs ───────────────────────────────────────────────────────
+export interface SignOff {
+  id: string;
+  packageId: string;
+  packageLabel: string;
+  sectionId: string;
+  date: string;
+  inspectorName: string;
+  inspectionCompleted: boolean;
+  noCriticalIssues: boolean;
+  executionSatisfactory: boolean;
+  reworkNeeded: boolean;
+  comments: string;
+  signaturePng: string;
+  createdAt: string;
+}
+
+export async function fetchSignOffs(): Promise<SignOff[]> {
+  return request<SignOff[]>('/api/signoffs');
+}
+
+export async function createSignOff(data: Omit<SignOff, 'createdAt'>): Promise<void> {
+  await request('/api/signoffs', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function deleteSignOff(id: string): Promise<void> {
+  await request(`/api/signoffs/${id}`, { method: 'DELETE' });
+}
+
+export interface FlowItem { id: string; label: string; children?: FlowItem[] }
+export type PackagesMap = Record<string, FlowItem[]>;
+
+export async function fetchFlowchartPackages(): Promise<PackagesMap> {
+  return request<PackagesMap>('/api/flowchart-packages');
+}
+
 // ─── Visitor Stats ───────────────────────────────────────────────────
 export interface VisitorStats {
   total: number;

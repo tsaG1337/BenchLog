@@ -246,7 +246,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                           <Button variant="ghost" size="sm" onClick={() => startEdit(session)} className="text-muted-foreground hover:text-foreground">
                             <Pencil className="w-4 h-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => onDelete(session.id)} className="text-muted-foreground hover:text-destructive">
+                          <Button variant="ghost" size="sm" onClick={() => { if (confirm('Delete this session? This cannot be undone.')) onDelete(session.id); }} className="text-muted-foreground hover:text-destructive">
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
