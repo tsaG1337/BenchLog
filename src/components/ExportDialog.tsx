@@ -10,7 +10,7 @@ import { Download, Loader2, ImagePlus, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import { toast } from 'sonner';
-import { fetchExpenses, fetchExpenseStats, EXPENSE_CATEGORIES, CURRENCIES } from '@/lib/api';
+import { fetchExpenses, fetchExpenseStats, fetchSignOffs, EXPENSE_CATEGORIES, CURRENCIES } from '@/lib/api';
 
 interface ExportDialogProps {
   sessions: WorkSession[];
@@ -29,6 +29,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
   const [includeImages, setIncludeImages] = useState(false);
   const [includeNonBillable, setIncludeNonBillable] = useState(false);
   const [includeExpenses, setIncludeExpenses] = useState(false);
+  const [includeSignOffs, setIncludeSignOffs] = useState(false);
   const [includeLogo, setIncludeLogo] = useState(true);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -72,7 +73,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
 
   const handleExportTxt = () => {
     const lines: string[] = [];
-    lines.push('Build Time Report');
+    lines.push('Build Report');
     lines.push(`Generated: ${format(new Date(), fullDateTimeFmt)}`);
     lines.push('');
     lines.push('=== Time by Section ===');
@@ -127,7 +128,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `build-log-${format(new Date(), 'yyyy-MM-dd')}.txt`;
+    a.download = `build-report-${format(new Date(), 'yyyy-MM-dd')}.txt`;
     a.click();
     URL.revokeObjectURL(url);
     setOpen(false);
@@ -204,7 +205,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
 
       doc.setFontSize(20);
       doc.setFont('helvetica', 'bold');
-      doc.text('Build Time Report', margin, y + 7);
+      doc.text('Build Report', margin, y + 7);
       y += 12;
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
@@ -361,6 +362,82 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       doc.setTextColor(0);
       y += 12;
 
+      // ── Sign-offs ──────────────────────────────────────────────────
+      if (includeSignOffs) {
+        try {
+          const signOffs = await fetchSignOffs();
+          if (signOffs.length > 0) {
+            checkPage(16);
+            doc.setDrawColor(180);
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 8;
+            doc.setFontSize(13);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(0);
+            doc.text('Inspection Sign-Offs', margin, y);
+            y += 8;
+
+            for (const s of signOffs) {
+              checkPage(30);
+              // Package label + date
+              doc.setFontSize(10);
+              doc.setFont('helvetica', 'bold');
+              doc.setTextColor(0);
+              doc.text(s.packageLabel, margin + 2, y);
+              doc.setFont('helvetica', 'normal');
+              doc.setTextColor(100);
+              doc.text(format(new Date(s.date), 'dd MMM yyyy'), pageWidth - margin, y, { align: 'right' });
+              y += 5;
+
+              // Inspector
+              if (s.inspectorName) {
+                doc.setFontSize(9);
+                doc.setTextColor(80);
+                doc.text(`Inspector: ${s.inspectorName}`, margin + 2, y);
+                y += 4.5;
+              }
+
+              // Checklist items
+              const checks = [
+                s.inspectionCompleted ? '☑ Inspection completed' : '☐ Inspection completed',
+                s.executionSatisfactory ? '☑ Execution satisfactory' : s.reworkNeeded ? '☑ Rework needed' : '☐ Outcome',
+              ];
+              doc.setFontSize(9);
+              doc.setFont('helvetica', 'normal');
+              doc.setTextColor(60);
+              doc.text(checks.join('    '), margin + 2, y);
+              y += 4.5;
+
+              // Comments
+              if (s.comments) {
+                const commentLines = doc.splitTextToSize(`Comments: ${s.comments}`, contentWidth - 6);
+                for (const line of commentLines) {
+                  checkPage(4);
+                  doc.text(line, margin + 2, y);
+                  y += 4;
+                }
+              }
+
+              // Signature
+              checkPage(22);
+              try {
+                const sigWidth = 60;
+                const sigHeight = 18;
+                doc.addImage(s.signaturePng, 'PNG', margin + 2, y, sigWidth, sigHeight);
+                y += sigHeight + 3;
+              } catch {}
+
+              doc.setDrawColor(230);
+              doc.setTextColor(0);
+              doc.line(margin + 2, y, pageWidth - margin - 2, y);
+              y += 6;
+            }
+          }
+        } catch {
+          // skip silently if fetch fails
+        }
+      }
+
       if (includeReferences || includeNotes || includeImages) {
         const sortedSessions = [...filteredSessions].sort(
           (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
@@ -454,7 +531,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
         }
       }
 
-      doc.save(`build-log-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+      doc.save(`build-report-${format(new Date(), 'yyyy-MM-dd')}.pdf`);
       setOpen(false);
     } catch (err: any) {
       toast.error('PDF generation failed: ' + err.message);
@@ -596,6 +673,12 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               <div className="flex items-center gap-2">
                 <Checkbox id="include-expenses" checked={includeExpenses} onCheckedChange={(v) => setIncludeExpenses(v === true)} />
                 <Label htmlFor="include-expenses" className="text-sm text-muted-foreground cursor-pointer">Expense report</Label>
+              </div>
+            )}
+            {exportFormat === 'pdf' && (
+              <div className="flex items-center gap-2">
+                <Checkbox id="include-signoffs" checked={includeSignOffs} onCheckedChange={(v) => setIncludeSignOffs(v === true)} />
+                <Label htmlFor="include-signoffs" className="text-sm text-muted-foreground cursor-pointer">Inspection sign-offs</Label>
               </div>
             )}
           </div>
