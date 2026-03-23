@@ -20,6 +20,7 @@ import {
   fetchSections, updateSections, CURRENCIES,
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
+  fetchWpTemplates, fetchWpTemplate, WpTemplate,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -63,6 +64,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [wpExporting, setWpExporting] = useState(false);
   const [wpImporting, setWpImporting] = useState(false);
+  const [wpSelectedFile, setWpSelectedFile] = useState<File | null>(null);
+  const [wpTemplates, setWpTemplates] = useState<WpTemplate[]>([]);
+  const [wpSelectedTemplate, setWpSelectedTemplate] = useState('');
   const wpImportRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -70,6 +74,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
       fetchGeneralSettings().then(setGeneral).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
       fetchSections().then(setSections).catch(() => setSections([...contextSections]));
+      fetchWpTemplates().then(setWpTemplates).catch(() => {});
     }
   }, [open, contextSections]);
 
@@ -171,19 +176,29 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     setWpExporting(false);
   };
 
-  const handleWpImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleWpFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setWpSelectedFile(e.target.files?.[0] ?? null);
+  };
+
+  const handleWpImport = async () => {
+    if (!wpSelectedFile && !wpSelectedTemplate) return;
     setWpImporting(true);
     try {
-      const text = await file.text();
-      const data: PackagesMap = JSON.parse(text);
+      let data: PackagesMap;
+      if (wpSelectedTemplate) {
+        data = await fetchWpTemplate(wpSelectedTemplate);
+      } else {
+        const text = await wpSelectedFile!.text();
+        data = JSON.parse(text);
+      }
       await updateFlowchartPackages(data);
-      toast.success('Work packages imported');
+      toast.success('Work packages loaded');
+      setWpSelectedFile(null);
+      setWpSelectedTemplate('');
+      if (wpImportRef.current) wpImportRef.current.value = '';
     } catch (err: any) {
       toast.error('Import failed: ' + err.message);
     }
-    if (wpImportRef.current) wpImportRef.current.value = '';
     setWpImporting(false);
   };
 
@@ -196,7 +211,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-w-3xl max-h-[90vh] p-0 overflow-hidden flex flex-col" aria-describedby={undefined}>
+      <DialogContent className="max-w-3xl h-[85vh] p-0 overflow-hidden flex flex-col" aria-describedby={undefined}>
         <DialogHeader className="px-6 pt-5 pb-4 border-b border-border shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Settings className="w-5 h-5" /> Settings
@@ -616,14 +631,52 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   </div>
                   <div className="pl-6 border-l-2 border-border space-y-3">
                     <p className="text-xs text-muted-foreground">
-                      Import a work package set (<span className="font-mono">.json</span>) to replace the current build progress structure.
+                      Load a work package set to replace the current build progress structure.
                       Useful for applying a pre-built package set for a specific aircraft type.
                     </p>
-                    <Button variant="outline" size="sm" onClick={() => wpImportRef.current?.click()} disabled={wpImporting} className="gap-1.5">
-                      <Upload className="w-3.5 h-3.5" />
-                      {wpImporting ? 'Importing…' : 'Import work-packages.json'}
-                    </Button>
-                    <input ref={wpImportRef} type="file" accept=".json" onChange={handleWpImport} className="hidden" />
+                    <p className="text-xs text-amber-500 dark:text-amber-400">
+                      ⚠ Loading a work package set will overwrite all custom changes you have made to your current work packages.
+                    </p>
+
+                    {/* Template dropdown */}
+                    {wpTemplates.length > 0 && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">Available templates</Label>
+                        <select
+                          value={wpSelectedTemplate}
+                          onChange={e => { setWpSelectedTemplate(e.target.value); setWpSelectedFile(null); if (wpImportRef.current) wpImportRef.current.value = ''; }}
+                          className="w-full h-9 rounded-md border border-border bg-background/50 px-3 text-sm text-foreground"
+                        >
+                          <option value="">— Select a template —</option>
+                          {wpTemplates.map(t => (
+                            <option key={t.filename} value={t.filename}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Custom file picker */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">Or load from file</Label>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => wpImportRef.current?.click()} disabled={wpImporting} className="gap-1.5 shrink-0">
+                          <Upload className="w-3.5 h-3.5" />
+                          Choose file…
+                        </Button>
+                        {wpSelectedFile && (
+                          <span className="text-xs text-muted-foreground truncate flex-1">{wpSelectedFile.name}</span>
+                        )}
+                      </div>
+                      <input ref={wpImportRef} type="file" accept=".json" onChange={e => { handleWpFileSelect(e); setWpSelectedTemplate(''); }} className="hidden" />
+                    </div>
+
+                    {/* Confirm button — shown once something is selected */}
+                    {(wpSelectedTemplate || wpSelectedFile) && (
+                      <Button size="sm" onClick={handleWpImport} disabled={wpImporting} className="gap-1.5">
+                        <Upload className="w-3.5 h-3.5" />
+                        {wpImporting ? 'Loading…' : 'Load Work Packages'}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
