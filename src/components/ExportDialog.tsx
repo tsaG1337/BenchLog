@@ -24,17 +24,38 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
   const dateTimeFmt = timeFormat === '24h' ? 'MMM d, yyyy HH:mm' : dateTimeFmt;
   const fullDateTimeFmt = timeFormat === '24h' ? 'MMMM d, yyyy HH:mm' : fullDateTimeFmt;
   const { labels, sections: sectionConfigs } = useSections();
-  const [includeReferences, setIncludeReferences] = useState(false);
-  const [includeNotes, setIncludeNotes] = useState(false);
-  const [includeImages, setIncludeImages] = useState(false);
-  const [includeNonBillable, setIncludeNonBillable] = useState(false);
-  const [includeExpenses, setIncludeExpenses] = useState(false);
-  const [includeSignOffs, setIncludeSignOffs] = useState(false);
-  const [includeLogo, setIncludeLogo] = useState(true);
+
+  const loadPref = <T,>(key: string, fallback: T): T => {
+    try { const v = localStorage.getItem(`export_pref_${key}`); return v !== null ? JSON.parse(v) : fallback; } catch { return fallback; }
+  };
+  const savePref = (key: string, value: unknown) => {
+    try { localStorage.setItem(`export_pref_${key}`, JSON.stringify(value)); } catch {}
+  };
+
+  const [includeReferences, setIncludeReferences] = useState(() => loadPref('references', false));
+  const [includeNotes, setIncludeNotes] = useState(() => loadPref('notes', false));
+  const [includeImages, setIncludeImages] = useState(() => loadPref('images', false));
+  const [includeNonBillable, setIncludeNonBillable] = useState(() => loadPref('nonBillable', false));
+  const [includeExpenses, setIncludeExpenses] = useState(() => loadPref('expenses', false));
+  const [includeSignOffs, setIncludeSignOffs] = useState(() => loadPref('signOffs', false));
+  const [includeLogo, setIncludeLogo] = useState(() => loadPref('logo', true));
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const [groupBy, setGroupBy] = useState<'chronological' | 'section'>('chronological');
-  const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>('pdf');
+  const [groupBy, setGroupBy] = useState<'chronological' | 'section'>(() => loadPref('groupBy', 'chronological'));
+  const [exportFormat, setExportFormat] = useState<'txt' | 'pdf'>(() => loadPref('format', 'pdf'));
+  const setAndSave = <T,>(setter: React.Dispatch<React.SetStateAction<T>>, key: string) =>
+    (v: T) => { setter(v); savePref(key, v); };
+
+  const toggleReferences  = setAndSave(setIncludeReferences, 'references');
+  const toggleNotes       = setAndSave(setIncludeNotes,       'notes');
+  const toggleImages      = setAndSave(setIncludeImages,      'images');
+  const toggleNonBillable = setAndSave(setIncludeNonBillable, 'nonBillable');
+  const toggleExpenses    = setAndSave(setIncludeExpenses,    'expenses');
+  const toggleSignOffs    = setAndSave(setIncludeSignOffs,    'signOffs');
+  const toggleLogo        = setAndSave(setIncludeLogo,        'logo');
+  const changeGroupBy     = setAndSave(setGroupBy,            'groupBy');
+  const changeFormat      = setAndSave(setExportFormat,       'format');
+
   const [generating, setGenerating] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -591,10 +612,10 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           <div>
             <p className="text-sm font-medium text-foreground mb-2">Export format:</p>
             <div className="flex gap-2">
-              <Button variant={exportFormat === 'txt' ? 'default' : 'outline'} size="sm" onClick={() => setExportFormat('txt')}>
+              <Button variant={exportFormat === 'txt' ? 'default' : 'outline'} size="sm" onClick={() => changeFormat('txt')}>
                 Text (.txt)
               </Button>
-              <Button variant={exportFormat === 'pdf' ? 'default' : 'outline'} size="sm" onClick={() => setExportFormat('pdf')}>
+              <Button variant={exportFormat === 'pdf' ? 'default' : 'outline'} size="sm" onClick={() => changeFormat('pdf')}>
                 PDF (.pdf)
               </Button>
             </div>
@@ -614,7 +635,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2">
-                    <Checkbox id="include-logo" checked={includeLogo} onCheckedChange={(v) => setIncludeLogo(v === true)} />
+                    <Checkbox id="include-logo" checked={includeLogo} onCheckedChange={(v) => toggleLogo(v === true)} />
                     <Label htmlFor="include-logo" className="text-sm text-muted-foreground cursor-pointer">Include logo</Label>
                   </div>
                   <div className="flex gap-1.5">
@@ -635,7 +656,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
 
           <div>
             <p className="text-sm font-medium text-foreground mb-2">Report order:</p>
-            <RadioGroup value={groupBy} onValueChange={(v) => setGroupBy(v as 'chronological' | 'section')} className="flex gap-4">
+            <RadioGroup value={groupBy} onValueChange={(v) => changeGroupBy(v as 'chronological' | 'section')} className="flex gap-4">
               <div className="flex items-center gap-2">
                 <RadioGroupItem value="chronological" id="group-chrono" />
                 <Label htmlFor="group-chrono" className="text-sm text-muted-foreground cursor-pointer">Chronological</Label>
@@ -647,38 +668,59 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
             </RadioGroup>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-4">
             <p className="text-sm font-medium text-foreground">Include in export:</p>
-            <div className="flex items-center gap-2">
-              <Checkbox id="include-refs" checked={includeReferences} onCheckedChange={(v) => setIncludeReferences(v === true)} />
-              <Label htmlFor="include-refs" className="text-sm text-muted-foreground cursor-pointer">Plans references</Label>
+
+            {/* Work Sessions */}
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground/60 uppercase tracking-wide font-medium">Work Sessions</p>
+              <div className="pl-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Checkbox id="include-refs" checked={includeReferences} onCheckedChange={(v) => toggleReferences(v === true)} />
+                  <Label htmlFor="include-refs" className="text-sm text-muted-foreground cursor-pointer">Plans references</Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox id="include-notes" checked={includeNotes} onCheckedChange={(v) => toggleNotes(v === true)} />
+                  <Label htmlFor="include-notes" className="text-sm text-muted-foreground cursor-pointer">Session notes</Label>
+                </div>
+                {exportFormat === 'pdf' && hasImages && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="include-images" checked={includeImages} onCheckedChange={(v) => toggleImages(v === true)} />
+                    <Label htmlFor="include-images" className="text-sm text-muted-foreground cursor-pointer">Session photos</Label>
+                  </div>
+                )}
+                {nonBillableIds.size > 0 && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="include-nonbillable" checked={includeNonBillable} onCheckedChange={(v) => toggleNonBillable(v === true)} />
+                    <Label htmlFor="include-nonbillable" className="text-sm text-muted-foreground cursor-pointer">Non-billable sections (e.g. Other)</Label>
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Checkbox id="include-notes" checked={includeNotes} onCheckedChange={(v) => setIncludeNotes(v === true)} />
-              <Label htmlFor="include-notes" className="text-sm text-muted-foreground cursor-pointer">Session notes</Label>
-            </div>
-            {exportFormat === 'pdf' && hasImages && (
-              <div className="flex items-center gap-2">
-                <Checkbox id="include-images" checked={includeImages} onCheckedChange={(v) => setIncludeImages(v === true)} />
-                <Label htmlFor="include-images" className="text-sm text-muted-foreground cursor-pointer">Session photos</Label>
-              </div>
-            )}
-            {nonBillableIds.size > 0 && (
-              <div className="flex items-center gap-2">
-                <Checkbox id="include-nonbillable" checked={includeNonBillable} onCheckedChange={(v) => setIncludeNonBillable(v === true)} />
-                <Label htmlFor="include-nonbillable" className="text-sm text-muted-foreground cursor-pointer">Non-billable sections (e.g. Other)</Label>
-              </div>
-            )}
+
+            {/* Inspections */}
             {exportFormat === 'pdf' && (
-              <div className="flex items-center gap-2">
-                <Checkbox id="include-expenses" checked={includeExpenses} onCheckedChange={(v) => setIncludeExpenses(v === true)} />
-                <Label htmlFor="include-expenses" className="text-sm text-muted-foreground cursor-pointer">Expense report</Label>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground/60 uppercase tracking-wide font-medium">Inspections</p>
+                <div className="pl-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="include-signoffs" checked={includeSignOffs} onCheckedChange={(v) => toggleSignOffs(v === true)} />
+                    <Label htmlFor="include-signoffs" className="text-sm text-muted-foreground cursor-pointer">Inspection sign-offs</Label>
+                  </div>
+                </div>
               </div>
             )}
+
+            {/* Finances */}
             {exportFormat === 'pdf' && (
-              <div className="flex items-center gap-2">
-                <Checkbox id="include-signoffs" checked={includeSignOffs} onCheckedChange={(v) => setIncludeSignOffs(v === true)} />
-                <Label htmlFor="include-signoffs" className="text-sm text-muted-foreground cursor-pointer">Inspection sign-offs</Label>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground/60 uppercase tracking-wide font-medium">Finances</p>
+                <div className="pl-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="include-expenses" checked={includeExpenses} onCheckedChange={(v) => toggleExpenses(v === true)} />
+                    <Label htmlFor="include-expenses" className="text-sm text-muted-foreground cursor-pointer">Expense report</Label>
+                  </div>
+                </div>
               </div>
             )}
           </div>

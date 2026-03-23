@@ -509,6 +509,35 @@ export async function clearVisitorStats(): Promise<void> {
   await request('/api/stats/visitors', { method: 'DELETE' });
 }
 
+// ─── Image Annotations ───────────────────────────────────────────────
+export interface ImageAnnotation {
+  id: string;
+  x: number;   // 0–1 relative to image width
+  y: number;   // 0–1 relative to image height
+  title: string;
+}
+
+const _annotationCache = new Map<string, ImageAnnotation[]>();
+
+export async function fetchAnnotations(imageUrl: string): Promise<ImageAnnotation[]> {
+  if (_annotationCache.has(imageUrl)) return _annotationCache.get(imageUrl)!;
+  const data = await request<{ annotations: ImageAnnotation[] }>(`/api/annotations?url=${encodeURIComponent(imageUrl)}`);
+  _annotationCache.set(imageUrl, data.annotations);
+  return data.annotations;
+}
+
+export async function saveAnnotations(imageUrl: string, annotations: ImageAnnotation[]): Promise<void> {
+  await request(`/api/annotations?url=${encodeURIComponent(imageUrl)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ annotations }),
+  });
+  _annotationCache.set(imageUrl, annotations);
+}
+
+export function invalidateAnnotationCache(imageUrl: string): void {
+  _annotationCache.delete(imageUrl);
+}
+
 export function trackPageView(pagePath: string, postId?: string, referrer?: string): void {
   // Fire-and-forget — never throws
   fetch(`${API_URL}/api/track`, {

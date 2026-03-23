@@ -8,6 +8,7 @@ const fs = require('fs');
 const mqtt = require('mqtt');
 const crypto = require('crypto');
 const sharp = require('sharp');
+const heicConvert = require('heic-convert');
 const archiver = require('archiver');
 const unzipper = require('unzipper');
 
@@ -158,7 +159,7 @@ const upload = multer({
   storage: multerStorage,
   limits: { fileSize: 100 * 1024 * 1024 }, // allow large originals; sharp will resize down
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
     allowed.includes(file.mimetype)
       ? cb(null, true)
       : cb(new Error('Only image files are allowed'));
@@ -300,6 +301,14 @@ db.exec(`
     comments TEXT DEFAULT '',
     signature_png TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS image_annotations (
+    image_url TEXT PRIMARY KEY,
+    annotations_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT DEFAULT (datetime('now'))
   )
 `);
 
@@ -747,6 +756,13 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
     const urls = [];
     for (const file of req.files) {
       const filePath = file.path;
+
+      // Pre-convert HEIC/HEIF to JPEG (sharp's libvips lacks HEVC decoder)
+      if (file.mimetype === 'image/heic' || file.mimetype === 'image/heif') {
+        const inputBuffer = fs.readFileSync(filePath);
+        const jpegBuffer = await heicConvert({ buffer: inputBuffer, format: 'JPEG', quality: 0.95 });
+        fs.writeFileSync(filePath, Buffer.from(jpegBuffer));
+      }
 
       // Resize main image in-place if enabled
       if (resizingEnabled) {
@@ -1708,6 +1724,26 @@ app.post('/api/signoffs', requireAuth, (req, res) => {
 
 app.delete('/api/signoffs/:id', requireAuth, (req, res) => {
   db.prepare('DELETE FROM sign_offs WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// ─── Image Annotations ───────────────────────────────────────────────
+app.get('/api/annotations', (req, res) => {
+  const imageUrl = req.query.url;
+  if (!imageUrl) return res.json({ annotations: [] });
+  const row = db.prepare('SELECT annotations_json FROM image_annotations WHERE image_url = ?').get(imageUrl);
+  res.json({ annotations: row ? JSON.parse(row.annotations_json) : [] });
+});
+
+app.put('/api/annotations', requireAuth, (req, res) => {
+  const imageUrl = req.query.url;
+  if (!imageUrl) return res.status(400).json({ error: 'url query param required' });
+  const { annotations = [] } = req.body;
+  db.prepare(`
+    INSERT INTO image_annotations (image_url, annotations_json, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(image_url) DO UPDATE SET annotations_json = excluded.annotations_json, updated_at = excluded.updated_at
+  `).run(imageUrl, JSON.stringify(annotations));
   res.json({ ok: true });
 });
 
