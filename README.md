@@ -268,6 +268,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 | GET | `/api/flowchart-packages` | Build progress package tree |
 | GET | `/api/timer/status` | Current timer state |
 | GET | `/files/:object` | Serve uploaded images |
+| POST | `/api/track` | Record a blog page view (country, referrer, post) |
 
 ### Authenticated endpoints (Bearer token required)
 
@@ -304,6 +305,8 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 | DELETE | `/api/expenses/upload` | Delete a receipt |
 | GET | `/api/export` | Export full backup (ZIP with all data and files) |
 | POST | `/api/import` | Restore from a backup (ZIP or legacy JSON) |
+| GET | `/api/stats/visitors` | Visitor statistics (countries, referrers, top posts) |
+| DELETE | `/api/stats/visitors` | Clear all visitor statistics |
 | POST | `/api/auth/login` | Authenticate and receive a JWT |
 | POST | `/api/auth/setup` | Set the initial password (first run only) |
 

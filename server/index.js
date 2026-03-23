@@ -285,6 +285,15 @@ db.exec(`
 `);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_visitor_stats_ts ON visitor_stats (ts)`);
 
+// Prune visitor stats older than 1 year — runs on startup and every 24h
+function pruneVisitorStats() {
+  const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  const { changes } = db.prepare('DELETE FROM visitor_stats WHERE ts < ?').run(cutoff);
+  if (changes > 0) console.log(`[visitor-stats] Pruned ${changes} entries older than 1 year`);
+}
+pruneVisitorStats();
+setInterval(pruneVisitorStats, 24 * 60 * 60 * 1000);
+
 // ─── Settings helpers ───────────────────────────────────────────────
 function getSetting(key, defaultValue = null) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
