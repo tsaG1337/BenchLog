@@ -24,7 +24,7 @@ const version = electronPkg.version;
 
 console.log(`\n🔧  Rebuilding native modules for Electron ${version}…\n`);
 execSync(
-  `npx electron-rebuild --version ${version} --module-dir "${serverDir}" --types prod,optional`,
+  `npx @electron/rebuild --version ${version} --module-dir "${serverDir}" --types prod,optional`,
   { stdio: 'inherit', cwd: root }
 );
 
