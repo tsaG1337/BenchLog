@@ -11,6 +11,7 @@ import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { VisitorStatsPanel } from '@/components/VisitorStatsPanel';
+import { isElectron } from '@/lib/env';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import {
@@ -165,7 +166,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar */}
           <nav className="w-40 shrink-0 border-r border-border bg-secondary/30 p-2 flex flex-col gap-0.5">
-            {TABS.map(({ id, label, icon: Icon }) => (
+            {TABS.filter(t => !(isElectron && t.id === 'stats')).map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}

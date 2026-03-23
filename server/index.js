@@ -66,6 +66,7 @@ function requireWebhookKey(req, res, next) {
 // ─── Config via environment variables ───────────────────────────────
 const PORT = process.env.PORT || 3001;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
+const DIST_PATH = process.env.DIST_PATH || path.join(__dirname, '../dist');
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
@@ -126,7 +127,7 @@ if (DEMO_MODE) {
 }
 
 // Serve frontend build
-app.use(express.static(path.join(__dirname, "../dist")));
+app.use(express.static(DIST_PATH));
 
 // ─── SQLite setup ───────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -1596,7 +1597,7 @@ app.delete('/api/expenses/upload', requireAuth, (req, res) => {
 });
 
 // ─── OpenGraph meta tag injection ───────────────────────────────────
-const distIndexPath = path.join(__dirname, '../dist/index.html');
+const distIndexPath = path.join(DIST_PATH, 'index.html');
 
 function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
   const tags = [

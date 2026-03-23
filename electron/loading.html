@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>BenchLog</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    .logo { font-size: 2.8rem; line-height: 1; }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #94a3b8;
+      letter-spacing: -0.01em;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 2.5px solid #1e293b;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error {
+      display: none;
+      max-width: 420px;
+      text-align: center;
+      font-size: 0.82rem;
+      color: #ef4444;
+      line-height: 1.6;
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }
+
+    .error strong { display: block; font-size: 0.9rem; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div class="logo">✈️</div>
+  <h1>Starting BenchLog…</h1>
+  <div class="spinner" id="spinner"></div>
+  <div class="error" id="error">
+    <strong>Could not connect to the backend</strong>
+    The server failed to start. Check that port 3001 is not already in use,
+    or try reinstalling BenchLog.<br /><br />
+    Log file: <code id="logPath">%AppData%\BenchLog\logs\main.log</code>
+  </div>
+</body>
+</html>

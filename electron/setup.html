@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BenchLog — Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Design tokens matching BenchLog's index.css ── */
+    :root {
+      --bg:          hsl(220, 20%, 10%);   /* --background   */
+      --card:        hsl(220, 18%, 13%);   /* --card         */
+      --sidebar-bg:  hsl(220, 18%,  8%);   /* --sidebar-bg   */
+      --fg:          hsl( 40, 20%, 90%);   /* --foreground   */
+      --fg-muted:    hsl(220, 10%, 55%);   /* --muted-fg     */
+      --border:      hsl(220, 15%, 20%);   /* --border       */
+      --input:       hsl(220, 15%, 20%);   /* --input        */
+      --primary:     hsl( 38, 92%, 50%);   /* --primary      */
+      --primary-fg:  hsl(220, 20%, 10%);   /* --primary-fg   */
+      --muted-bg:    hsl(220, 15%, 16%);   /* --muted        */
+      --radius:      0.5rem;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      -webkit-font-smoothing: antialiased;
+      -webkit-app-region: drag;
+    }
+
+    .card {
+      -webkit-app-region: no-drag;
+      width: 100%;
+      max-width: 460px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) * 1.5);
+      padding: 32px 28px 28px;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-size: 1.9rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .header-text h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--fg);
+      letter-spacing: -0.02em;
+    }
+
+    .header-text p {
+      font-size: 0.78rem;
+      color: var(--fg-muted);
+      margin-top: 2px;
+    }
+
+    /* ── Form ── */
+    .field-label {
+      display: block;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--fg-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 8px;
+    }
+
+    .path-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      height: 36px;
+      background: var(--muted-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--fg);
+      font-size: 0.82rem;
+      font-family: inherit;
+      padding: 0 10px;
+      outline: none;
+      transition: border-color 0.15s;
+      min-width: 0;
+    }
+    input[type="text"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px hsl(38 92% 50% / 0.15);
+    }
+
+    .btn-browse {
+      flex-shrink: 0;
+      height: 36px;
+      padding: 0 14px;
+      background: var(--muted-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--fg-muted);
+      font-size: 0.82rem;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .btn-browse:hover {
+      border-color: hsl(220, 15%, 30%);
+      color: var(--fg);
+    }
+
+    .hint {
+      font-size: 0.76rem;
+      color: var(--fg-muted);
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    /* ── Primary button — matches the app's amber primary ── */
+    .btn-start {
+      display: block;
+      width: 100%;
+      height: 40px;
+      background: var(--primary);
+      border: none;
+      border-radius: var(--radius);
+      color: var(--primary-fg);
+      font-size: 0.88rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      letter-spacing: -0.01em;
+      transition: filter 0.15s, opacity 0.15s;
+    }
+    .btn-start:hover:not(:disabled) { filter: brightness(1.08); }
+    .btn-start:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* ── Footer note ── */
+    .footer-note {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 0.72rem;
+      color: hsl(220, 10%, 38%);
+      text-align: center;
+      line-height: 1.6;
+    }
+    .footer-note strong { color: var(--fg-muted); }
+  </style>
+</head>
+<body>
+  <div class="card">
+
+    <div class="header">
+      <div class="logo">✈️</div>
+      <div class="header-text">
+        <h1>BenchLog</h1>
+        <p>First-time setup — takes two seconds</p>
+      </div>
+    </div>
+
+    <label class="field-label" for="dataDir">Where should your data be stored?</label>
+    <div class="path-row">
+      <input type="text" id="dataDir" placeholder="Loading default path…" />
+      <button class="btn-browse" id="browseBtn">Browse…</button>
+    </div>
+    <p class="hint">
+      Sessions, blog posts, images and the database are kept here.
+      The folder is created automatically if it doesn't exist yet.<br />
+      You can change this later via the system-tray icon.
+    </p>
+
+    <button class="btn-start" id="startBtn" disabled>Get Started →</button>
+
+    <p class="footer-note">
+      <strong>Note:</strong> This is your <em>data</em> location, not the install folder.<br />
+      Your data is never touched by app updates or reinstalls.
+    </p>
+
+  </div>
+
+  <script>
+    const input     = document.getElementById('dataDir');
+    const browseBtn = document.getElementById('browseBtn');
+    const startBtn  = document.getElementById('startBtn');
+
+    window.electronSetup.getDefaultDataDir().then(dir => {
+      input.value = dir;
+      startBtn.disabled = false;
+    });
+
+    browseBtn.addEventListener('click', async () => {
+      const dir = await window.electronSetup.browseDataDir();
+      if (dir) { input.value = dir; startBtn.disabled = false; }
+    });
+
+    input.addEventListener('input', () => {
+      startBtn.disabled = input.value.trim() === '';
+    });
+
+    startBtn.addEventListener('click', async () => {
+      const dir = input.value.trim();
+      if (!dir) return;
+      startBtn.disabled = true;
+      startBtn.textContent = 'Starting…';
+      await window.electronSetup.completeSetup(dir);
+    });
+  </script>
+</body>
+</html>
