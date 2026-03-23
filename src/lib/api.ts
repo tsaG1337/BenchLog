@@ -497,6 +497,16 @@ export async function updateFlowchartPackages(packages: PackagesMap): Promise<vo
   });
 }
 
+export interface WpTemplate { filename: string; name: string; }
+
+export async function fetchWpTemplates(): Promise<WpTemplate[]> {
+  return request<WpTemplate[]>('/api/templates/work-packages');
+}
+
+export async function fetchWpTemplate(filename: string): Promise<PackagesMap> {
+  return request<PackagesMap>(`/api/templates/work-packages/${encodeURIComponent(filename)}`);
+}
+
 // ─── Visitor Stats ───────────────────────────────────────────────────
 export interface VisitorStats {
   total: number;

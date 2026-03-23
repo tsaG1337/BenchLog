@@ -25,6 +25,9 @@ COPY server ./server
 # frontend build
 COPY --from=builder /app/dist ./dist
 
+# work package templates
+COPY templates ./templates
+
 ENV PORT=3001
 
 WORKDIR /app/server

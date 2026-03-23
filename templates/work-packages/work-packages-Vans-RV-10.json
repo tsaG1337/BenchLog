@@ -1,0 +1,231 @@
+{
+  "empennage": [
+    {
+      "id": "pkg-empennage-1773998211887",
+      "label": "10 Tailcone",
+      "children": [
+        {
+          "id": "pkg-pkg-empennage-1773998211887-1773998280787",
+          "label": "11 EMP Attachment",
+          "children": [
+            {
+              "id": "pkg-empennage-1774002639910",
+              "label": "6 Vertical Stabilizer"
+            },
+            {
+              "id": "pkg-pkg-pkg-empennage-1773998211887-1773998280787-1773998309041",
+              "label": "7 Rudder"
+            },
+            {
+              "id": "pkg-pkg-pkg-empennage-1773998211887-1773998280787-1773998317265",
+              "label": "8 Horizontal Stabilizer"
+            },
+            {
+              "id": "pkg-pkg-pkg-empennage-1773998211887-1773998280787-1773998321109",
+              "label": "9 Elevator"
+            }
+          ]
+        },
+        {
+          "id": "pkg-pkg-empennage-1773998211887-1773998293458",
+          "label": "12 EMP Fairings"
+        }
+      ]
+    }
+  ],
+  "wings": [
+    {
+      "id": "pkg-wings-1774002147531",
+      "label": "13 Main Spar",
+      "children": [
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002159476",
+          "label": "14 Wing Ribs"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002166938",
+          "label": "15 Rear Spar"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002173467",
+          "label": "16 Top Wing Skins"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002182630",
+          "label": "17 Outbd Leading Edge"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002186882",
+          "label": "18 Fuel Tank"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002193814",
+          "label": "19 Stall Warning System"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002200541",
+          "label": "20 Bottom Wing Skins"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002207184",
+          "label": "21 Aileron"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002210987",
+          "label": "22 Flap"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002216752",
+          "label": "23 Aileron Actuation"
+        },
+        {
+          "id": "pkg-pkg-wings-1774002147531-1774002222758",
+          "label": "24 Wing Tip"
+        }
+      ]
+    },
+    {
+      "id": "pkg-wings-1774002258701",
+      "label": "OP-36 Wingtip Lighting"
+    }
+  ],
+  "finishing-kit": [
+    {
+      "id": "pkg-finishing-kit-1774002277567",
+      "label": "45 Cabin Doors & Transparencies"
+    },
+    {
+      "id": "pkg-finishing-kit-1774002287627",
+      "label": "46 Engine Mount & Landing Gear"
+    },
+    {
+      "id": "pkg-finishing-kit-1774002297496",
+      "label": "47 Spinner & Cowling"
+    },
+    {
+      "id": "pkg-finishing-kit-1774002306257",
+      "label": "48 Gear Leg & Wheel Fairings"
+    },
+    {
+      "id": "pkg-finishing-kit-1774002315578",
+      "label": "49 Seats & Seat Belts"
+    },
+    {
+      "id": "pkg-finishing-kit-1774002323755",
+      "label": "50 Cabrin Heat and Ventilation"
+    }
+  ],
+  "engine": [
+    {
+      "id": "pkg-engine-1774002340869",
+      "label": "FF1 Engine Installation"
+    },
+    {
+      "id": "pkg-engine-1774002347352",
+      "label": "FF2 Cowl Baffle"
+    },
+    {
+      "id": "pkg-engine-1774002357045",
+      "label": "FF3 Control Cables"
+    },
+    {
+      "id": "pkg-engine-1774002364362",
+      "label": "FF4 Fuel System"
+    },
+    {
+      "id": "pkg-engine-1774002369174",
+      "label": "FF5 Oil System"
+    },
+    {
+      "id": "pkg-engine-1774002378956",
+      "label": "FF6 Exhaust System"
+    }
+  ],
+  "avionics": [],
+  "paint": [],
+  "other": [],
+  "fuselage": [
+    {
+      "id": "pkg-fuselage-1774003087649",
+      "label": "25 Mid Fuselage Bulkheads",
+      "children": [
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003098633",
+          "label": "26 Mid Fuse Ribs & Bottom Skins"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003103542",
+          "label": "27 Firewall"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003117659",
+          "label": "28 FWD Fuse Ribs, BHDs & Bottom Skin"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003124594",
+          "label": "29 Fuse Side Skins"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003130225",
+          "label": "30 Step Installation"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003139027",
+          "label": "31 Upper Forward Fuselage Assembly"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003148807",
+          "label": "32 Tailcone Attachment"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003155284",
+          "label": "33 Baggage Area"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003161639",
+          "label": "34 Baggage Door"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003171606",
+          "label": "35 Acces Cover and Floor Panels"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003176225",
+          "label": "36 Brake Lines"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003180640",
+          "label": "37 Fuel System"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003189545",
+          "label": "38 Rudder Pedals & Brake System"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003195084",
+          "label": "39 Control System"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003200560",
+          "label": "40 Flap System"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003212859",
+          "label": "41 Upper Forward Fuselage Installation"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003221452",
+          "label": "42 Rear Seat Backs"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003247077",
+          "label": "43 Cabin Cover"
+        },
+        {
+          "id": "pkg-pkg-fuselage-1774003087649-1774003254022",
+          "label": "44 Wing Attachment"
+        }
+      ]
+    }
+  ]
+}

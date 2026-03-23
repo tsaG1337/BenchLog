@@ -67,6 +67,7 @@ function requireWebhookKey(req, res, next) {
 const PORT = process.env.PORT || 3001;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
 const DIST_PATH = process.env.DIST_PATH || path.join(__dirname, '../dist');
+const TEMPLATES_WP_PATH = path.join(__dirname, '../templates/work-packages');
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
@@ -1433,6 +1434,28 @@ app.put('/api/flowchart-packages', requireAuth, (req, res) => {
   }
   setSetting('flowchart_packages', req.body);
   res.json({ ok: true });
+});
+
+// GET /api/templates/work-packages — list available template files
+app.get('/api/templates/work-packages', (_req, res) => {
+  try {
+    const files = fs.readdirSync(TEMPLATES_WP_PATH)
+      .filter(f => f.endsWith('.json'))
+      .map(f => ({ filename: f, name: f.replace(/\.json$/i, '').replace(/-/g, ' ') }));
+    res.json(files);
+  } catch {
+    res.json([]);
+  }
+});
+
+// GET /api/templates/work-packages/:filename — serve a single template file
+app.get('/api/templates/work-packages/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(TEMPLATES_WP_PATH, filename);
+  if (!filePath.startsWith(TEMPLATES_WP_PATH) || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+  res.sendFile(filePath);
 });
 
 // ─── Expenses API ────────────────────────────────────────────────────
