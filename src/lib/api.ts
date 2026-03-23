@@ -490,6 +490,13 @@ export async function fetchFlowchartPackages(): Promise<PackagesMap> {
   return request<PackagesMap>('/api/flowchart-packages');
 }
 
+export async function updateFlowchartPackages(packages: PackagesMap): Promise<void> {
+  await request('/api/flowchart-packages', {
+    method: 'PUT',
+    body: JSON.stringify(packages),
+  });
+}
+
 // ─── Visitor Stats ───────────────────────────────────────────────────
 export interface VisitorStats {
   total: number;

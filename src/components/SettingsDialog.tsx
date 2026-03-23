@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3 } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
@@ -19,6 +19,7 @@ import {
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
   fetchSections, updateSections, CURRENCIES,
   fetchWebhookKey, regenerateWebhookKey,
+  fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -60,6 +61,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [webhookKey, setWebhookKey] = useState('');
   const [webhookKeyLoading, setWebhookKeyLoading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [wpExporting, setWpExporting] = useState(false);
+  const [wpImporting, setWpImporting] = useState(false);
+  const wpImportRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
@@ -145,6 +149,42 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     const updated = [...sections];
     [updated[index], updated[newIndex]] = [updated[newIndex], updated[index]];
     setSections(updated);
+  };
+
+  const handleWpExport = async () => {
+    setWpExporting(true);
+    try {
+      const data = await fetchFlowchartPackages();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `work-packages-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('Work packages exported');
+    } catch (err: any) {
+      toast.error('Export failed: ' + err.message);
+    }
+    setWpExporting(false);
+  };
+
+  const handleWpImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setWpImporting(true);
+    try {
+      const text = await file.text();
+      const data: PackagesMap = JSON.parse(text);
+      await updateFlowchartPackages(data);
+      toast.success('Work packages imported');
+    } catch (err: any) {
+      toast.error('Import failed: ' + err.message);
+    }
+    if (wpImportRef.current) wpImportRef.current.value = '';
+    setWpImporting(false);
   };
 
   return (
@@ -536,16 +576,57 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
             {activeTab === 'stats' && <VisitorStatsPanel />}
 
             {/* ── Debug ───────────────────────────────────────── */}
-            {activeTab === 'debug' && <DiagnosticsPanel />}
+            {activeTab === 'debug' && (
+              <div className="space-y-6">
+                <DiagnosticsPanel />
+                <Separator />
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Download className="w-4 h-4 text-muted-foreground" />
+                    <Label className="text-sm font-medium">Work Package Export</Label>
+                  </div>
+                  <div className="pl-6 border-l-2 border-border space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      Export the current work package tree as a <span className="font-mono">.json</span> file.
+                      Use this to create a reusable work package set for a specific aircraft type.
+                    </p>
+                    <Button variant="outline" size="sm" onClick={handleWpExport} disabled={wpExporting} className="gap-1.5">
+                      <Download className="w-3.5 h-3.5" />
+                      {wpExporting ? 'Exporting…' : 'Export work-packages.json'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ── Data ────────────────────────────────────────── */}
             {activeTab === 'data' && (
-              <ImportExportSection onImportComplete={() => {
-                fetchGeneralSettings().then(setGeneral).catch(() => {});
-                fetchMqttSettings().then(setMqtt).catch(() => {});
-                fetchSections().then(setSections).catch(() => {});
-                reloadSections();
-              }} />
+              <div className="space-y-6">
+                <ImportExportSection onImportComplete={() => {
+                  fetchGeneralSettings().then(setGeneral).catch(() => {});
+                  fetchMqttSettings().then(setMqtt).catch(() => {});
+                  fetchSections().then(setSections).catch(() => {});
+                  reloadSections();
+                }} />
+                <Separator />
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Upload className="w-4 h-4 text-muted-foreground" />
+                    <Label className="text-sm font-medium">Work Package Set</Label>
+                  </div>
+                  <div className="pl-6 border-l-2 border-border space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      Import a work package set (<span className="font-mono">.json</span>) to replace the current build progress structure.
+                      Useful for applying a pre-built package set for a specific aircraft type.
+                    </p>
+                    <Button variant="outline" size="sm" onClick={() => wpImportRef.current?.click()} disabled={wpImporting} className="gap-1.5">
+                      <Upload className="w-3.5 h-3.5" />
+                      {wpImporting ? 'Importing…' : 'Import work-packages.json'}
+                    </Button>
+                    <input ref={wpImportRef} type="file" accept=".json" onChange={handleWpImport} className="hidden" />
+                  </div>
+                </div>
+              </div>
             )}
 
           </div>
