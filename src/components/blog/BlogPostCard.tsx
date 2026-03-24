@@ -71,7 +71,7 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
             )}
             <div className="flex-1 min-w-0">
               {textContent && (
-                <p className="text-sm text-muted-foreground line-clamp-6 leading-relaxed">
+                <p className="text-sm text-muted-foreground line-clamp-6 leading-relaxed break-words overflow-hidden">
                   {textContent.slice(0, 400)}
                 </p>
               )}
