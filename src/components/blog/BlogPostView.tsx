@@ -103,7 +103,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
     <div className="prose prose-invert max-w-none blog-content">
       {contentSegments.map((seg, i) =>
         seg.type === 'html' ? (
-          <div key={i} dangerouslySetInnerHTML={{ __html: seg.content }} />
+          <div key={i} dangerouslySetInnerHTML={{ __html: seg.content.replace(/&nbsp;/g, ' ') }} />
         ) : (
           <div key={i} className="my-4 clear-both">
             <ImageAnnotationViewer
