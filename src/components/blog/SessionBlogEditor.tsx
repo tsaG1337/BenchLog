@@ -23,9 +23,9 @@ function toDatetimeLocal(iso: string): string {
 
 function parsePlansRef(ref?: string) {
   return {
-    page: ref?.match(/Page\s+(\S+)/)?.[1] || '',
-    section: ref?.match(/Section\s+(\S+)/)?.[1] || '',
-    step: ref?.match(/Step\s+(\S+)/)?.[1] || '',
+    page:    ref?.match(/Page\s+([^,\s]+)/)?.[1] || '',
+    section: ref?.match(/Section\s+([^,\s]+)/)?.[1] || '',
+    step:    ref?.match(/Step\s+([^,\s]+)/)?.[1] || '',
   };
 }
 
