@@ -1125,6 +1125,13 @@ app.get('/api/export', requireAuth, async (req, res) => {
     comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
   }));
 
+  // Always include annotations (they belong to whichever images are exported)
+  data.annotations = db.prepare('SELECT * FROM image_annotations').all().map(r => ({
+    imageUrl: r.image_url,
+    annotations: JSON.parse(r.annotations_json || '[]'),
+    updatedAt: r.updated_at,
+  }));
+
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
   await archive.finalize();
 });
@@ -1199,6 +1206,15 @@ function applyImportData(data, results) {
         .run(s.id, s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.createdAt);
     }
     results.signOffsImported++;
+  }
+
+  for (const a of (data.annotations || [])) {
+    if (!a.imageUrl) continue;
+    db.prepare(`
+      INSERT INTO image_annotations (image_url, annotations_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(image_url) DO UPDATE SET annotations_json = excluded.annotations_json, updated_at = excluded.updated_at
+    `).run(a.imageUrl, JSON.stringify(a.annotations || []), a.updatedAt || new Date().toISOString());
   }
 
   publishMqttStats();
@@ -1620,6 +1636,32 @@ app.delete('/api/expenses/upload', requireAuth, (req, res) => {
   try {
     const fp = path.join(RECEIPTS_DIR, path.basename(url || ''));
     if (fp && fs.existsSync(fp)) fs.unlinkSync(fp);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Factory Reset ───────────────────────────────────────────────────
+app.post('/api/reset', requireAuth, (req, res) => {
+  try {
+    // Delete all user data from the database
+    db.prepare('DELETE FROM sessions').run();
+    db.prepare('DELETE FROM blog_posts').run();
+    db.prepare('DELETE FROM expenses').run();
+    db.prepare('DELETE FROM sign_offs').run();
+    db.prepare('DELETE FROM image_annotations').run();
+    db.prepare('DELETE FROM active_timer').run();
+    // Reset settings to defaults (keep password hash)
+    db.prepare("DELETE FROM settings WHERE key != 'password_hash'").run();
+    // Delete all uploaded files (session images, thumbnails, receipts)
+    [UPLOADS_DIR, RECEIPTS_DIR].forEach(dir => {
+      if (fs.existsSync(dir)) {
+        for (const file of fs.readdirSync(dir)) {
+          try { fs.unlinkSync(path.join(dir, file)); } catch {}
+        }
+      }
+    });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

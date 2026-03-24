@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
@@ -21,6 +21,7 @@ import {
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
   fetchWpTemplates, fetchWpTemplate, WpTemplate,
+  resetAllData,
 } from '@/lib/api';
 
 interface SettingsDialogProps {
@@ -62,6 +63,8 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [webhookKey, setWebhookKey] = useState('');
   const [webhookKeyLoading, setWebhookKeyLoading] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [wpExporting, setWpExporting] = useState(false);
   const [wpImporting, setWpImporting] = useState(false);
   const [wpSelectedFile, setWpSelectedFile] = useState<File | null>(null);
@@ -676,6 +679,64 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                         <Upload className="w-3.5 h-3.5" />
                         {wpImporting ? 'Loading…' : 'Load Work Packages'}
                       </Button>
+                    )}
+                  </div>
+                </div>
+                <Separator />
+                {/* ── Danger Zone ── */}
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-destructive" />
+                    <Label className="text-sm font-medium text-destructive">Danger Zone</Label>
+                  </div>
+                  <div className="pl-6 border-l-2 border-destructive/40 space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      Permanently deletes all sessions, blog posts, expenses, photos and receipts.
+                      Settings are reset to defaults. Your login password is kept.
+                      <strong className="block mt-1 text-foreground">This cannot be undone.</strong>
+                    </p>
+                    {!confirmReset ? (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={() => setConfirmReset(true)}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Reset All Data…
+                      </Button>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs font-semibold text-destructive">Are you absolutely sure? This will wipe everything.</p>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            disabled={resetting}
+                            className="gap-1.5"
+                            onClick={async () => {
+                              setResetting(true);
+                              try {
+                                await resetAllData();
+                                toast.success('All data has been reset');
+                                setConfirmReset(false);
+                                setOpen(false);
+                                window.location.reload();
+                              } catch (err: any) {
+                                toast.error('Reset failed: ' + err.message);
+                              } finally {
+                                setResetting(false);
+                              }
+                            }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            {resetting ? 'Resetting…' : 'Yes, delete everything'}
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => setConfirmReset(false)}>
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>

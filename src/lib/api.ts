@@ -561,6 +561,10 @@ export function invalidateAnnotationCache(imageUrl: string): void {
   _annotationCache.delete(imageUrl);
 }
 
+export async function resetAllData(): Promise<void> {
+  await apiFetch('/api/reset', { method: 'POST' });
+}
+
 export function trackPageView(pagePath: string, postId?: string, referrer?: string): void {
   // Fire-and-forget — never throws
   fetch(`${API_URL}/api/track`, {
