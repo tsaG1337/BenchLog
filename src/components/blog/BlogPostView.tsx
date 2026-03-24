@@ -123,7 +123,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
               </button>
             )}
           </div>
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div
               className="prose prose-invert max-w-none blog-content"
               dangerouslySetInnerHTML={{ __html: post.content }}
