@@ -239,6 +239,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                           imageUrls={session.imageUrls || []}
                           onImagesChange={(urls) => onUpdate(session.id, { imageUrls: urls })}
                           editable={false}
+                          annotatable={true}
                         />
                       </div>
                       {!readOnly && (

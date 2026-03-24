@@ -132,9 +132,7 @@
 /* Blog content styles */
 .blog-content {
   overflow-wrap: break-word;
-  word-break: break-word;
   min-width: 0;
-  overflow: hidden;
 }
 
 .blog-content img {

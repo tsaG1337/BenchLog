@@ -6,6 +6,7 @@ interface ImageAnnotationViewerProps {
   annotations: ImageAnnotation[];
   imgClassName?: string;
   containerClassName?: string;
+  style?: string;
   onClick?: () => void;
   onError?: React.ImgHTMLAttributes<HTMLImageElement>['onError'];
   alt?: string;
@@ -20,6 +21,7 @@ export function ImageAnnotationViewer({
   annotations,
   imgClassName,
   containerClassName,
+  style,
   onClick,
   onError,
   alt = '',
@@ -27,8 +29,14 @@ export function ImageAnnotationViewer({
   const [activeId, setActiveId] = useState<string | null>(null);
 
   return (
-    <div className={`relative ${containerClassName ?? ''}`} onClick={onClick}>
-      <img src={src} alt={alt} className={imgClassName} onError={onError} />
+    <div
+      className={`relative ${containerClassName ?? ''}`}
+      onClick={onClick}
+      ref={el => { if (el && style) el.style.cssText = style; }}
+    >
+      {/* When a style is applied to the container, the image fills it at 100%
+          so annotation marker percentages align correctly with the image. */}
+      <img src={src} alt={alt} className={style ? `w-full h-auto ${imgClassName ?? ''}` : imgClassName} onError={onError} />
       {annotations.map((ann, i) => (
         <div
           key={ann.id}

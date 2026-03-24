@@ -1,14 +1,12 @@
-import { useEffect, useState } from 'react';
-import { BlogPost, deleteBlogPost, fetchAnnotations, ImageAnnotation } from '@/lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import { BlogPost, deleteBlogPost, deleteSessionApi, fetchAnnotations, ImageAnnotation } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Pencil, Trash2, Clock, Wrench, Tag, X } from 'lucide-react';
+import { ArrowLeft, Pencil, Trash2, Clock, Wrench, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { thumbUrl } from '@/lib/utils';
 import { ImageAnnotationViewer } from '@/components/ImageAnnotationViewer';
-import { ImageAnnotationEditor } from '@/components/ImageAnnotationEditor';
 
 interface BlogPostViewProps {
   post: BlogPost;
@@ -17,21 +15,53 @@ interface BlogPostViewProps {
   onDeleted: () => void;
 }
 
+// ── Split HTML content at <img> tags so each image can be wrapped with
+//    ImageAnnotationViewer while text segments keep dangerouslySetInnerHTML.
+type Segment = { type: 'html'; content: string } | { type: 'image'; src: string; style: string };
+
+function parseSegments(html: string): Segment[] {
+  const segments: Segment[] = [];
+  const imgRe = /<img([^>]*)>/gi;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = imgRe.exec(html)) !== null) {
+    if (m.index > last) segments.push({ type: 'html', content: html.slice(last, m.index) });
+    const attrs = m[1];
+    const src   = attrs.match(/src="([^"]+)"/)?.[1]   ?? '';
+    const style = attrs.match(/style="([^"]+)"/)?.[1] ?? '';
+    if (src) segments.push({ type: 'image', src, style });
+    last = m.index + m[0].length;
+  }
+  if (last < html.length) segments.push({ type: 'html', content: html.slice(last) });
+  return segments;
+}
+
 export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewProps) {
   const { labels, icons } = useSections();
   const { isAuthenticated } = useAuth();
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewUrl,    setPreviewUrl]    = useState<string | null>(null);
   const [annotationsMap, setAnnotationsMap] = useState<Record<string, ImageAnnotation[]>>({});
-  const [annotatingUrl, setAnnotatingUrl] = useState<string | null>(null);
 
   const isSession = post.source === 'session';
-  const allImages = post.imageUrls?.length ? post.imageUrls : [];
-  const firstImage = allImages[0];
-  const extraImages = allImages.slice(1);
 
-  // Load annotations for all images in this post
+  // For work sessions, images come from post.imageUrls.
+  // For blog posts, images are embedded in the Quill HTML content.
+  const sessionImages  = post.imageUrls?.length ? post.imageUrls : [];
+  const contentSegments = useMemo(() => parseSegments(post.content), [post.content]);
+  const contentImages   = useMemo(
+    () => contentSegments.filter(s => s.type === 'image').map(s => (s as { type: 'image'; src: string; style: string }).src),
+    [contentSegments],
+  );
+
+  // All unique image URLs we need annotations for
+  const allImageUrls = useMemo(
+    () => [...new Set([...sessionImages, ...contentImages])],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [post.id],
+  );
+
   useEffect(() => {
-    allImages.forEach(url => {
+    allImageUrls.forEach(url => {
       fetchAnnotations(url).then(anns => {
         setAnnotationsMap(prev => ({ ...prev, [url]: anns }));
       }).catch(() => {});
@@ -39,17 +69,60 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
   }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDelete = async () => {
-    if (!confirm('Delete this post?')) return;
-    try {
-      await deleteBlogPost(post.id);
-      toast.success('Post deleted');
-      onDeleted();
-    } catch (err: any) {
-      toast.error('Failed to delete: ' + err.message);
+    if (isSession) {
+      const confirmed = confirm(
+        '⚠️ This is a work session, not just a blog post.\n\n' +
+        'Deleting it will permanently remove the session and subtract its hours from your build progress.\n\n' +
+        'Are you sure you want to delete this session?'
+      );
+      if (!confirmed) return;
+      try {
+        const sessionId = post.id.replace(/^session-/, '');
+        await deleteSessionApi(sessionId);
+        toast.success('Work session deleted');
+        onDeleted();
+      } catch (err: any) {
+        toast.error('Failed to delete: ' + err.message);
+      }
+    } else {
+      if (!confirm('Delete this post?')) return;
+      try {
+        await deleteBlogPost(post.id);
+        toast.success('Post deleted');
+        onDeleted();
+      } catch (err: any) {
+        toast.error('Failed to delete: ' + err.message);
+      }
     }
   };
 
   const previewAnnotations = previewUrl ? (annotationsMap[previewUrl] ?? []) : [];
+
+  // ── Render blog post content, replacing <img> with annotated viewers ──
+  const renderContent = () => (
+    <div className="prose prose-invert max-w-none blog-content">
+      {contentSegments.map((seg, i) =>
+        seg.type === 'html' ? (
+          <span key={i} dangerouslySetInnerHTML={{ __html: seg.content }} />
+        ) : (
+          <span key={i} className="block my-4">
+            <ImageAnnotationViewer
+              src={seg.src}
+              annotations={annotationsMap[seg.src] ?? []}
+              imgClassName="rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+              containerClassName="inline-block"
+              style={seg.style}
+              onClick={() => setPreviewUrl(seg.src)}
+            />
+          </span>
+        )
+      )}
+    </div>
+  );
+
+  // ── Work-session layout: first image alongside content, grid for rest ──
+  const firstImage  = sessionImages[0];
+  const extraImages = sessionImages.slice(1);
 
   return (
     <article className="space-y-5">
@@ -64,11 +137,9 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
               <Button variant="ghost" size="icon" onClick={onEdit}>
                 <Pencil className="w-4 h-4" />
               </Button>
-              {!isSession && (
-                <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              )}
+              <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
+                <Trash2 className="w-4 h-4" />
+              </Button>
             </div>
           )}
         </div>
@@ -102,72 +173,45 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
         </div>
       </header>
 
-      {/* Main content with first image alongside text */}
-      {firstImage && (
+      {/* Work session: first image alongside text */}
+      {firstImage ? (
         <div className="flex flex-col md:flex-row gap-6">
-          <div className="md:w-1/2 shrink-0 group relative">
+          <div className="md:w-1/2 shrink-0">
             <ImageAnnotationViewer
-              src={thumbUrl(firstImage)}
-              onError={(e) => { (e.currentTarget as HTMLImageElement).src = firstImage; }}
+              src={firstImage}
               annotations={annotationsMap[firstImage] ?? []}
               imgClassName="w-full rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
               containerClassName="w-full"
               onClick={() => setPreviewUrl(firstImage)}
             />
-            {isAuthenticated && (
-              <button
-                onClick={() => setAnnotatingUrl(firstImage)}
-                className="absolute top-2 right-2 px-2 py-1 bg-black/60 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                Annotate
-              </button>
-            )}
           </div>
           <div className="flex-1 min-w-0">
-            <div
-              className="prose prose-invert max-w-none blog-content"
-              dangerouslySetInnerHTML={{ __html: post.content }}
-            />
+            <div className="prose prose-invert max-w-none blog-content"
+                 dangerouslySetInnerHTML={{ __html: post.content }} />
           </div>
         </div>
+      ) : (
+        renderContent()
       )}
 
-      {!firstImage && (
-        <div
-          className="prose prose-invert max-w-none blog-content"
-          dangerouslySetInnerHTML={{ __html: post.content }}
-        />
-      )}
-
-      {/* Additional images */}
+      {/* Work session: extra images grid */}
       {extraImages.length > 0 && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-            {extraImages.map((url, i) => (
-              <div key={i} className="group relative">
-                <ImageAnnotationViewer
-                  src={thumbUrl(url)}
-                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = url; }}
-                  annotations={annotationsMap[url] ?? []}
-                  imgClassName="w-full aspect-video rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                  containerClassName="w-full"
-                  onClick={() => setPreviewUrl(url)}
-                />
-                {isAuthenticated && (
-                  <button
-                    onClick={() => setAnnotatingUrl(url)}
-                    className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/60 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    Annotate
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {extraImages.map((url, i) => (
+            <div key={i}>
+              <ImageAnnotationViewer
+                src={url}
+                annotations={annotationsMap[url] ?? []}
+                imgClassName="w-full aspect-video rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                containerClassName="w-full"
+                onClick={() => setPreviewUrl(url)}
+              />
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Lightbox with annotation overlay */}
+      {/* Lightbox */}
       {previewUrl && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
@@ -179,15 +223,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
             imgClassName="max-w-full max-h-[90vh] rounded-lg object-contain block"
             containerClassName="max-w-full"
           />
-          <div className="absolute top-4 right-4 flex items-center gap-2">
-            {isAuthenticated && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setAnnotatingUrl(previewUrl); setPreviewUrl(null); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/90 text-primary-foreground text-sm rounded-full hover:bg-primary transition-colors"
-              >
-                <Tag className="w-3.5 h-3.5" /> Annotate
-              </button>
-            )}
+          <div className="absolute top-4 right-4">
             <button
               onClick={() => setPreviewUrl(null)}
               className="w-10 h-10 bg-card/80 rounded-full flex items-center justify-center text-foreground hover:bg-card transition-colors"
@@ -198,15 +234,6 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
         </div>
       )}
 
-      {/* Annotation editor (authenticated only) */}
-      {annotatingUrl && isAuthenticated && (
-        <ImageAnnotationEditor
-          imageUrl={annotatingUrl}
-          initialAnnotations={annotationsMap[annotatingUrl] ?? []}
-          onSaved={(anns) => setAnnotationsMap(prev => ({ ...prev, [annotatingUrl]: anns }))}
-          onClose={() => setAnnotatingUrl(null)}
-        />
-      )}
     </article>
   );
 }

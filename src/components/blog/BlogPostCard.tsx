@@ -71,8 +71,8 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
             )}
             <div className="flex-1 min-w-0">
               {textContent && (
-                <p className="text-sm text-muted-foreground line-clamp-6 leading-relaxed break-words overflow-hidden">
-                  {textContent.slice(0, 400)}
+                <p className="text-sm text-muted-foreground line-clamp-[7] leading-relaxed overflow-hidden">
+                  {textContent}
                 </p>
               )}
             </div>
@@ -100,9 +100,14 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
 }
 
 function stripHtml(html: string): string {
+  // Insert a space at block boundaries so paragraphs don't run together
+  // (e.g. "build.Unfortunately" → "build. Unfortunately")
+  const spaced = html
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ');
   const div = document.createElement('div');
-  div.innerHTML = html;
-  return div.textContent || '';
+  div.innerHTML = spaced;
+  return (div.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
 function extractAllImages(html: string): string[] {

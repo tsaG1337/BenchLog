@@ -1,12 +1,13 @@
 import { useState } from 'react';
-import { BlogPost, updateSessionApi, uploadImages, deleteImage } from '@/lib/api';
+import { BlogPost, updateSessionApi } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, Save, Loader2, ImagePlus, X } from 'lucide-react';
+import { ArrowLeft, Save, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { SessionImages } from '@/components/SessionImages';
 
 interface SessionBlogEditorProps {
   post: BlogPost; // source === 'session'
@@ -57,27 +58,6 @@ export function SessionBlogEditor({ post, onSave, onCancel }: SessionBlogEditorP
   });
   const [saving, setSaving] = useState(false);
   const [imageUrls, setImageUrls] = useState<string[]>(post.imageUrls || []);
-  const [uploading, setUploading] = useState(false);
-
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files?.length) return;
-    setUploading(true);
-    try {
-      const urls = await uploadImages(sessionId, files);
-      setImageUrls(prev => [...prev, ...urls]);
-    } catch (err: any) {
-      toast.error('Upload failed: ' + err.message);
-    } finally {
-      setUploading(false);
-      e.target.value = '';
-    }
-  };
-
-  const handleRemoveImage = async (url: string) => {
-    setImageUrls(prev => prev.filter(u => u !== url));
-    try { await deleteImage(url); } catch {}
-  };
 
   const durationMins = (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000;
   const durationValid = durationMins >= 0;
@@ -210,37 +190,13 @@ export function SessionBlogEditor({ post, onSave, onCancel }: SessionBlogEditorP
 
       {/* Images */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <Label className="text-xs text-muted-foreground">Photos</Label>
-          <label className="cursor-pointer">
-            <Button variant="outline" size="sm" asChild disabled={uploading}>
-              <span className="flex items-center gap-1.5 text-xs">
-                {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
-                Add Photos
-                <input type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
-              </span>
-            </Button>
-          </label>
-        </div>
-        {imageUrls.length > 0 && (
-          <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-            {imageUrls.map(url => (
-              <div key={url} className="relative group aspect-square">
-                <img
-                  src={url}
-                  alt=""
-                  className="w-full h-full object-cover rounded-md border border-border"
-                />
-                <button
-                  onClick={() => handleRemoveImage(url)}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-destructive text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <Label className="text-xs text-muted-foreground mb-1 block">Photos</Label>
+        <SessionImages
+          sessionId={sessionId}
+          imageUrls={imageUrls}
+          onImagesChange={setImageUrls}
+          editable={true}
+        />
       </div>
     </div>
   );

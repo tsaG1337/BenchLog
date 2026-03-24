@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useSections } from '@/contexts/SectionsContext';
-import { BlogPost, createBlogPost, updateBlogPost, uploadImages } from '@/lib/api';
+import { BlogPost, createBlogPost, updateBlogPost, uploadImages, fetchAnnotations, ImageAnnotation } from '@/lib/api';
+import { ImageAnnotationEditor } from '@/components/ImageAnnotationEditor';
 import { toast } from 'sonner';
-import { ArrowLeft, Save, ImagePlus, Loader2, AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
+import { ArrowLeft, Save, ImagePlus, Loader2, AlignLeft, AlignCenter, AlignRight, AlignJustify, Tag, GripVertical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // ── Custom Image blot that preserves the style attribute ─────────────
@@ -31,7 +32,7 @@ Quill.register(StyledImage, true);
 
 // ── Style helpers ─────────────────────────────────────────────────────
 function buildImageStyle(width: string, align: string): string {
-  let s = `max-width:100%;width:${width}`;
+  let s = `width:${width};max-width:100%`;
   if (align === 'center') s += ';display:block;margin:0 auto';
   else if (align === 'left')  s += ';float:left;margin-right:1em;margin-bottom:0.5em';
   else if (align === 'right') s += ';float:right;margin-left:1em;margin-bottom:0.5em';
@@ -40,7 +41,7 @@ function buildImageStyle(width: string, align: string): string {
 
 function parseImageStyle(style: string | null | undefined) {
   if (!style) return { width: '100%', align: 'none' };
-  const width = style.match(/width:([^;]+)/)?.[1]?.trim() || '100%';
+  const width = style.match(/(?<![a-z-])width:([^;]+)/)?.[1]?.trim() || '100%';
   let align = 'none';
   if (/margin:0 auto|margin: 0 auto/.test(style)) align = 'center';
   else if (/float:left|float: left/.test(style))   align = 'left';
@@ -92,13 +93,40 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
   const [saving,    setSaving]    = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const quillRef      = useRef<ReactQuill>(null);
-  const editorWrapRef = useRef<HTMLDivElement>(null);
+  const quillRef         = useRef<ReactQuill>(null);
+  const editorWrapRef    = useRef<HTMLDivElement>(null);
+  const selectedImgIndex = useRef<number | null>(null); // stable Quill delta index
 
   const [selectedImgEl, setSelectedImgEl] = useState<HTMLImageElement | null>(null);
   const [imgStyle,   setImgStyle]   = useState<{ width: string; align: string }>({ width: '100%', align: 'none' });
   const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
   const [toolbarPos,  setToolbarPos]  = useState<{ top: number; left: number } | null>(null);
+  const [annotatingUrl,  setAnnotatingUrl]  = useState<string | null>(null);
+  const [annotationsMap, setAnnotationsMap] = useState<Record<string, ImageAnnotation[]>>({});
+  const [dropLineTop, setDropLineTop] = useState<number | null>(null);
+
+  // ── Toolbar tooltips ──────────────────────────────────────────────
+  useEffect(() => {
+    const wrap = editorWrapRef.current;
+    if (!wrap) return;
+    const TITLES: Record<string, string> = {
+      '.ql-header .ql-picker':        'Text style (heading / normal)',
+      '.ql-bold':                      'Bold',
+      '.ql-italic':                    'Italic',
+      '.ql-underline':                 'Underline',
+      '.ql-strike':                    'Strikethrough',
+      '.ql-list[value="ordered"]':     'Numbered list',
+      '.ql-list[value="bullet"]':      'Bullet list',
+      '.ql-blockquote':                'Block quote',
+      '.ql-link':                      'Insert link',
+      '.ql-clean':                     'Remove formatting',
+    };
+    Object.entries(TITLES).forEach(([selector, title]) => {
+      wrap.querySelectorAll<HTMLElement>(selector).forEach(el => {
+        el.title = title;
+      });
+    });
+  }, []); // runs once after mount
 
   const modules = useMemo(() => ({
     toolbar: [
@@ -126,6 +154,20 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
     });
   }, []);
 
+  // ── Re-fetch the live image element from Quill by stored index ───
+  const refreshSelectedImg = useCallback(() => {
+    const quill = quillRef.current?.getEditor();
+    const idx   = selectedImgIndex.current;
+    if (!quill || idx === null) return null;
+    const [leaf] = quill.getLeaf(idx);
+    const el = leaf?.domNode as HTMLImageElement | null;
+    if (el?.tagName !== 'IMG') return null;
+    setSelectedImgEl(el);
+    setImgStyle(parseImageStyle(el.getAttribute('style')));
+    updateImageUI(el);
+    return el;
+  }, [updateImageUI]);
+
   // ── Click inside editor ───────────────────────────────────────────
   const handleEditorClick = useCallback((e: MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -133,9 +175,13 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
       setSelectedImgEl(null);
       setOverlayRect(null);
       setToolbarPos(null);
+      selectedImgIndex.current = null;
       return;
     }
-    const img = target as HTMLImageElement;
+    const img   = target as HTMLImageElement;
+    const quill = quillRef.current?.getEditor();
+    const blot  = quill ? (Quill as any).find(img) : null;
+    if (quill && blot) selectedImgIndex.current = quill.getIndex(blot);
     setSelectedImgEl(img);
     setImgStyle(parseImageStyle(img.getAttribute('style')));
     updateImageUI(img);
@@ -160,6 +206,121 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
       window.removeEventListener('scroll', onScroll, true);
     };
   }, [selectedImgEl, updateImageUI]);
+
+  // ── Drag-to-reposition image ──────────────────────────────────────
+  // Image src+style captured at dragstart so the data is always fresh.
+  const dragSrcData = useRef<{ index: number; src: string; style: string } | null>(null);
+
+  const handleImgDragStart = useCallback((e: React.DragEvent, imgIndex: number) => {
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+    const [leaf] = quill.getLeaf(imgIndex);
+    const el = leaf?.domNode as HTMLImageElement | null;
+    if (!el || el.tagName !== 'IMG') return;
+    dragSrcData.current = {
+      index: imgIndex,
+      src:   el.getAttribute('src')   || '',
+      style: el.getAttribute('style') || '',
+    };
+    e.dataTransfer.setData('text/plain', 'ql-image-move');
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  useEffect(() => {
+    const wrap   = editorWrapRef.current;
+    const editor = wrap?.querySelector('.ql-editor') as HTMLElement | null;
+    if (!wrap || !editor) return;
+
+    // Find which block-level child of .ql-editor the cursor is nearest to,
+    // and return the Quill index to insert before that block (top half)
+    // or after it (bottom half). This avoids the unreliable caretRangeFromPoint.
+    const getDropIndex = (clientY: number): number => {
+      const quill = quillRef.current?.getEditor();
+      if (!quill) return quill?.getLength() ?? 0;
+      const blocks = Array.from(editor.children) as HTMLElement[];
+      for (const block of blocks) {
+        const rect = block.getBoundingClientRect();
+        if (clientY <= rect.top + rect.height / 2) {
+          try {
+            const blot = (Quill as any).find(block, false);
+            return blot ? quill.getIndex(blot) : 0;
+          } catch { return 0; }
+        }
+      }
+      return quill.getLength() - 1;
+    };
+
+    const onDragOver = (e: DragEvent) => {
+      if (!dragSrcData.current) return;
+      e.preventDefault();
+      e.dataTransfer && (e.dataTransfer.dropEffect = 'move');
+      // Show drop line at the top edge of the target block
+      const blocks = Array.from(editor.children) as HTMLElement[];
+      const wrapRect = wrap.getBoundingClientRect();
+      for (const block of blocks) {
+        const rect = block.getBoundingClientRect();
+        if (e.clientY <= rect.top + rect.height / 2) {
+          setDropLineTop(rect.top - wrapRect.top);
+          return;
+        }
+      }
+      // Below all blocks
+      const last = blocks[blocks.length - 1];
+      if (last) {
+        const r = last.getBoundingClientRect();
+        setDropLineTop(r.bottom - wrapRect.top);
+      }
+    };
+
+    // dragleave: only hide indicator, never clear dragSrcData
+    // (spurious events fire when moving between child elements)
+    const onDragLeave = (e: DragEvent) => {
+      const related = e.relatedTarget as Node | null;
+      if (!related || !wrap.contains(related)) setDropLineTop(null);
+    };
+
+    // dragend: drag was cancelled (no drop occurred)
+    const onDragEnd = () => { setDropLineTop(null); dragSrcData.current = null; };
+
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDropLineTop(null);
+      const data = dragSrcData.current;
+      dragSrcData.current = null;
+      if (!data || !data.src) return;
+
+      const quill = quillRef.current?.getEditor();
+      if (!quill) return;
+
+      const srcIdx = data.index;
+      let targetIdx = getDropIndex(e.clientY);
+
+      // Adjust for the deletion of the source (shifts indices after it by -1)
+      if (targetIdx > srcIdx) targetIdx -= 1;
+      targetIdx = Math.max(0, Math.min(targetIdx, quill.getLength() - 1));
+
+      if (targetIdx === srcIdx) return; // dropped in same place
+
+      quill.deleteText(srcIdx, 1, 'user');
+      quill.insertEmbed(targetIdx, 'image', data.src, 'user');
+      if (data.style) quill.formatText(targetIdx, 1, 'style', data.style, 'user');
+
+      selectedImgIndex.current = targetIdx;
+      requestAnimationFrame(() => refreshSelectedImg());
+    };
+
+    wrap.addEventListener('dragover',  onDragOver);
+    wrap.addEventListener('dragleave', onDragLeave);
+    wrap.addEventListener('dragend',   onDragEnd);
+    wrap.addEventListener('drop',      onDrop);
+    return () => {
+      wrap.removeEventListener('dragover',  onDragOver);
+      wrap.removeEventListener('dragleave', onDragLeave);
+      wrap.removeEventListener('dragend',   onDragEnd);
+      wrap.removeEventListener('drop',      onDrop);
+    };
+  }, [refreshSelectedImg]);
 
   // ── Drag-to-resize ────────────────────────────────────────────────
   const handleResizeStart = useCallback((e: React.MouseEvent, handleId: string) => {
@@ -186,32 +347,46 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
       // Commit final style to Quill's delta
       const quill = quillRef.current?.getEditor();
       if (quill) {
-        const blot = (Quill as any).find(selectedImgEl);
-        if (blot) {
-          const index = quill.getIndex(blot);
-          quill.formatText(index, 1, 'style', selectedImgEl.getAttribute('style') || '');
+        const idx = selectedImgIndex.current;
+        if (idx !== null) {
+          quill.formatText(idx, 1, 'style', selectedImgEl.getAttribute('style') || '');
         }
       }
-      setImgStyle(prev => ({ ...prev, width: selectedImgEl.style.width }));
-      updateImageUI(selectedImgEl);
+      // Re-fetch fresh element after Quill may have recreated the DOM node
+      requestAnimationFrame(() => refreshSelectedImg());
     };
 
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup',   onUp);
-  }, [selectedImgEl, updateImageUI]);
+  }, [selectedImgEl, updateImageUI, refreshSelectedImg]);
 
   // ── Toolbar: apply preset size / alignment ────────────────────────
   const applyImageStyle = (newWidth: string, newAlign: string) => {
-    if (!selectedImgEl || !quillRef.current) return;
-    const newStyle = buildImageStyle(newWidth, newAlign);
-    const quill    = quillRef.current.getEditor();
-    const blot     = (Quill as any).find(selectedImgEl);
-    if (blot) {
-      const index = quill.getIndex(blot);
-      quill.formatText(index, 1, 'style', newStyle);
+    const quill = quillRef.current?.getEditor();
+    const idx   = selectedImgIndex.current;
+    if (!quill || idx === null) return;
+    quill.formatText(idx, 1, 'style', buildImageStyle(newWidth, newAlign));
+    // Re-fetch the live element (Quill may have recreated the DOM node)
+    requestAnimationFrame(() => refreshSelectedImg());
+  };
+
+  // ── Open annotation editor for selected image ────────────────────
+  const handleAnnotate = async () => {
+    // Use getAttribute to get the raw stored src (relative path like /files/…)
+    // instead of .src which the browser resolves to an absolute URL.
+    // The viewer fetches annotations using the same relative path from post.imageUrls,
+    // so both sides must use the same key.
+    const url = selectedImgEl?.getAttribute('src');
+    if (!url) return;
+    if (!annotationsMap[url]) {
+      try {
+        const anns = await fetchAnnotations(url);
+        setAnnotationsMap(prev => ({ ...prev, [url]: anns }));
+      } catch {
+        setAnnotationsMap(prev => ({ ...prev, [url]: [] }));
+      }
     }
-    setImgStyle({ width: newWidth, align: newAlign });
-    requestAnimationFrame(() => updateImageUI(selectedImgEl));
+    setAnnotatingUrl(url);
   };
 
   // ── Image upload ──────────────────────────────────────────────────
@@ -227,7 +402,13 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
           const range = quill.getSelection() || { index: quill.getLength() - 1, length: 0 };
           quill.insertEmbed(range.index, 'image', url, 'user');
           quill.formatText(range.index, 1, 'style', buildImageStyle('100%', 'none'));
-          quill.setSelection(range.index + 1, 0);
+          const afterIdx = range.index + 1;
+          // Always ensure there is a newline after the image so the cursor
+          // has an empty line to land on and the user can type after the image.
+          if (afterIdx >= quill.getLength() - 1) {
+            quill.insertText(afterIdx, '\n', 'user');
+          }
+          quill.setSelection(afterIdx, 0);
         }
       }
     } catch (err: any) {
@@ -275,7 +456,7 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
         </label>
         <Button onClick={handleSave} disabled={saving} size="sm" className="gap-2">
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          {post ? 'Update' : 'Publish'}
+          {post ? 'Save' : 'Publish'}
         </Button>
       </div>
 
@@ -298,6 +479,14 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
       {/* Editor + overlays */}
       <div ref={editorWrapRef} className="relative blog-editor-quill">
 
+        {/* ── Drag-to-reposition drop indicator ── */}
+        {dropLineTop !== null && (
+          <div
+            className="absolute left-0 right-0 h-0.5 bg-primary z-30 pointer-events-none rounded-full"
+            style={{ top: dropLineTop }}
+          />
+        )}
+
         {/* ── Size / alignment toolbar (above or below image) ── */}
         {toolbarPos && selectedImgEl && (
           <div
@@ -305,6 +494,19 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
             style={{ top: toolbarPos.top, left: toolbarPos.left }}
             onMouseDown={e => e.preventDefault()}
           >
+            {/* Drag handle — dragging this moves the image in the document */}
+            <div
+              draggable
+              onMouseDown={e => e.stopPropagation()}
+              onDragStart={e => {
+                if (selectedImgIndex.current !== null) handleImgDragStart(e, selectedImgIndex.current);
+              }}
+              className="flex items-center px-1 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground"
+              title="Drag to move image"
+            >
+              <GripVertical className="w-4 h-4" />
+            </div>
+            <div className="w-px h-4 bg-border mx-1" />
             <span className="text-xs text-muted-foreground px-1">Size</span>
             {SIZE_OPTIONS.map(({ label, value }) => (
               <button
@@ -337,6 +539,14 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
                 <Icon className="w-3.5 h-3.5" />
               </button>
             ))}
+            <div className="w-px h-4 bg-border mx-1" />
+            <button
+              title="Annotate"
+              onMouseDown={e => { e.preventDefault(); handleAnnotate(); }}
+              className="flex items-center gap-1 px-2 py-0.5 text-xs rounded hover:bg-muted text-foreground transition-colors"
+            >
+              <Tag className="w-3.5 h-3.5" /> Annotate
+            </button>
           </div>
         )}
 
@@ -379,6 +589,15 @@ export function BlogEditor({ post, onSave, onCancel }: BlogEditorProps) {
           placeholder="Write your build log entry..."
         />
       </div>
+
+      {annotatingUrl && (
+        <ImageAnnotationEditor
+          imageUrl={annotatingUrl}
+          initialAnnotations={annotationsMap[annotatingUrl] ?? []}
+          onSaved={anns => setAnnotationsMap(prev => ({ ...prev, [annotatingUrl]: anns }))}
+          onClose={() => setAnnotatingUrl(null)}
+        />
+      )}
     </div>
   );
 }

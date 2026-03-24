@@ -12,9 +12,10 @@ interface SessionImagesProps {
   imageUrls: string[];
   onImagesChange: (urls: string[]) => void;
   editable?: boolean;
+  annotatable?: boolean;
 }
 
-export function SessionImages({ sessionId, imageUrls, onImagesChange, editable = true }: SessionImagesProps) {
+export function SessionImages({ sessionId, imageUrls, onImagesChange, editable = true, annotatable = editable }: SessionImagesProps) {
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [annotatingUrl, setAnnotatingUrl] = useState<string | null>(null);
@@ -86,22 +87,21 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange, editable =
                   </div>
                 )}
                 {editable && (
-                  <>
-                    <button
-                      onClick={() => handleRemove(url)}
-                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                    {/* Annotate button — appears on hover */}
-                    <button
-                      onClick={() => setAnnotatingUrl(url)}
-                      className="absolute bottom-0.5 right-0.5 w-5 h-5 bg-primary/80 text-primary-foreground rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="Edit annotations"
-                    >
-                      <Tag className="w-3 h-3" />
-                    </button>
-                  </>
+                  <button
+                    onClick={() => handleRemove(url)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {annotatable && (
+                  <button
+                    onClick={() => setAnnotatingUrl(url)}
+                    className="absolute bottom-0.5 right-0.5 w-5 h-5 bg-primary/80 text-primary-foreground rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Edit annotations"
+                  >
+                    <Tag className="w-3 h-3" />
+                  </button>
                 )}
               </div>
             );
@@ -146,7 +146,7 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange, editable =
           />
           {/* Top-right controls */}
           <div className="absolute top-4 right-4 flex items-center gap-2">
-            {editable && (
+            {annotatable && (
               <button
                 onClick={(e) => { e.stopPropagation(); setAnnotatingUrl(previewUrl); setPreviewUrl(null); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/90 text-primary-foreground text-sm rounded-full hover:bg-primary transition-colors"
