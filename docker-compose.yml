@@ -1,6 +1,7 @@
 services:
   benchlog:
-    image: ghcr.io/tsag1337/benchlog:stable
+    build: .
+    # Pre-built image also available at: ghcr.io/tsag1337/benchlog:stable
     container_name: benchlog
     restart: unless-stopped
 
