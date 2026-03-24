@@ -103,18 +103,18 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
     <div className="prose prose-invert max-w-none blog-content">
       {contentSegments.map((seg, i) =>
         seg.type === 'html' ? (
-          <span key={i} dangerouslySetInnerHTML={{ __html: seg.content }} />
+          <div key={i} dangerouslySetInnerHTML={{ __html: seg.content }} />
         ) : (
-          <span key={i} className="block my-4">
+          <div key={i} className="my-4 clear-both">
             <ImageAnnotationViewer
               src={seg.src}
               annotations={annotationsMap[seg.src] ?? []}
               imgClassName="rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-              containerClassName="inline-block"
+              containerClassName="inline-block max-w-full"
               style={seg.style}
               onClick={() => setPreviewUrl(seg.src)}
             />
-          </span>
+          </div>
         )
       )}
     </div>
@@ -125,7 +125,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
   const extraImages = sessionImages.slice(1);
 
   return (
-    <article className="space-y-5">
+    <article className="space-y-5 overflow-x-hidden min-w-0">
       <header>
         <div className="flex items-start gap-2">
           <Button variant="ghost" size="icon" onClick={onBack} className="-ml-2 shrink-0 mt-0.5">
