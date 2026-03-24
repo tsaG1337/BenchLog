@@ -135,6 +135,13 @@
   min-width: 0;
 }
 
+/* Override Quill's inline color styles — they store rgb(0,0,0) which is
+   invisible on a dark background. Let the theme foreground color apply. */
+.blog-content [style*="color:"],
+.blog-content [style*="color: "] {
+  color: inherit !important;
+}
+
 .blog-content img {
   max-width: 100%;
   height: auto;

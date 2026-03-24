@@ -362,7 +362,7 @@ export default function BlogPage() {
             )}
 
             {view === 'post' && activePost && (
-              <div className="bg-card border border-border rounded-xl p-6 md:p-8">
+              <div className="bg-card border border-border rounded-xl p-6 md:p-8 overflow-hidden">
                 <BlogPostView
                   post={activePost}
                   onBack={handleBack}

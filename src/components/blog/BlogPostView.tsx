@@ -125,7 +125,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
   const extraImages = sessionImages.slice(1);
 
   return (
-    <article className="space-y-5 overflow-x-hidden min-w-0">
+    <article className="space-y-5 min-w-0">
       <header>
         <div className="flex items-start gap-2">
           <Button variant="ghost" size="icon" onClick={onBack} className="-ml-2 shrink-0 mt-0.5">
