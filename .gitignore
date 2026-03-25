@@ -34,3 +34,6 @@ data/
 *.njsproj
 *.sln
 *.sw?
+.env
+deploy.bat
+deploy.sh

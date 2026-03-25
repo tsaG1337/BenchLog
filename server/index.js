@@ -71,6 +71,21 @@ const TEMPLATES_WP_PATH = path.join(__dirname, '../templates/work-packages');
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
 const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
+const RECEIPTS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
+
+// ─── Storage backend ─────────────────────────────────────────────────
+const STORAGE_BACKEND = process.env.STORAGE_BACKEND || 'local';
+if (STORAGE_BACKEND === 'r2') {
+  const required = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'R2_BUCKET', 'R2_PUBLIC_URL'];
+  const missing = required.filter(k => !process.env[k]);
+  if (missing.length) {
+    console.error(`[storage] STORAGE_BACKEND=r2 but missing env vars: ${missing.join(', ')}. Check docker-compose.yml.`);
+    process.exit(1);
+  }
+  console.log('[storage] Using Cloudflare R2 object storage');
+} else {
+  console.log('[storage] Using local disk storage');
+}
 
 // Default general settings — single source of truth used as fallback in all getSetting('general') calls
 const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker', homeCurrency: 'EUR', blogShowActivity: true, blogShowStats: true, blogShowProgress: true };
@@ -133,52 +148,118 @@ app.use(express.static(DIST_PATH));
 // ─── SQLite setup ───────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
-// ─── Local file storage setup ───────────────────────────────────────
-const RECEIPTS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
+// ─── Local disk directories (always created; used in local mode and for temp imports) ──
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
-// Serve uploaded images publicly (blog is public, so images are too)
-app.use('/files', express.static(UPLOADS_DIR));
-// Serve receipts: PDFs require auth, images are public
-app.get('/receipts/:filename', (req, res) => {
-  const filename = path.basename(req.params.filename);
-  const filePath = path.join(RECEIPTS_DIR, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-  if (path.extname(filename).toLowerCase() === '.pdf') {
-    const auth = req.headers.authorization;
-    const payload = auth && auth.startsWith('Bearer ') ? verifyToken(auth.slice(7)) : null;
-    if (!payload) return res.status(401).send('Unauthorized');
-  }
-  res.sendFile(filePath);
-});
 
-// Multer: disk storage — always save as .jpg (sharp will process the content)
-const multerStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
-  filename: (req, file, cb) => cb(null, `${uuidv4()}.jpg`),
-});
+// ─── R2 client (only initialised when STORAGE_BACKEND=r2) ────────────
+let r2Client, R2_BUCKET, R2_PUBLIC_URL;
+let S3Put, S3Delete, S3Get, S3List, S3DeleteObjects;
+if (STORAGE_BACKEND === 'r2') {
+  const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand,
+          ListObjectsV2Command, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+  S3Put = PutObjectCommand; S3Delete = DeleteObjectCommand;
+  S3Get = GetObjectCommand; S3List = ListObjectsV2Command; S3DeleteObjects = DeleteObjectsCommand;
+  r2Client = new S3Client({
+    region: 'auto',
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId: process.env.R2_ACCESS_KEY, secretAccessKey: process.env.R2_SECRET_KEY },
+  });
+  R2_BUCKET = process.env.R2_BUCKET;
+  R2_PUBLIC_URL = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
+}
+
+// ─── Storage abstraction ─────────────────────────────────────────────
+// Returns a storage interface for 'sessions' (images) or 'receipts'.
+function createStorage(namespace) {
+  const localDir    = namespace === 'receipts' ? RECEIPTS_DIR : UPLOADS_DIR;
+  const localPrefix = namespace === 'receipts' ? '/receipts'  : '/files';
+
+  if (STORAGE_BACKEND === 'r2') {
+    const r2Key = fn => `${namespace}/${fn}`;
+    return {
+      async save(filename, buffer, contentType = 'image/jpeg') {
+        await r2Client.send(new S3Put({ Bucket: R2_BUCKET, Key: r2Key(filename), Body: buffer, ContentType: contentType }));
+        return `${R2_PUBLIC_URL}/${namespace}/${filename}`;
+      },
+      async delete(url, deleteThumb = false) {
+        const fn = path.basename(url);
+        await r2Client.send(new S3Delete({ Bucket: R2_BUCKET, Key: r2Key(fn) })).catch(() => {});
+        if (deleteThumb) await r2Client.send(new S3Delete({ Bucket: R2_BUCKET, Key: r2Key(thumbFilename(fn)) })).catch(() => {});
+      },
+      async readBuffer(url) {
+        const res = await r2Client.send(new S3Get({ Bucket: R2_BUCKET, Key: r2Key(path.basename(url)) }));
+        const chunks = [];
+        for await (const chunk of res.Body) chunks.push(chunk);
+        return Buffer.concat(chunks);
+      },
+      async deleteAll() {
+        let token;
+        do {
+          const listed = await r2Client.send(new S3List({ Bucket: R2_BUCKET, Prefix: `${namespace}/`, ContinuationToken: token }));
+          if (listed.Contents?.length) await r2Client.send(new S3DeleteObjects({ Bucket: R2_BUCKET, Delete: { Objects: listed.Contents.map(o => ({ Key: o.Key })) } }));
+          token = listed.NextContinuationToken;
+        } while (token);
+      },
+      async addToArchive(archive, url, archivePath) {
+        try { archive.append(await this.readBuffer(url), { name: archivePath }); } catch {}
+      },
+    };
+  }
+
+  // Local storage implementation
+  return {
+    async save(filename, buffer) {
+      fs.writeFileSync(path.join(localDir, filename), buffer);
+      return `${localPrefix}/${filename}`;
+    },
+    async delete(url, deleteThumb = false) {
+      const fn = path.basename(url);
+      const fp = path.join(localDir, fn);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      if (deleteThumb) { const tp = path.join(localDir, thumbFilename(fn)); if (fs.existsSync(tp)) fs.unlinkSync(tp); }
+    },
+    async readBuffer(url) { return fs.readFileSync(path.join(localDir, path.basename(url))); },
+    async deleteAll() {
+      if (fs.existsSync(localDir)) for (const f of fs.readdirSync(localDir)) try { fs.unlinkSync(path.join(localDir, f)); } catch {}
+    },
+    async addToArchive(archive, url, archivePath) {
+      const fp = path.join(localDir, path.basename(url));
+      if (fs.existsSync(fp)) archive.file(fp, { name: archivePath });
+    },
+  };
+}
+
+const imageStore   = createStorage('sessions');
+const receiptStore = createStorage('receipts');
+
+// ─── Local file serving (only in local mode; R2 URLs are served directly by Cloudflare) ──
+if (STORAGE_BACKEND === 'local') {
+  app.use('/files', express.static(UPLOADS_DIR));
+  app.get('/receipts/:filename', (req, res) => {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(RECEIPTS_DIR, filename);
+    if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+    if (path.extname(filename).toLowerCase() === '.pdf') {
+      const auth = req.headers.authorization;
+      const payload = auth && auth.startsWith('Bearer ') ? verifyToken(auth.slice(7)) : null;
+      if (!payload) return res.status(401).send('Unauthorized');
+    }
+    res.sendFile(filePath);
+  });
+}
+
+// ─── Multer (memory storage — works for both local and R2) ───────────
 const upload = multer({
-  storage: multerStorage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // allow large originals; sharp will resize down
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif'];
-    allowed.includes(file.mimetype)
-      ? cb(null, true)
-      : cb(new Error('Only image files are allowed'));
-  },
-});
-
-// Multer for receipts — accepts images and PDFs
-const receiptStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, RECEIPTS_DIR),
-  filename: (req, file, cb) => {
-    // Keep original filename but prefix with UUID to avoid collisions
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${uuidv4()}-${safeName}`);
+    allowed.includes(file.mimetype) ? cb(null, true) : cb(new Error('Only image files are allowed'));
   },
 });
 const receiptUpload = multer({
-  storage: receiptStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
@@ -729,15 +810,7 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
   if (row) {
     const imageUrls = JSON.parse(row.image_urls || '[]');
     for (const url of imageUrls) {
-      try {
-        const filename = path.basename(url);
-        const filePath = path.join(UPLOADS_DIR, filename);
-        if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
-        if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
-      } catch (err) {
-        console.error('Failed to delete image file:', err.message);
-      }
+      imageStore.delete(url, true).catch(err => console.error('Failed to delete image file:', err.message));
     }
   }
 
@@ -747,7 +820,7 @@ app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/upload — upload images (auth required)
-// Multer saves to disk, then sharp resizes the main image and generates a thumbnail.
+// Multer buffers into memory, sharp processes, then saved via storage backend.
 app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
   try {
     const generalSettings = getSetting('general', DEFAULT_GENERAL);
@@ -757,38 +830,31 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
 
     const urls = [];
     for (const file of req.files) {
-      const filePath = file.path;
+      const filename = `${uuidv4()}.jpg`;
+
+      // Start with the in-memory buffer from multer
+      let buf = file.buffer;
 
       // Pre-convert HEIC/HEIF to JPEG (sharp's libvips lacks HEVC decoder)
       if (file.mimetype === 'image/heic' || file.mimetype === 'image/heif') {
-        const inputBuffer = fs.readFileSync(filePath);
-        const jpegBuffer = await heicConvert({ buffer: inputBuffer, format: 'JPEG', quality: 0.95 });
-        fs.writeFileSync(filePath, Buffer.from(jpegBuffer));
+        buf = Buffer.from(await heicConvert({ buffer: buf, format: 'JPEG', quality: 0.95 }));
       }
 
-      // Resize main image in-place if enabled
+      // Resize main image (or just orient/convert to JPEG)
       if (resizingEnabled) {
-        const buf = await sharp(filePath)
-          .rotate() // auto-orient from EXIF
-          .resize(maxWidth, null, { withoutEnlargement: true })
-          .jpeg({ quality: 85 })
-          .toBuffer();
-        fs.writeFileSync(filePath, buf);
+        buf = await sharp(buf).rotate().resize(maxWidth, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
       } else {
-        // Still convert to JPEG and auto-orient even when resizing is off
-        const buf = await sharp(filePath).rotate().jpeg({ quality: 90 }).toBuffer();
-        fs.writeFileSync(filePath, buf);
+        buf = await sharp(buf).rotate().jpeg({ quality: 90 }).toBuffer();
       }
 
-      // Always generate thumbnail
-      const thumbPath = path.join(UPLOADS_DIR, thumbFilename(file.filename));
-      await sharp(filePath)
-        .rotate()
-        .resize(thumbWidth, null, { withoutEnlargement: true })
-        .jpeg({ quality: 75 })
-        .toFile(thumbPath);
+      // Generate thumbnail
+      const thumbBuf = await sharp(buf).resize(thumbWidth, null, { withoutEnlargement: true }).jpeg({ quality: 75 }).toBuffer();
 
-      urls.push(`/files/${file.filename}`);
+      // Save main image and thumbnail via storage backend
+      const url = await imageStore.save(filename, buf);
+      await imageStore.save(thumbFilename(filename), thumbBuf);
+
+      urls.push(url);
     }
     res.json({ urls });
   } catch (err) {
@@ -797,14 +863,10 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
 });
 
 // DELETE /api/upload — delete an image and its thumbnail (auth required)
-app.delete('/api/upload', requireAuth, (req, res) => {
+app.delete('/api/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
-    const filename = path.basename(url || '');
-    const filePath = path.join(UPLOADS_DIR, filename);
-    if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
-    if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
+    if (url) await imageStore.delete(url, true); // true = also delete thumbnail
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1061,14 +1123,13 @@ app.get('/api/export', requireAuth, async (req, res) => {
 
   const data = { version: 2, exportedAt: new Date().toISOString() };
   const addedFiles = new Set();
+  const filePromises = [];
 
-  const addFile = (dir, filename, archiveFolder) => {
-    if (!filename || addedFiles.has(filename)) return;
-    const fp = path.join(dir, filename);
-    if (fs.existsSync(fp)) {
-      archive.file(fp, { name: `uploads/${archiveFolder}/${filename}` });
-      addedFiles.add(filename);
-    }
+  const addFile = (store, url, archiveFolder) => {
+    if (!url || addedFiles.has(url)) return;
+    addedFiles.add(url);
+    const filename = path.basename(url);
+    filePromises.push(store.addToArchive(archive, url, `uploads/${archiveFolder}/${filename}`));
   };
 
   if (includeSettings) {
@@ -1087,7 +1148,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
   if (includeSessions) {
     data.sessions = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all().map(row => {
       const imageUrls = JSON.parse(row.image_urls || '[]');
-      imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+      imageUrls.forEach(u => addFile(imageStore, u, 'sessions'));
       return {
         id: row.id, section: row.section,
         startTime: row.start_time, endTime: row.end_time,
@@ -1100,7 +1161,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
   if (includeExpenses) {
     data.expenses = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all().map(row => {
       const receiptUrls = JSON.parse(row.receipt_urls || '[]');
-      receiptUrls.forEach(u => addFile(RECEIPTS_DIR, path.basename(u), 'receipts'));
+      receiptUrls.forEach(u => addFile(receiptStore, u, 'receipts'));
       return expenseRow(row);
     });
   }
@@ -1108,7 +1169,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
   if (includeBlog) {
     data.blogPosts = db.prepare('SELECT * FROM blog_posts ORDER BY published_at DESC').all().map(row => {
       const imageUrls = JSON.parse(row.image_urls || '[]');
-      imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+      imageUrls.forEach(u => addFile(imageStore, u, 'sessions'));
       return {
         id: row.id, title: row.title, content: row.content,
         section: row.section, imageUrls,
@@ -1133,6 +1194,7 @@ app.get('/api/export', requireAuth, async (req, res) => {
   }));
 
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
+  await Promise.all(filePromises); // wait for any async storage reads (R2) before finalising
   await archive.finalize();
 });
 
@@ -1254,8 +1316,10 @@ app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, 
     const sessDir = path.join(extractDir, 'uploads', 'sessions');
     if (fs.existsSync(sessDir)) {
       for (const file of fs.readdirSync(sessDir)) {
-        const dst = path.join(UPLOADS_DIR, file);
-        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(sessDir, file), dst); results.filesImported++; }
+        const buf = fs.readFileSync(path.join(sessDir, file));
+        const ct = file.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+        await imageStore.save(file, buf, ct);
+        results.filesImported++;
       }
     }
 
@@ -1263,8 +1327,10 @@ app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, 
     const recDir = path.join(extractDir, 'uploads', 'receipts');
     if (fs.existsSync(recDir)) {
       for (const file of fs.readdirSync(recDir)) {
-        const dst = path.join(RECEIPTS_DIR, file);
-        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(recDir, file), dst); results.filesImported++; }
+        const buf = fs.readFileSync(path.join(recDir, file));
+        const ct = file.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+        await receiptStore.save(file, buf, ct);
+        results.filesImported++;
       }
     }
 
@@ -1410,21 +1476,11 @@ app.put('/api/blog/:id', requireAuth, (req, res) => {
 app.delete('/api/blog/:id', requireAuth, (req, res) => {
   const row = db.prepare('SELECT image_urls, content FROM blog_posts WHERE id = ?').get(req.params.id);
   if (row) {
-    // Delete files stored in image_urls array
     const imageUrls = JSON.parse(row.image_urls || '[]');
-    // Also extract any images embedded directly in the HTML content
     const contentMatches = [...(row.content || '').matchAll(/<img[^>]+src="([^"]+)"/g)].map(m => m[1]);
-    const allUrls = [...new Set([...imageUrls, ...contentMatches])].filter(u => u.startsWith('/files/'));
+    const allUrls = [...new Set([...imageUrls, ...contentMatches])].filter(Boolean);
     for (const url of allUrls) {
-      try {
-        const filename = path.basename(url);
-        const filePath = path.join(UPLOADS_DIR, filename);
-        if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
-        if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
-      } catch (err) {
-        console.error('Failed to delete blog image file:', err.message);
-      }
+      imageStore.delete(url, true).catch(err => console.error('Failed to delete blog image:', err.message));
     }
   }
   db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
@@ -1607,7 +1663,7 @@ app.delete('/api/expenses/:id', requireAuth, (req, res) => {
   const row = db.prepare('SELECT receipt_urls FROM expenses WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   for (const url of JSON.parse(row.receipt_urls || '[]')) {
-    try { const fp = path.join(RECEIPTS_DIR, path.basename(url)); if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+    receiptStore.delete(url).catch(() => {});
   }
   db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
@@ -1618,11 +1674,15 @@ app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), 
   try {
     const urls = [];
     for (const file of req.files) {
-      if (file.mimetype !== 'application/pdf') {
-        const buf = await sharp(file.path).rotate().resize(1920, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
-        fs.writeFileSync(file.path, buf);
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      if (file.mimetype === 'application/pdf') {
+        const filename = `${uuidv4()}-${safeName}`;
+        urls.push(await receiptStore.save(filename, file.buffer, 'application/pdf'));
+      } else {
+        const filename = `${uuidv4()}-${safeName.replace(/\.[^.]+$/, '.jpg')}`;
+        const buf = await sharp(file.buffer).rotate().resize(1920, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+        urls.push(await receiptStore.save(filename, buf));
       }
-      urls.push(`/receipts/${file.filename}`);
     }
     res.json({ urls });
   } catch (err) {
@@ -1631,11 +1691,10 @@ app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), 
 });
 
 // DELETE /api/expenses/upload
-app.delete('/api/expenses/upload', requireAuth, (req, res) => {
+app.delete('/api/expenses/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
-    const fp = path.join(RECEIPTS_DIR, path.basename(url || ''));
-    if (fp && fs.existsSync(fp)) fs.unlinkSync(fp);
+    if (url) await receiptStore.delete(url);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1643,7 +1702,7 @@ app.delete('/api/expenses/upload', requireAuth, (req, res) => {
 });
 
 // ─── Factory Reset ───────────────────────────────────────────────────
-app.post('/api/reset', requireAuth, (req, res) => {
+app.post('/api/reset', requireAuth, async (req, res) => {
   try {
     // Delete all user data from the database
     db.prepare('DELETE FROM sessions').run();
@@ -1654,14 +1713,8 @@ app.post('/api/reset', requireAuth, (req, res) => {
     db.prepare('DELETE FROM active_timer').run();
     // Reset settings to defaults (keep password hash)
     db.prepare("DELETE FROM settings WHERE key != 'password_hash'").run();
-    // Delete all uploaded files (session images, thumbnails, receipts)
-    [UPLOADS_DIR, RECEIPTS_DIR].forEach(dir => {
-      if (fs.existsSync(dir)) {
-        for (const file of fs.readdirSync(dir)) {
-          try { fs.unlinkSync(path.join(dir, file)); } catch {}
-        }
-      }
-    });
+    // Delete all uploaded files from whichever storage backend is active
+    await Promise.all([imageStore.deleteAll(), receiptStore.deleteAll()]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
