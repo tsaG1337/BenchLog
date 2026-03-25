@@ -157,6 +157,7 @@ export interface TimerStatus {
   running: boolean;
   section?: string;
   startedAt?: string;
+  imageUrls?: string[];
 }
 
 export async function startTimer(section: string): Promise<{ ok: boolean; section: string; startedAt: string }> {
@@ -431,6 +432,10 @@ export interface DebugStats {
     version: string;
     platform: string;
     arch: string;
+  };
+  storage: {
+    backend: 'local' | 'r2';
+    bucket: string | null;
   };
 }
 

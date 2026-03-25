@@ -162,7 +162,7 @@ if (STORAGE_BACKEND === 'r2') {
   S3Get = GetObjectCommand; S3List = ListObjectsV2Command; S3DeleteObjects = DeleteObjectsCommand;
   r2Client = new S3Client({
     region: 'auto',
-    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    endpoint: process.env.R2_ENDPOINT || `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY, secretAccessKey: process.env.R2_SECRET_KEY },
   });
   R2_BUCKET = process.env.R2_BUCKET;
@@ -300,9 +300,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS active_timer (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     section TEXT NOT NULL,
-    start_time TEXT NOT NULL
+    start_time TEXT NOT NULL,
+    image_urls TEXT DEFAULT '[]'
   )
 `);
+try { db.exec(`ALTER TABLE active_timer ADD COLUMN image_urls TEXT DEFAULT '[]'`); } catch {} // no-op if already exists
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS blog_posts (
@@ -395,6 +397,13 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pending_uploads (
+    url TEXT PRIMARY KEY,
+    uploaded_at INTEGER NOT NULL
+  )
+`);
+
 // Prune visitor stats older than 1 year — runs on startup and every 24h
 function pruneVisitorStats() {
   const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
@@ -403,6 +412,39 @@ function pruneVisitorStats() {
 }
 pruneVisitorStats();
 setInterval(pruneVisitorStats, 24 * 60 * 60 * 1000);
+
+// Cleanup orphaned uploads: runs hourly, deletes files uploaded >24h ago
+// that are no longer referenced in any sessions, blog posts, or expenses.
+async function cleanupOrphanedUploads() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const candidates = db.prepare('SELECT url FROM pending_uploads WHERE uploaded_at < ?').all(cutoff);
+  if (!candidates.length) return;
+
+  let deleted = 0;
+  for (const { url } of candidates) {
+    // Check if this URL appears in any stored image_urls or blog content
+    const inSessions = db.prepare("SELECT 1 FROM sessions WHERE image_urls LIKE ? LIMIT 1").get(`%${url}%`);
+    const inBlogUrls = db.prepare("SELECT 1 FROM blog_posts WHERE image_urls LIKE ? LIMIT 1").get(`%${url}%`);
+    const inBlogContent = db.prepare("SELECT 1 FROM blog_posts WHERE content LIKE ? LIMIT 1").get(`%${url}%`);
+    const inExpenses = db.prepare("SELECT 1 FROM expenses WHERE receipt_urls LIKE ? LIMIT 1").get(`%${url}%`);
+
+    if (!inSessions && !inBlogUrls && !inBlogContent && !inExpenses) {
+      try {
+        await imageStore.delete(url, true); // also deletes thumbnail if present
+      } catch (e) {
+        // May already be gone — continue
+      }
+      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
+      deleted++;
+    } else {
+      // Still referenced — remove from pending list, no deletion needed
+      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
+    }
+  }
+  if (deleted > 0) console.log(`[cleanup] Deleted ${deleted} orphaned upload(s)`);
+}
+cleanupOrphanedUploads();
+setInterval(cleanupOrphanedUploads, 60 * 60 * 1000);
 
 // ─── Settings helpers ───────────────────────────────────────────────
 function getSetting(key, defaultValue = null) {
@@ -855,9 +897,18 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
       await imageStore.save(thumbFilename(filename), thumbBuf);
 
       urls.push(url);
+      db.prepare('INSERT OR REPLACE INTO pending_uploads (url, uploaded_at) VALUES (?, ?)').run(url, Date.now());
+
+      // Persist URL in active timer so it survives page refresh
+      const activeTimer = db.prepare('SELECT image_urls FROM active_timer WHERE id = 1').get();
+      if (activeTimer) {
+        const existing = JSON.parse(activeTimer.image_urls || '[]');
+        db.prepare('UPDATE active_timer SET image_urls = ? WHERE id = 1').run(JSON.stringify([...existing, url]));
+      }
     }
     res.json({ urls });
   } catch (err) {
+    console.error('[upload] error:', err.message, err.$metadata || '');
     res.status(500).json({ error: err.message });
   }
 });
@@ -866,7 +917,17 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
 app.delete('/api/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
-    if (url) await imageStore.delete(url, true); // true = also delete thumbnail
+    if (url) {
+      await imageStore.delete(url, true); // true = also delete thumbnail
+      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
+
+      // Remove from active timer image list if present
+      const activeTimer = db.prepare('SELECT image_urls FROM active_timer WHERE id = 1').get();
+      if (activeTimer) {
+        const remaining = JSON.parse(activeTimer.image_urls || '[]').filter(u => u !== url);
+        db.prepare('UPDATE active_timer SET image_urls = ? WHERE id = 1').run(JSON.stringify(remaining));
+      }
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1042,15 +1103,19 @@ app.post('/api/timer/stop', requireAuth, (req, res) => {
   const durationMinutes = (endTime - startTime) / (1000 * 60);
   
   const { notes, plansReference, imageUrls } = req.body;
-  
+
+  // Merge server-persisted image URLs with any sent from the client (deduplicated)
+  const serverImageUrls = JSON.parse(row.image_urls || '[]');
+  const mergedImageUrls = [...new Set([...serverImageUrls, ...(imageUrls || [])])];
+
   // Create session ID
   const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
+
   // Save session
   db.prepare(`
     INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || []));
+  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, JSON.stringify(mergedImageUrls));
   
   // Delete active timer
   db.prepare('DELETE FROM active_timer WHERE id = 1').run();
@@ -1077,7 +1142,8 @@ app.get('/api/timer/status', (req, res) => {
   res.json({
     running: true,
     section: row.section,
-    startedAt: row.start_time
+    startedAt: row.start_time,
+    imageUrls: JSON.parse(row.image_urls || '[]'),
   });
 });
 
@@ -1675,14 +1741,17 @@ app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), 
     const urls = [];
     for (const file of req.files) {
       const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      let receiptUrl;
       if (file.mimetype === 'application/pdf') {
         const filename = `${uuidv4()}-${safeName}`;
-        urls.push(await receiptStore.save(filename, file.buffer, 'application/pdf'));
+        receiptUrl = await receiptStore.save(filename, file.buffer, 'application/pdf');
       } else {
         const filename = `${uuidv4()}-${safeName.replace(/\.[^.]+$/, '.jpg')}`;
         const buf = await sharp(file.buffer).rotate().resize(1920, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
-        urls.push(await receiptStore.save(filename, buf));
+        receiptUrl = await receiptStore.save(filename, buf);
       }
+      urls.push(receiptUrl);
+      db.prepare('INSERT OR REPLACE INTO pending_uploads (url, uploaded_at) VALUES (?, ?)').run(receiptUrl, Date.now());
     }
     res.json({ urls });
   } catch (err) {
@@ -1694,7 +1763,10 @@ app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), 
 app.delete('/api/expenses/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
-    if (url) await receiptStore.delete(url);
+    if (url) {
+      await receiptStore.delete(url);
+      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1711,6 +1783,7 @@ app.post('/api/reset', requireAuth, async (req, res) => {
     db.prepare('DELETE FROM sign_offs').run();
     db.prepare('DELETE FROM image_annotations').run();
     db.prepare('DELETE FROM active_timer').run();
+    db.prepare('DELETE FROM pending_uploads').run();
     // Reset settings to defaults (keep password hash)
     db.prepare("DELETE FROM settings WHERE key != 'password_hash'").run();
     // Delete all uploaded files from whichever storage backend is active
@@ -1977,6 +2050,10 @@ app.get('/api/debug/stats', requireAuth, (req, res) => {
       platform: process.platform,
       arch: process.arch,
     },
+    storage: {
+      backend: STORAGE_BACKEND,
+      bucket: STORAGE_BACKEND === 'r2' ? R2_BUCKET : null,
+    },
   });
 });
 
@@ -2068,5 +2145,9 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`Benchlog API running on port ${PORT}`);
   console.log(`SQLite: ${DB_PATH}`);
-  console.log(`Uploads: ${UPLOADS_DIR}`);
+  if (STORAGE_BACKEND === 'r2') {
+    console.log(`Storage: Cloudflare R2 — bucket: ${R2_BUCKET}`);
+  } else {
+    console.log(`Storage: Local disk — ${UPLOADS_DIR}`);
+  }
 });

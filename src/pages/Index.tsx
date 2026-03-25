@@ -81,6 +81,9 @@ const Index = () => {
       if (status.running && status.section) {
         setIsRunning(true);
         setSection(status.section);
+        if (status.imageUrls && status.imageUrls.length > 0) {
+          setPendingImageUrls(status.imageUrls);
+        }
       }
     }).catch(() => {});
   }, [loadSessions]);
