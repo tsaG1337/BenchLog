@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,7 +19,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
-  fetchSections, updateSections, CURRENCIES,
+  fetchSections, updateSections, fetchSectionUsage, reassignSection, CURRENCIES,
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
   fetchWpTemplates, fetchWpTemplate, WpTemplate,
@@ -61,6 +62,8 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     topicPrefix: 'mybuild/stats', haDiscovery: false, haDiscoveryPrefix: 'homeassistant',
   });
   const [sections, setSections] = useState<SectionConfig[]>([]);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ index: number; section: SectionConfig; sessions: number; blogPosts: number } | null>(null);
+  const [reassignTo, setReassignTo] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [webhookKey, setWebhookKey] = useState('');
@@ -152,7 +155,26 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     setSections(updated);
   };
 
-  const removeSection = (index: number) => setSections(sections.filter((_, i) => i !== index));
+  const removeSection = async (index: number) => {
+    const sec = sections[index];
+    // Unsaved new sections have no data — delete immediately
+    if (sec.id.startsWith('section-')) {
+      setSections(sections.filter((_, i) => i !== index));
+      return;
+    }
+    try {
+      const usage = await fetchSectionUsage(sec.id);
+      if (usage.sessions === 0 && usage.blogPosts === 0) {
+        setSections(sections.filter((_, i) => i !== index));
+      } else {
+        const others = sections.filter((_, i) => i !== index);
+        setReassignTo(others[0]?.id || '');
+        setDeleteConfirm({ index, section: sec, sessions: usage.sessions, blogPosts: usage.blogPosts });
+      }
+    } catch {
+      setSections(sections.filter((_, i) => i !== index));
+    }
+  };
 
   const moveSection = (index: number, direction: -1 | 1) => {
     const newIndex = index + direction;
@@ -454,6 +476,59 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   </p>
                 )}
               </div>
+
+              {/* ── Delete confirmation dialog ─────────────────── */}
+              <Dialog open={deleteConfirm !== null} onOpenChange={o => { if (!o) setDeleteConfirm(null); }}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-destructive" /> Delete section "{deleteConfirm?.section.label || deleteConfirm?.section.id}"?
+                    </DialogTitle>
+                    <DialogDescription>
+                      This section has{' '}
+                      {deleteConfirm && [
+                        deleteConfirm.sessions > 0 && `${deleteConfirm.sessions} work session${deleteConfirm.sessions !== 1 ? 's' : ''}`,
+                        deleteConfirm.blogPosts > 0 && `${deleteConfirm.blogPosts} blog post${deleteConfirm.blogPosts !== 1 ? 's' : ''}`,
+                      ].filter(Boolean).join(' and ')}.
+                      {' '}Reassign existing entries to another section, or delete the section and leave them as-is.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-2 py-1">
+                    <Label className="text-xs text-muted-foreground">Reassign entries to</Label>
+                    <Select value={reassignTo} onValueChange={setReassignTo}>
+                      <SelectTrigger className="bg-secondary border-border">
+                        <SelectValue placeholder="Select a section…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sections
+                          .filter(s => s.id !== deleteConfirm?.section.id)
+                          .map(s => <SelectItem key={s.id} value={s.id}>{s.icon} {s.label || s.id}</SelectItem>)
+                        }
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <DialogFooter className="gap-2 sm:gap-0">
+                    <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+                    <Button variant="outline" onClick={() => {
+                      setSections(sections.filter((_, i) => i !== deleteConfirm!.index));
+                      setDeleteConfirm(null);
+                    }}>Delete without reassigning</Button>
+                    <Button variant="destructive" disabled={!reassignTo} onClick={async () => {
+                      if (!reassignTo || !deleteConfirm) return;
+                      try {
+                        const result = await reassignSection(deleteConfirm.section.id, reassignTo);
+                        const updated = sections.filter((_, i) => i !== deleteConfirm.index);
+                        setSections(updated);
+                        await updateSections(updated);
+                        toast.success(`Reassigned ${result.sessionsUpdated} sessions and ${result.blogPostsUpdated} blog posts`);
+                      } catch {
+                        toast.error('Failed to reassign entries');
+                      }
+                      setDeleteConfirm(null);
+                    }}>Reassign &amp; Delete</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </>}
 
             {/* ── Integrations ────────────────────────────────── */}

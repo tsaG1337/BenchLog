@@ -154,6 +154,17 @@ export async function updateSections(sections: SectionConfig[]): Promise<void> {
   });
 }
 
+export async function fetchSectionUsage(sectionId: string): Promise<{ sessions: number; blogPosts: number }> {
+  return request(`/api/sections/${encodeURIComponent(sectionId)}/usage`);
+}
+
+export async function reassignSection(fromId: string, toId: string): Promise<{ sessionsUpdated: number; blogPostsUpdated: number }> {
+  return request('/api/sections/reassign', {
+    method: 'POST',
+    body: JSON.stringify({ fromId, toId }),
+  });
+}
+
 // ─── Timer API ──────────────────────────────────────────────────────
 export interface TimerStatus {
   running: boolean;

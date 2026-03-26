@@ -166,12 +166,40 @@ export default function BlogPage() {
     return text.includes(q);
   });
 
+  const subdomainSlug = (() => {
+    const parts = window.location.hostname.split('.');
+    if (parts.length < 3) return null;
+    const slug = parts[0];
+    return ['www', 'account', 'demo'].includes(slug) ? null : slug;
+  })();
+
   return (
     <div className="min-h-screen bg-background">
       {demoMode && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
           <Eye className="w-4 h-4 shrink-0" />
           <span>Demo mode — read only. No data can be created or changed.</span>
+        </div>
+      )}
+      {subdomainSlug && !isAuthenticated && !demoMode && (
+        <div className="border-b border-border bg-primary/5 px-4 py-4">
+          <div className="container max-w-7xl flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between">
+            <div className="space-y-0.5">
+              <p className="text-sm font-semibold text-foreground">
+                Welcome to {projectName || subdomainSlug + "'s build log"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Tracking progress on a Van's RV-10 homebuilt aircraft — powered by Benchlog.
+              </p>
+            </div>
+            <a
+              href="/login"
+              className="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 px-3 py-1.5 rounded-md transition-colors"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              Owner log in
+            </a>
+          </div>
         </div>
       )}
       <header className="border-b border-border bg-card/50 sticky top-0 z-30 backdrop-blur-sm">

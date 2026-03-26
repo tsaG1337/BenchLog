@@ -91,6 +91,19 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function requireServiceKey(req, res, next) {
+  const configured = process.env.INTERNAL_API_KEY;
+  if (!configured) return res.status(503).json({ error: 'Internal API not enabled — set INTERNAL_API_KEY' });
+  const key = req.headers['x-service-key'];
+  if (!key || key !== configured) return res.status(401).json({ error: 'Invalid or missing X-Service-Key header' });
+  next();
+}
+
+function requirePostgres(req, res, next) {
+  if (DB_BACKEND !== 'postgres') return res.status(400).json({ error: 'Internal API requires DB_BACKEND=postgres' });
+  next();
+}
+
 async function requireWebhookKey(req, res, next) {
   const key = req.query.key || req.headers['x-webhook-key'];
   if (!key) return res.status(401).json({ error: 'Missing webhook key' });
@@ -127,7 +140,7 @@ const RECEIPTS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
 const DEFAULT_GENERAL = {
   projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time',
   imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h',
-  landingPage: 'tracker', homeCurrency: 'EUR',
+  landingPage: 'blog', homeCurrency: 'EUR',
   blogShowActivity: true, blogShowStats: true, blogShowProgress: true,
 };
 
@@ -302,6 +315,25 @@ if (DB_BACKEND === 'postgres') {
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '200mb' }));
+
+// Resolve tenant from subdomain for public endpoints (postgres multi-tenant mode)
+app.use(async (req, res, next) => {
+  try { req.db = getDefaultDb(); req.tenantId = getDefaultTenantId(); } catch {}
+  if (DB_BACKEND === 'postgres') {
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    const parts = host.split('.');
+    if (parts.length >= 3) {
+      const slug = parts[0];
+      if (!['www', 'account', 'demo'].includes(slug)) {
+        try {
+          const tenant = await getTenantBySlug(slug);
+          if (tenant) { req.tenantId = tenant.id; req.db = getTenantDb(tenant.id); }
+        } catch {}
+      }
+    }
+  }
+  next();
+});
 
 if (DEMO_MODE) {
   app.use('/api', (req, res, next) => {
@@ -584,11 +616,9 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { password, username } = req.body;
     let tenant = null;
-    if (username && DB_BACKEND === 'postgres') {
+    if (DB_BACKEND === 'postgres') {
+      if (!username) return res.status(400).json({ error: 'Username is required' });
       tenant = await getTenantBySlug(username);
-      // Fall back to first tenant if slug lookup fails (single-user postgres setup
-      // where the tenant was created before the username field existed)
-      if (!tenant) tenant = await getFirstTenant();
     } else {
       tenant = await getFirstTenant();
     }
@@ -629,7 +659,7 @@ app.get('/api/auth/status', async (req, res) => {
 // ─── Public Stats API ────────────────────────────────────────────────
 app.get('/api/stats', async (req, res) => {
   try {
-    const db = getDefaultDb();
+    const db = req.db || getDefaultDb();
     const rows = await db.all(
       'SELECT section, duration_minutes, start_time FROM sessions WHERE tenant_id = ?',
       [db.tenantId]
@@ -846,7 +876,7 @@ app.delete('/api/upload', requireAuth, async (req, res) => {
 
 app.get('/api/settings/general', async (req, res) => {
   try {
-    const db       = getDefaultDb();
+    const db       = req.db || getDefaultDb();
     const settings = await getSetting(db, 'general', DEFAULT_GENERAL);
     res.json(settings);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -964,6 +994,25 @@ app.put('/api/sections', requireAuth, async (req, res) => {
     if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
     await setSetting(req.db, 'sections', sections);
     res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/sections/:id/usage', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sessions  = await req.db.get('SELECT COUNT(*) as n FROM sessions   WHERE section = ? AND tenant_id = ?', [id, req.tenantId]);
+    const blogPosts = await req.db.get('SELECT COUNT(*) as n FROM blog_posts WHERE section = ? AND tenant_id = ?', [id, req.tenantId]);
+    res.json({ sessions: sessions.n, blogPosts: blogPosts.n });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/sections/reassign', requireAuth, async (req, res) => {
+  try {
+    const { fromId, toId } = req.body;
+    if (!fromId || !toId) return res.status(400).json({ error: 'fromId and toId are required' });
+    const s = await req.db.run('UPDATE sessions   SET section = ? WHERE section = ? AND tenant_id = ?', [toId, fromId, req.tenantId]);
+    const b = await req.db.run('UPDATE blog_posts SET section = ? WHERE section = ? AND tenant_id = ?', [toId, fromId, req.tenantId]);
+    res.json({ sessionsUpdated: s.changes, blogPostsUpdated: b.changes });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1309,8 +1358,9 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
 app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { displayName, role, password, email } = req.body;
+    const { slug, displayName, role, password, email } = req.body;
     const fields = {};
+    if (slug !== undefined) fields.slug = slug;
     if (displayName !== undefined) fields.display_name = displayName;
     if (role !== undefined) fields.role = role;
     if (email !== undefined) fields.email = email;
@@ -1333,11 +1383,73 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Internal service-to-service API ─────────────────────────────────
+// Protected by X-Service-Key header (INTERNAL_API_KEY env var).
+// Intended for a separate registration/management container on the same
+// Docker network. Only available when DB_BACKEND=postgres.
+
+app.get('/api/internal/tenants', requireServiceKey, requirePostgres, async (req, res) => {
+  try {
+    const rows = await listTenants();
+    res.json(rows.map(u => ({
+      id: u.id, slug: u.slug, displayName: u.display_name,
+      email: u.email || null, role: u.role, createdAt: u.created_at, isActive: u.is_active,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/internal/tenants', requireServiceKey, requirePostgres, async (req, res) => {
+  try {
+    const { slug, displayName, password, passwordHash, role, email } = req.body;
+    if (!slug) return res.status(400).json({ error: 'slug is required' });
+    if (!displayName) return res.status(400).json({ error: 'displayName is required' });
+    if (!password && !passwordHash) return res.status(400).json({ error: 'password or passwordHash is required' });
+    if (password && password.length < 4) return res.status(400).json({ error: 'password must be at least 4 characters' });
+    const existing = await getTenantBySlug(slug);
+    if (existing) return res.status(409).json({ error: `Username "${slug}" is already taken` });
+    const tenantId = uuidv4();
+    const hash = passwordHash || crypto.createHash('sha256').update(password).digest('hex');
+    await createTenantRow({ id: tenantId, slug, display_name: displayName, email: email || null, role: role || 'user', password_hash: hash });
+    res.status(201).json({ id: tenantId, slug, displayName, role: role || 'user' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/internal/tenants/:id', requireServiceKey, requirePostgres, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { slug, displayName, password, role, email, isActive } = req.body;
+    const fields = {};
+    if (slug !== undefined) {
+      const existing = await getTenantBySlug(slug);
+      if (existing && existing.id !== id) return res.status(409).json({ error: `Username "${slug}" is already taken` });
+      fields.slug = slug;
+    }
+    if (displayName !== undefined) fields.display_name = displayName;
+    if (role !== undefined) fields.role = role;
+    if (email !== undefined) fields.email = email;
+    if (isActive !== undefined) fields.is_active = isActive ? 1 : 0;
+    if (password !== undefined) {
+      if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+      fields.password_hash = crypto.createHash('sha256').update(password).digest('hex');
+    }
+    if (Object.keys(fields).length === 0) return res.status(400).json({ error: 'No fields to update' });
+    await updateTenantRow(id, fields);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/internal/tenants/:id', requireServiceKey, requirePostgres, async (req, res) => {
+  try {
+    await deleteTenantRow(req.params.id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── Blog Posts API ──────────────────────────────────────────────────
 
 app.get('/api/blog', async (req, res) => {
   try {
-    const db = getDefaultDb();
+    const db = req.db || getDefaultDb();
     const { section, year, month, plansSection } = req.query;
 
     const blogPosts = plansSection ? [] : await (async () => {
@@ -1388,7 +1500,7 @@ app.get('/api/blog', async (req, res) => {
 
 app.get('/api/blog/archive', async (req, res) => {
   try {
-    const db = getDefaultDb();
+    const db = req.db || getDefaultDb();
     const rows = await db.all(`
       SELECT year, month, SUM(cnt) as count FROM (
         SELECT substr(published_at, 1, 4) as year, substr(published_at, 6, 2) as month, COUNT(*) as cnt
@@ -1404,7 +1516,7 @@ app.get('/api/blog/archive', async (req, res) => {
 
 app.get('/api/blog/:id', async (req, res) => {
   try {
-    const db  = getDefaultDb();
+    const db  = req.db || getDefaultDb();
     const row = await db.get(
       'SELECT * FROM blog_posts WHERE id = ? AND tenant_id = ?',
       [req.params.id, db.tenantId]

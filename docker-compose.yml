@@ -8,6 +8,9 @@ services:
     ports:
       - "3010:3001"
 
+    networks:
+      - benchlog_network
+
     environment:
       PORT: 3001
       DB_PATH: /data/database.db
@@ -15,6 +18,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       # JWT_SECRET: optional — auto-generated and persisted to /data/.jwt_secret on first run
       # DEMO_MODE: "true"  # uncomment to enable read-only demo mode (no login required)
+
+      # ─── Internal service API ────────────────────────────────────────
+      # Required to enable /api/internal/* endpoints for external containers.
+      # Generate with: openssl rand -hex 32
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
 
       # ─── Image Storage ───────────────────────────────────────────────
       # Options: "local" (default) or "r2" (Cloudflare R2)
@@ -45,6 +53,8 @@ services:
     container_name: benchlog-db
     restart: unless-stopped
     profiles: ["postgres"]
+    networks:
+      - benchlog_network
     environment:
       POSTGRES_DB: benchlog
       POSTGRES_USER: benchlog
@@ -59,3 +69,7 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  benchlog_network:
+    name: benchlog_network

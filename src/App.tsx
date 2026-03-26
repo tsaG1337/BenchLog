@@ -51,16 +51,31 @@ function LoginRoute() {
   return <LoginPage />;
 }
 
+function getSubdomainSlug(): string | null {
+  const parts = window.location.hostname.split('.');
+  if (parts.length < 3) return null;
+  const slug = parts[0];
+  if (['www', 'account', 'demo'].includes(slug)) return null;
+  return slug;
+}
+
 function RootRedirect() {
   const navigate = useNavigate();
+  const { isAuthenticated, isLoading } = useAuth();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    if (isLoading) return;
+    if (getSubdomainSlug() && !isAuthenticated) {
+      navigate('/blog', { replace: true });
+      setReady(true);
+      return;
+    }
     fetchGeneralSettings()
       .then(s => navigate(s.landingPage === 'blog' ? '/blog' : '/tracker', { replace: true }))
       .catch(() => navigate('/tracker', { replace: true }))
       .finally(() => setReady(true));
-  }, [navigate]);
+  }, [navigate, isAuthenticated, isLoading]);
 
   if (!ready) return <div className="min-h-screen bg-background" />;
   return null;
