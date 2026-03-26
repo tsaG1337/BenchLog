@@ -91,17 +91,24 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-function requireWebhookKey(req, res, next) {
+async function requireWebhookKey(req, res, next) {
   const key = req.query.key || req.headers['x-webhook-key'];
   if (!key) return res.status(401).json({ error: 'Missing webhook key' });
-  // Webhook keys are per-tenant; use default tenant for now
-  const defaultDb = getDefaultDb();
-  getSetting(defaultDb, 'webhook_api_key', null).then(stored => {
-    if (!stored || key !== stored) return res.status(401).json({ error: 'Invalid webhook key' });
-    req.tenantId = getDefaultTenantId();
-    req.db = defaultDb;
-    next();
-  }).catch(() => res.status(500).json({ error: 'Internal error' }));
+  try {
+    const tenants = await listTenants();
+    for (const { id } of tenants) {
+      const db = getTenantDb(id);
+      const stored = await getSetting(db, 'webhook_api_key', null);
+      if (stored && key === stored) {
+        req.tenantId = id;
+        req.db = db;
+        return next();
+      }
+    }
+    return res.status(401).json({ error: 'Invalid webhook key' });
+  } catch {
+    res.status(500).json({ error: 'Internal error' });
+  }
 }
 
 // ─── Config via environment variables ──────────────────────────────
@@ -374,8 +381,8 @@ async function setSetting(db, key, value) {
 }
 
 // ─── MQTT setup ──────────────────────────────────────────────────────
-let mqttClient = null;
-let mqttPendingPublish = false;
+// Per-tenant map: tenantId → { client, pendingPublish }
+const mqttClients = new Map();
 
 async function getMqttSettings(db) {
   return getSetting(db, 'mqtt', {
@@ -390,56 +397,58 @@ async function getMqttSettings(db) {
 }
 
 async function connectMqtt(db) {
-  if (mqttClient) {
-    try { mqttClient.end(true); } catch {}
-    mqttClient = null;
+  const tenantId = db.tenantId;
+  const existing = mqttClients.get(tenantId);
+  if (existing) {
+    try { existing.client.end(true); } catch {}
+    mqttClients.delete(tenantId);
   }
 
   const settings = await getMqttSettings(db);
   if (!settings.enabled || !settings.brokerUrl) {
-    console.log('MQTT: disabled or no broker configured');
+    console.log(`MQTT [${tenantId}]: disabled or no broker configured`);
     return;
   }
 
-  const opts = {};
+  const opts = { reconnectPeriod: 5000, connectTimeout: 10000 };
   if (settings.username) opts.username = settings.username;
   if (settings.password) opts.password = settings.password;
-  opts.reconnectPeriod  = 5000;
-  opts.connectTimeout   = 10000;
 
-  console.log(`MQTT: connecting to ${settings.brokerUrl}...`);
-  mqttClient = mqtt.connect(settings.brokerUrl, opts);
+  console.log(`MQTT [${tenantId}]: connecting to ${settings.brokerUrl}...`);
+  const client = mqtt.connect(settings.brokerUrl, opts);
+  const entry = { client, pendingPublish: false };
+  mqttClients.set(tenantId, entry);
 
-  mqttClient.on('connect', () => {
-    console.log(`MQTT connected to ${settings.brokerUrl}`);
-    if (mqttPendingPublish) {
-      mqttPendingPublish = false;
-      publishMqttStats(db);
-    } else {
-      publishMqttStats(db);
-    }
+  client.on('connect', () => {
+    console.log(`MQTT [${tenantId}]: connected to ${settings.brokerUrl}`);
+    if (entry.pendingPublish) entry.pendingPublish = false;
+    publishMqttStats(db);
   });
-  mqttClient.on('error',     err  => console.error('MQTT error:', err.message));
-  mqttClient.on('offline',   ()   => console.log('MQTT: offline'));
-  mqttClient.on('reconnect', ()   => console.log('MQTT reconnecting...'));
-  mqttClient.on('close',     ()   => console.log('MQTT connection closed'));
+  client.on('error',     err => console.error(`MQTT [${tenantId}] error:`, err.message));
+  client.on('offline',   ()  => console.log(`MQTT [${tenantId}]: offline`));
+  client.on('reconnect', ()  => console.log(`MQTT [${tenantId}]: reconnecting...`));
+  client.on('close',     ()  => console.log(`MQTT [${tenantId}]: connection closed`));
 }
 
 async function publishMqttStats(db) {
   try {
     if (!db) db = getDefaultDb();
+    const tenantId = db.tenantId;
     const settings = await getMqttSettings(db);
-    if (!settings.enabled) { console.log('MQTT: publish skipped — disabled'); return; }
-    if (!mqttClient || !mqttClient.connected) {
-      console.warn('MQTT not connected, skipping publish');
-      mqttPendingPublish = true;
+    if (!settings.enabled) { console.log(`MQTT [${tenantId}]: publish skipped — disabled`); return; }
+
+    const entry = mqttClients.get(tenantId);
+    if (!entry || !entry.client.connected) {
+      console.warn(`MQTT [${tenantId}]: not connected, skipping publish`);
+      if (entry) entry.pendingPublish = true;
       return;
     }
+    const client = entry.client;
 
     const prefix = settings.topicPrefix || 'mybuild/stats';
     const rows = await db.all(
       'SELECT section, duration_minutes FROM sessions WHERE tenant_id = ?',
-      [db.tenantId]
+      [tenantId]
     );
     const sectionConfigs = await getSetting(db, 'sections', DEFAULT_SECTIONS);
     const excludedSections = new Set(
@@ -454,24 +463,24 @@ async function publishMqttStats(db) {
       if (!excludedSections.has(row.section)) totalMinutes += row.duration_minutes;
     }
 
-    const totalHours    = (totalMinutes / 60).toFixed(1);
-    const sessionCount  = rows.length;
+    const totalHours      = (totalMinutes / 60).toFixed(1);
+    const sessionCount    = rows.length;
     const generalSettings = await getSetting(db, 'general', DEFAULT_GENERAL);
-    const targetHours   = generalSettings.targetHours || 2500;
-    const buildProgress = Math.min(((totalMinutes / 60) / targetHours) * 100, 100).toFixed(1);
+    const targetHours     = generalSettings.targetHours || 2500;
+    const buildProgress   = Math.min(((totalMinutes / 60) / targetHours) * 100, 100).toFixed(1);
 
     const pub = (topic, value) =>
-      mqttClient.publish(topic, value, { retain: true, qos: 1 }, err => {
+      client.publish(topic, value, { retain: true, qos: 1 }, err => {
         if (err) console.error(`MQTT publish error (${topic}):`, err.message);
       });
 
-    pub(`${prefix}/total_hours`,   totalHours);
+    pub(`${prefix}/total_hours`,    totalHours);
     pub(`${prefix}/total_sessions`, String(sessionCount));
     pub(`${prefix}/build_progress`, buildProgress);
 
     const lastRow = await db.get(
-      "SELECT image_urls FROM sessions WHERE tenant_id = ? ORDER BY start_time DESC LIMIT 1",
-      [db.tenantId]
+      'SELECT image_urls FROM sessions WHERE tenant_id = ? ORDER BY start_time DESC LIMIT 1',
+      [tenantId]
     );
     if (lastRow) {
       pub(`${prefix}/last_session_images`, JSON.stringify(JSON.parse(lastRow.image_urls || '[]')));
@@ -481,16 +490,16 @@ async function publishMqttStats(db) {
       pub(`${prefix}/${sec.id}`, ((sectionTotals[sec.id] || 0) / 60).toFixed(1));
     }
 
-    if (settings.haDiscovery) publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings);
+    if (settings.haDiscovery) publishHaDiscovery(client, settings, sectionConfigs, prefix, generalSettings);
 
-    console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
+    console.log(`MQTT [${tenantId}]: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
   } catch (err) {
     console.error('MQTT publish error:', err.message || err);
   }
 }
 
-function publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings) {
-  if (!mqttClient || !mqttClient.connected) return;
+function publishHaDiscovery(client, settings, sectionConfigs, prefix, generalSettings) {
+  if (!client || !client.connected) return;
   const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
   const deviceId   = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
   const deviceName = (generalSettings && generalSettings.projectName) || DEFAULT_GENERAL.projectName;
@@ -498,7 +507,7 @@ function publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings) {
 
   function publishSensor(objectId, name, stateTopic, unit, icon, stateClass) {
     const uniqueId = `${deviceId}_${objectId}`;
-    mqttClient.publish(
+    client.publish(
       `${discoveryPrefix}/sensor/${uniqueId}/config`,
       JSON.stringify({
         name, state_topic: stateTopic, unique_id: uniqueId, object_id: uniqueId,
@@ -511,12 +520,12 @@ function publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings) {
     );
   }
 
-  publishSensor('total_hours',   `${deviceName} Total Hours`,    `${prefix}/total_hours`,   'h',        'mdi:clock-outline',  'measurement');
-  publishSensor('total_sessions',`${deviceName} Total Sessions`, `${prefix}/total_sessions`,'sessions', 'mdi:counter',        'measurement');
-  publishSensor('build_progress',`${deviceName} Build Progress`, `${prefix}/build_progress`,'%',        'mdi:progress-check', 'measurement');
+  publishSensor('total_hours',    `${deviceName} Total Hours`,    `${prefix}/total_hours`,    'h',        'mdi:clock-outline',  'measurement');
+  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter',        'measurement');
+  publishSensor('build_progress', `${deviceName} Build Progress`, `${prefix}/build_progress`, '%',        'mdi:progress-check', 'measurement');
 
   const uid = `${deviceId}_last_session_images`;
-  mqttClient.publish(
+  client.publish(
     `${discoveryPrefix}/sensor/${uid}/config`,
     JSON.stringify({
       name: `${deviceName} Last Session Images`,
@@ -2102,13 +2111,19 @@ function startServer() {
     }
   });
 
-  // Connect MQTT after tenant is initialised
+  // Connect MQTT for every tenant after initialisation
   (async () => {
     try {
-      const db = getDefaultDb();
-      await connectMqtt(db);
+      const tenants = await listTenants();
+      for (const { id } of tenants) {
+        try {
+          await connectMqtt(getTenantDb(id));
+        } catch (e) {
+          console.warn(`[mqtt] Startup connect failed for tenant ${id}:`, e.message);
+        }
+      }
     } catch (e) {
-      console.warn('[mqtt] Could not connect on startup:', e.message);
+      console.warn('[mqtt] Could not enumerate tenants on startup:', e.message);
     }
   })();
 
