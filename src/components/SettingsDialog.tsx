@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
+import { useAuth } from '@/contexts/AuthContext';
 import { VisitorStatsPanel } from '@/components/VisitorStatsPanel';
 import { isElectron } from '@/lib/env';
 import { useSections } from '@/contexts/SectionsContext';
@@ -48,6 +49,8 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved, open: controlledOpen, onOpenChange: controlledOnOpenChange }: SettingsDialogProps) {
   const { sections: contextSections, reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
+  const { role, multiTenant } = useAuth();
+  const isAdmin = !multiTenant || role === 'admin';
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
@@ -285,6 +288,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 </div>
                 <p className="text-xs text-muted-foreground/60 mt-1">Controls the progress bar on the blog and tracker pages.</p>
               </div>
+              {isAdmin && <>
               <Separator />
               <div className="flex items-center justify-between">
                 <div>
@@ -307,6 +311,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   <p className="text-xs text-muted-foreground/60 mt-1">Images wider than this are scaled down. Thumbnails (400 px) are always generated.</p>
                 </div>
               )}
+              </>}
             </>}
 
             {/* ── Appearance ──────────────────────────────────── */}
