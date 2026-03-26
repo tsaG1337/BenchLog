@@ -96,6 +96,8 @@ export interface GeneralSettings {
   blogShowActivity?: boolean;
   blogShowStats?: boolean;
   blogShowProgress?: boolean;
+  theme?: 'light' | 'dark' | 'system';
+  inspectorName?: string;
 }
 
 export async function fetchGeneralSettings(): Promise<GeneralSettings> {

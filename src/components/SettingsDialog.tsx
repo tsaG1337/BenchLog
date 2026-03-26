@@ -77,7 +77,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
   useEffect(() => {
     if (open) {
-      fetchGeneralSettings().then(setGeneral).catch(() => {});
+      fetchGeneralSettings().then(s => { setGeneral(s); if (s.theme) setTheme(s.theme); }).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
       fetchSections().then(setSections).catch(() => setSections([...contextSections]));
       fetchWpTemplates().then(setWpTemplates).catch(() => {});
@@ -325,7 +325,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                     { value: 'system' as const, icon: Monitor, label: 'Auto' },
                   ]).map(({ value, icon: Icon, label }) => (
                     <Button key={value} variant={theme === value ? 'default' : 'outline'} size="sm"
-                      onClick={() => setTheme(value)} className="gap-1.5 flex-1">
+                      onClick={() => { setTheme(value); setGeneral(g => ({ ...g, theme: value })); }} className="gap-1.5 flex-1">
                       <Icon className="w-3.5 h-3.5" /> {label}
                     </Button>
                   ))}
@@ -626,7 +626,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
             {activeTab === 'data' && (
               <div className="space-y-6">
                 <ImportExportSection onImportComplete={() => {
-                  fetchGeneralSettings().then(setGeneral).catch(() => {});
+                  fetchGeneralSettings().then(s => { setGeneral(s); if (s.theme) setTheme(s.theme); }).catch(() => {});
                   fetchMqttSettings().then(setMqtt).catch(() => {});
                   fetchSections().then(setSections).catch(() => {});
                   reloadSections();

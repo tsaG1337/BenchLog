@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/contexts/ThemeContext";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { useEffect, useState } from "react";
 import { fetchGeneralSettings } from "@/lib/api";
+import { useTheme } from "@/contexts/ThemeContext";
 import Index from "./pages/Index";
 import BlogPage from "./pages/BlogPage";
 import ExpensesPage from "./pages/ExpensesPage";
@@ -16,6 +17,16 @@ import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
+
+function ThemeSyncer() {
+  const { setTheme } = useTheme();
+  useEffect(() => {
+    fetchGeneralSettings()
+      .then(s => { if (s.theme) setTheme(s.theme); })
+      .catch(() => {});
+  }, []);
+  return null;
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, demoMode } = useAuth();
@@ -61,6 +72,7 @@ const App = () => (
       <TooltipProvider>
         <SectionsProvider>
           <AuthProvider>
+            <ThemeSyncer />
             <Toaster />
             <Sonner />
             <BrowserRouter>

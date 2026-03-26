@@ -8,10 +8,9 @@ import { Separator } from '@/components/ui/separator';
 import { Loader2, Eraser } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { createSignOff, fetchFlowchartPackages, FlowItem, PackagesMap } from '@/lib/api';
+import { createSignOff, fetchFlowchartPackages, fetchGeneralSettings, updateGeneralSettings, FlowItem, PackagesMap } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 
-const LAST_INSPECTOR_KEY = 'last_inspector_name';
 
 interface SignOffDialogProps {
   open: boolean;
@@ -48,11 +47,15 @@ export function SignOffDialog({ open, onOpenChange, onSaved, preselect }: SignOf
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isDrawing = useRef(false);
   const [isEmpty, setIsEmpty] = useState(true);
+  const generalSettingsRef = useRef<Awaited<ReturnType<typeof fetchGeneralSettings>> | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setDate(format(new Date(), 'yyyy-MM-dd'));
-    setInspectorName(localStorage.getItem(LAST_INSPECTOR_KEY) || '');
+    fetchGeneralSettings().then(s => {
+      generalSettingsRef.current = s;
+      setInspectorName(s.inspectorName || '');
+    }).catch(() => {});
     setInspectionCompleted(false);
     setOutcome(null);
     setComments('');
@@ -126,7 +129,10 @@ export function SignOffDialog({ open, onOpenChange, onSaved, preselect }: SignOf
     setSaving(true);
     try {
       const signaturePng = canvasRef.current!.toDataURL('image/png');
-      localStorage.setItem(LAST_INSPECTOR_KEY, inspectorName.trim());
+      if (generalSettingsRef.current) {
+        updateGeneralSettings({ ...generalSettingsRef.current, inspectorName: inspectorName.trim() })
+          .catch(() => {});
+      }
       await createSignOff({
         id: crypto.randomUUID(),
         packageId: selectedPackageId,
