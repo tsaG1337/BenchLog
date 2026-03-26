@@ -11,6 +11,7 @@ import { fetchGeneralSettings } from "@/lib/api";
 import Index from "./pages/Index";
 import BlogPage from "./pages/BlogPage";
 import ExpensesPage from "./pages/ExpensesPage";
+import AdminPage from "./pages/AdminPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/NotFound";
 
@@ -20,6 +21,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, demoMode } = useAuth();
   if (isLoading) return <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">Loading...</div>;
   if (!isAuthenticated && !demoMode) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading, role } = useAuth();
+  if (isLoading) return <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">Loading...</div>;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (role !== 'admin') return <Navigate to="/tracker" replace />;
   return <>{children}</>;
 }
 
@@ -60,6 +69,7 @@ const App = () => (
                 <Route path="/" element={<RootRedirect />} />
                 <Route path="/tracker" element={<ProtectedRoute><Index /></ProtectedRoute>} />
                 <Route path="/expenses" element={<ProtectedRoute><ExpensesPage /></ProtectedRoute>} />
+                <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
                 <Route path="/blog" element={<BlogPage />} />
                 <Route path="/blog/:postId" element={<BlogPage />} />
                 <Route path="*" element={<NotFound />} />

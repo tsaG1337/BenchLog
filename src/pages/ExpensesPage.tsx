@@ -26,7 +26,7 @@ function CategoryBadge({ category }: { category: string }) {
 
 export default function ExpensesPage() {
   const { sections, labels, icons } = useSections();
-  const { demoMode, logout } = useAuth();
+  const { demoMode, logout, role } = useAuth();
   const readOnly = demoMode;
   const [showAbout, setShowAbout] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -284,6 +284,13 @@ export default function ExpensesPage() {
               <DropdownMenuItem onClick={() => setShowAbout(true)}>
                 <Info className="w-4 h-4 mr-2" /> About
               </DropdownMenuItem>
+              {role === 'admin' && !demoMode && (
+                <DropdownMenuItem asChild>
+                  <Link to="/admin" className="flex items-center w-full">
+                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
+                  </Link>
+                </DropdownMenuItem>
+              )}
               {/* Sign out */}
               {!demoMode && (
                 <>

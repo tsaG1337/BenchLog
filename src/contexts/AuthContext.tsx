@@ -6,7 +6,9 @@ interface AuthContextType {
   isLoading: boolean;
   needsSetup: boolean;
   demoMode: boolean;
-  login: (password: string) => Promise<void>;
+  multiTenant: boolean;
+  role: string | null;
+  login: (password: string, username?: string) => Promise<void>;
   setup: (password: string) => Promise<void>;
   logout: () => void;
 }
@@ -21,6 +23,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [demoMode, setDemoMode] = useState(false);
+  const [multiTenant, setMultiTenant] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
 
   const checkAuth = useCallback(async () => {
     try {
@@ -29,8 +33,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       const data = await res.json();
       setDemoMode(!!data.demoMode);
+      setMultiTenant(!!data.multiTenant);
       setNeedsSetup(!data.hasPassword);
       setIsAuthenticated(data.authenticated);
+      setRole(data.role || null);
     } catch {
       // Server unavailable
     } finally {
@@ -42,11 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkAuth();
   }, [checkAuth]);
 
-  const login = async (password: string) => {
+  const login = async (password: string, username?: string) => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, username }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Login failed' }));
@@ -56,6 +62,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('auth_token', data.token);
     setToken(data.token);
     setIsAuthenticated(true);
+    try {
+      const payload = JSON.parse(atob(data.token.split('.')[1]));
+      setRole(payload.role || null);
+    } catch {}
   };
 
   const setup = async (password: string) => {
@@ -82,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, login, setup, logout }}>
+    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, multiTenant, role, login, setup, logout }}>
       {children}
     </AuthContext.Provider>
   );

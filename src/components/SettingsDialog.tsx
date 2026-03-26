@@ -692,7 +692,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   <div className="pl-6 border-l-2 border-destructive/40 space-y-3">
                     <p className="text-xs text-muted-foreground">
                       Permanently deletes all sessions, blog posts, expenses, photos and receipts.
-                      Settings are reset to defaults. Your login password is kept.
+                      Settings are reset to defaults. Your login credentials are kept.
                       <strong className="block mt-1 text-foreground">This cannot be undone.</strong>
                     </p>
                     {!confirmReset ? (

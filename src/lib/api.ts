@@ -578,3 +578,40 @@ export function trackPageView(pagePath: string, postId?: string, referrer?: stri
     body: JSON.stringify({ path: pagePath, postId: postId || '', referrer: referrer || '' }),
   }).catch(() => {});
 }
+
+// ─── Admin ──────────────────────────────────────────────────────────
+
+export interface AdminUser {
+  id: string;
+  slug: string;
+  displayName: string;
+  email?: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+  isActive: boolean;
+}
+
+export interface DbStat {
+  table: string;
+  count: number;
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  return request<AdminUser[]>('/api/admin/users');
+}
+
+export async function fetchAdminDbStats(): Promise<DbStat[]> {
+  return request<DbStat[]>('/api/admin/stats');
+}
+
+export async function createAdminUser(data: { slug: string; displayName: string; password: string; role: string; email?: string }): Promise<{ ok: boolean; id: string }> {
+  return request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function updateAdminUser(id: string, data: { displayName?: string; role?: string; password?: string; email?: string }): Promise<void> {
+  await request(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export async function deleteAdminUser(id: string): Promise<void> {
+  await request(`/api/admin/users/${id}`, { method: 'DELETE' });
+}

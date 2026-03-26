@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet, Info, Search } from 'lucide-react';
+import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet, Info, Search, ShieldCheck } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AboutDialog } from '@/components/AboutDialog';
 import { BlogSidebar } from '@/components/blog/BlogSidebar';
@@ -35,7 +35,7 @@ export default function BlogPage() {
   const [blogShowActivity, setBlogShowActivity] = useState(true);
   const [blogShowStats, setBlogShowStats] = useState(true);
   const [blogShowProgress, setBlogShowProgress] = useState(true);
-  const { isAuthenticated, demoMode, logout } = useAuth();
+  const { isAuthenticated, demoMode, logout, role } = useAuth();
   const { labels: sectionLabels } = useSections();
 
   const loadPosts = useCallback(async () => {
@@ -253,6 +253,13 @@ export default function BlogPage() {
               <DropdownMenuItem onClick={() => setShowAbout(true)}>
                 <Info className="w-4 h-4 mr-2" /> About
               </DropdownMenuItem>
+              {role === 'admin' && isAuthenticated && !demoMode && (
+                <DropdownMenuItem asChild>
+                  <Link to="/admin" className="flex items-center w-full">
+                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
+                  </Link>
+                </DropdownMenuItem>
+              )}
               {/* Sign out */}
               {isAuthenticated && !demoMode && (
                 <>

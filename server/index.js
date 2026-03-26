@@ -1,25 +1,46 @@
-const express = require('express');
-const cors = require('cors');
-const Database = require('better-sqlite3');
-const multer = require('multer');
+'use strict';
+const express    = require('express');
+const cors       = require('cors');
+const multer     = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
-const mqtt = require('mqtt');
-const crypto = require('crypto');
-const sharp = require('sharp');
+const path       = require('path');
+const fs         = require('fs');
+const mqtt       = require('mqtt');
+const crypto     = require('crypto');
+const sharp      = require('sharp');
 const heicConvert = require('heic-convert');
-const archiver = require('archiver');
-const unzipper = require('unzipper');
+const archiver   = require('archiver');
+const unzipper   = require('unzipper');
 
-// ─── Auth helpers ───────────────────────────────────────────────────
+const {
+  DB_BACKEND,
+  DATA_DIR,
+  masterDb,
+  getTenantDb,
+  getDefaultDb,
+  getDefaultTenantId,
+  ensureFirstTenant,
+  getFirstTenant,
+  getTenantBySlug,
+  setTenantPassword,
+  runMigrationIfNeeded,
+  getMasterSqlite,
+  openSqlite,
+  tenantDbPath,
+  listTenants,
+  createTenantRow,
+  updateTenantRow,
+  deleteTenantRow,
+} = require('./db');
+const { initMasterSchema, initTenantSchema, initPostgresSchema } = require('./schema');
+
+// ─── Auth helpers ────────────────────────────────────────────────────
 function loadOrCreateJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const dataDir = path.dirname(process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db'));
-  const secretFile = path.join(dataDir, '.jwt_secret');
+  const secretFile = path.join(DATA_DIR, '.jwt_secret');
   if (fs.existsSync(secretFile)) return fs.readFileSync(secretFile, 'utf8').trim();
   const secret = crypto.randomBytes(32).toString('hex');
-  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(secretFile, secret, { mode: 0o600 });
   console.log('[auth] Generated JWT secret →', secretFile);
   return secret;
@@ -29,8 +50,8 @@ const TOKEN_EXPIRY_HOURS = 72;
 
 function createToken(payload) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + TOKEN_EXPIRY_HOURS * 3600000 })).toString('base64url');
-  const sig = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+  const body   = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + TOKEN_EXPIRY_HOURS * 3600000 })).toString('base64url');
+  const sig    = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${sig}`;
 }
 
@@ -46,113 +67,85 @@ function verifyToken(token) {
 }
 
 function requireAuth(req, res, next) {
-  if (DEMO_MODE) return next();
+  if (DEMO_MODE) {
+    // In demo mode, attach the default db so route handlers work
+    req.tenantId = getDefaultTenantId() || 'demo';
+    try { req.db = getDefaultDb(); } catch { req.db = null; }
+    return next();
+  }
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
   const payload = verifyToken(auth.slice(7));
   if (!payload) return res.status(401).json({ error: 'Invalid or expired token' });
   req.user = payload;
+  // Legacy tokens (no tenantId) fall back to the default/only tenant
+  req.tenantId = payload.tenantId || getDefaultTenantId();
+  req.db = getTenantDb(req.tenantId);
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
   next();
 }
 
 function requireWebhookKey(req, res, next) {
   const key = req.query.key || req.headers['x-webhook-key'];
   if (!key) return res.status(401).json({ error: 'Missing webhook key' });
-  const stored = getSetting('webhook_api_key', null);
-  if (!stored || key !== stored) return res.status(401).json({ error: 'Invalid webhook key' });
-  next();
+  // Webhook keys are per-tenant; use default tenant for now
+  const defaultDb = getDefaultDb();
+  getSetting(defaultDb, 'webhook_api_key', null).then(stored => {
+    if (!stored || key !== stored) return res.status(401).json({ error: 'Invalid webhook key' });
+    req.tenantId = getDefaultTenantId();
+    req.db = defaultDb;
+    next();
+  }).catch(() => res.status(500).json({ error: 'Internal error' }));
 }
 
-// ─── Config via environment variables ───────────────────────────────
-const PORT = process.env.PORT || 3001;
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'tracker.db');
-const DIST_PATH = process.env.DIST_PATH || path.join(__dirname, '../dist');
+// ─── Config via environment variables ──────────────────────────────
+const PORT       = process.env.PORT || 3001;
+const DIST_PATH  = process.env.DIST_PATH || path.join(__dirname, '../dist');
 const TEMPLATES_WP_PATH = path.join(__dirname, '../templates/work-packages');
-const DEMO_MODE = process.env.DEMO_MODE === 'true';
+const DEMO_MODE  = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
-const UPLOADS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
+
+// Legacy DB_PATH kept for compatibility (used for upload dirs)
+const DB_PATH    = process.env.DB_PATH || path.join(DATA_DIR, 'database.db');
+const UPLOADS_DIR  = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 const RECEIPTS_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
+
+// Default general settings
+const DEFAULT_GENERAL = {
+  projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time',
+  imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h',
+  landingPage: 'tracker', homeCurrency: 'EUR',
+  blogShowActivity: true, blogShowStats: true, blogShowProgress: true,
+};
+
+const DEFAULT_SECTIONS = [
+  { id: 'empennage',     label: 'Empennage',     icon: '🔺' },
+  { id: 'wings',         label: 'Wings',          icon: '✈️' },
+  { id: 'fuselage',      label: 'Fuselage',       icon: '🛩️' },
+  { id: 'finishing-kit', label: 'Finishing Kit',  icon: '🔧' },
+  { id: 'engine',        label: 'Engine',         icon: '⚙️' },
+  { id: 'avionics',      label: 'Avionics',       icon: '📡' },
+  { id: 'paint',         label: 'Paint & Finish', icon: '🎨' },
+  { id: 'other',         label: 'Other',          icon: '📋' },
+];
 
 // ─── Storage backend ─────────────────────────────────────────────────
 const STORAGE_BACKEND = process.env.STORAGE_BACKEND || 'local';
 if (STORAGE_BACKEND === 'r2') {
   const required = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'R2_BUCKET', 'R2_PUBLIC_URL'];
   const missing = required.filter(k => !process.env[k]);
-  if (missing.length) {
-    console.error(`[storage] STORAGE_BACKEND=r2 but missing env vars: ${missing.join(', ')}. Check docker-compose.yml.`);
-    process.exit(1);
-  }
+  if (missing.length) { console.error(`[storage] STORAGE_BACKEND=r2 but missing: ${missing.join(', ')}`); process.exit(1); }
   console.log('[storage] Using Cloudflare R2 object storage');
 } else {
   console.log('[storage] Using local disk storage');
 }
 
-// Default general settings — single source of truth used as fallback in all getSetting('general') calls
-const DEFAULT_GENERAL = { projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, timeFormat: '24h', landingPage: 'tracker', homeCurrency: 'EUR', blogShowActivity: true, blogShowStats: true, blogShowProgress: true };
-
-// ─── Default sections configuration ─────────────────────────────────
-const DEFAULT_SECTIONS = [
-  { id: 'empennage', label: 'Empennage', icon: '🔺' },
-  { id: 'wings', label: 'Wings', icon: '✈️' },
-  { id: 'fuselage', label: 'Fuselage', icon: '🛩️' },
-  { id: 'finishing-kit', label: 'Finishing Kit', icon: '🔧' },
-  { id: 'engine', label: 'Engine', icon: '⚙️' },
-  { id: 'avionics', label: 'Avionics', icon: '📡' },
-  { id: 'paint', label: 'Paint & Finish', icon: '🎨' },
-  { id: 'other', label: 'Other', icon: '📋' },
-];
-
-// ─── Server-side log capture ─────────────────────────────────────────
-const SERVER_LOG_BUFFER = [];
-const SERVER_LOG_LIMIT = 500;
-
-function safeStringify(a) {
-  if (typeof a === 'string') return a;
-  if (a instanceof Error) return a.stack || a.message;
-  try { return JSON.stringify(a); } catch { return String(a); }
-}
-
-function appendServerLog(level, args) {
-  const message = args.map(safeStringify).join(' ');
-  SERVER_LOG_BUFFER.push({ ts: Date.now(), level, message });
-  if (SERVER_LOG_BUFFER.length > SERVER_LOG_LIMIT) SERVER_LOG_BUFFER.shift();
-}
-
-const _origLog   = console.log.bind(console);
-const _origInfo  = console.info.bind(console);
-const _origWarn  = console.warn.bind(console);
-const _origError = console.error.bind(console);
-console.log   = (...a) => { _origLog(...a);   appendServerLog('log',   a); };
-console.info  = (...a) => { _origInfo(...a);  appendServerLog('info',  a); };
-console.warn  = (...a) => { _origWarn(...a);  appendServerLog('warn',  a); };
-console.error = (...a) => { _origError(...a); appendServerLog('error', a); };
-
-// ─── Express setup ──────────────────────────────────────────────────
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '200mb' }));
-
-// Demo mode: block all mutating API requests
-if (DEMO_MODE) {
-  app.use('/api', (req, res, next) => {
-    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-      return res.status(403).json({ error: 'Demo mode — read only' });
-    }
-    next();
-  });
-}
-
-// Serve frontend build
-app.use(express.static(DIST_PATH));
-
-// ─── SQLite setup ───────────────────────────────────────────────────
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-
-// ─── Local disk directories (always created; used in local mode and for temp imports) ──
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
-
-// ─── R2 client (only initialised when STORAGE_BACKEND=r2) ────────────
 let r2Client, R2_BUCKET, R2_PUBLIC_URL;
 let S3Put, S3Delete, S3Get, S3List, S3DeleteObjects;
 if (STORAGE_BACKEND === 'r2') {
@@ -169,12 +162,9 @@ if (STORAGE_BACKEND === 'r2') {
   R2_PUBLIC_URL = process.env.R2_PUBLIC_URL.replace(/\/$/, '');
 }
 
-// ─── Storage abstraction ─────────────────────────────────────────────
-// Returns a storage interface for 'sessions' (images) or 'receipts'.
 function createStorage(namespace) {
   const localDir    = namespace === 'receipts' ? RECEIPTS_DIR : UPLOADS_DIR;
   const localPrefix = namespace === 'receipts' ? '/receipts'  : '/files';
-
   if (STORAGE_BACKEND === 'r2') {
     const r2Key = fn => `${namespace}/${fn}`;
     return {
@@ -189,9 +179,7 @@ function createStorage(namespace) {
       },
       async readBuffer(url) {
         const res = await r2Client.send(new S3Get({ Bucket: R2_BUCKET, Key: r2Key(path.basename(url)) }));
-        const chunks = [];
-        for await (const chunk of res.Body) chunks.push(chunk);
-        return Buffer.concat(chunks);
+        const chunks = []; for await (const chunk of res.Body) chunks.push(chunk); return Buffer.concat(chunks);
       },
       async deleteAll() {
         let token;
@@ -206,8 +194,6 @@ function createStorage(namespace) {
       },
     };
   }
-
-  // Local storage implementation
   return {
     async save(filename, buffer) {
       fs.writeFileSync(path.join(localDir, filename), buffer);
@@ -233,7 +219,95 @@ function createStorage(namespace) {
 const imageStore   = createStorage('sessions');
 const receiptStore = createStorage('receipts');
 
-// ─── Local file serving (only in local mode; R2 URLs are served directly by Cloudflare) ──
+// ─── Server-side log capture ─────────────────────────────────────────
+const SERVER_LOG_BUFFER = [];
+const SERVER_LOG_LIMIT  = 500;
+
+function safeStringify(a) {
+  if (typeof a === 'string') return a;
+  if (a instanceof Error) return a.stack || a.message;
+  try { return JSON.stringify(a); } catch { return String(a); }
+}
+function appendServerLog(level, args) {
+  const message = args.map(safeStringify).join(' ');
+  SERVER_LOG_BUFFER.push({ ts: Date.now(), level, message });
+  if (SERVER_LOG_BUFFER.length > SERVER_LOG_LIMIT) SERVER_LOG_BUFFER.shift();
+}
+const _origLog   = console.log.bind(console);
+const _origInfo  = console.info.bind(console);
+const _origWarn  = console.warn.bind(console);
+const _origError = console.error.bind(console);
+console.log   = (...a) => { _origLog(...a);   appendServerLog('log',   a); };
+console.info  = (...a) => { _origInfo(...a);  appendServerLog('info',  a); };
+console.warn  = (...a) => { _origWarn(...a);  appendServerLog('warn',  a); };
+console.error = (...a) => { _origError(...a); appendServerLog('error', a); };
+
+// ─── Initialise DB ───────────────────────────────────────────────────
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+
+// ─── Schema + tenant bootstrap ───────────────────────────────────────
+if (DB_BACKEND === 'postgres') {
+  // PostgreSQL: create all tables, then find-or-create the first tenant.
+  // The app starts listening only after async init completes.
+  const { pool: _pgPool } = (() => {
+    const { Pool } = require('pg');
+    return { pool: new Pool({ connectionString: process.env.DATABASE_URL }) };
+  })();
+
+  initPostgresSchema(_pgPool)
+    .then(() => ensureFirstTenant({ adminPassword: process.env.ADMIN_PASSWORD }))
+    .then(() => startServer())
+    .catch(err => {
+      console.error('[init] PostgreSQL init failed:', err.message);
+      process.exit(1);
+    });
+} else {
+  // SQLite: synchronous setup
+  runMigrationIfNeeded();
+  initMasterSchema(getMasterSqlite());
+
+  ensureFirstTenant({
+    initSchema(sqlite, tenantId) {
+      initTenantSchema(sqlite, tenantId);
+      try {
+        const cols = sqlite.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
+        if (!cols.includes('link')) sqlite.exec(`ALTER TABLE expenses ADD COLUMN link TEXT DEFAULT ''`);
+        if (cols.includes('amount_eur') && !cols.includes('amount_home')) {
+          sqlite.exec('ALTER TABLE expenses ADD COLUMN amount_home REAL NOT NULL DEFAULT 0');
+          sqlite.exec('UPDATE expenses SET amount_home = amount_eur');
+          console.log('[migration] Copied amount_eur → amount_home');
+        }
+      } catch (e) {
+        console.warn('[init] Schema migration warning:', e.message);
+      }
+    },
+  })
+    .then(() => startServer())
+    .catch(e => {
+      console.warn('[init] Tenant schema init warning:', e.message);
+      startServer();
+    });
+}
+
+// ─── Express setup ───────────────────────────────────────────────────
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '200mb' }));
+
+if (DEMO_MODE) {
+  app.use('/api', (req, res, next) => {
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+      return res.status(403).json({ error: 'Demo mode — read only' });
+    }
+    next();
+  });
+}
+
+app.use(express.static(DIST_PATH));
+
+// Local file serving (R2 URLs are served directly by Cloudflare)
 if (STORAGE_BACKEND === 'local') {
   app.use('/files', express.static(UPLOADS_DIR));
   app.get('/receipts/:filename', (req, res) => {
@@ -241,7 +315,7 @@ if (STORAGE_BACKEND === 'local') {
     const filePath = path.join(RECEIPTS_DIR, filename);
     if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
     if (path.extname(filename).toLowerCase() === '.pdf') {
-      const auth = req.headers.authorization;
+      const auth    = req.headers.authorization;
       const payload = auth && auth.startsWith('Bearer ') ? verifyToken(auth.slice(7)) : null;
       if (!payload) return res.status(401).send('Unauthorized');
     }
@@ -267,201 +341,44 @@ const receiptUpload = multer({
   },
 });
 
-// Derive thumbnail path/url from a main image filename
+const backupUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const tmp = path.join(DATA_DIR, 'tmp_import');
+      fs.mkdirSync(tmp, { recursive: true });
+      cb(null, tmp);
+    },
+    filename: (_req, _file, cb) => cb(null, `import-${Date.now()}.zip`),
+  }),
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
+});
+
 function thumbFilename(filename) {
   return filename.replace(/\.jpg$/, '_thumb.jpg');
 }
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    section TEXT NOT NULL,
-    start_time TEXT NOT NULL,
-    end_time TEXT NOT NULL,
-    duration_minutes REAL NOT NULL,
-    notes TEXT DEFAULT '',
-    plans_reference TEXT,
-    image_urls TEXT DEFAULT '[]',
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS active_timer (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    section TEXT NOT NULL,
-    start_time TEXT NOT NULL,
-    image_urls TEXT DEFAULT '[]'
-  )
-`);
-try { db.exec(`ALTER TABLE active_timer ADD COLUMN image_urls TEXT DEFAULT '[]'`); } catch {} // no-op if already exists
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS blog_posts (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    section TEXT,
-    image_urls TEXT DEFAULT '[]',
-    published_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS expenses (
-    id TEXT PRIMARY KEY,
-    date TEXT NOT NULL,
-    amount REAL NOT NULL,
-    currency TEXT NOT NULL DEFAULT 'EUR',
-    exchange_rate REAL NOT NULL DEFAULT 1.0,
-    amount_home REAL NOT NULL,
-    description TEXT NOT NULL,
-    vendor TEXT DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'other',
-    assembly_section TEXT DEFAULT '',
-    part_number TEXT DEFAULT '',
-    is_certification_relevant INTEGER DEFAULT 0,
-    receipt_urls TEXT DEFAULT '[]',
-    notes TEXT DEFAULT '',
-    tags TEXT DEFAULT '[]',
-    link TEXT DEFAULT '',
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-try { db.exec(`ALTER TABLE expenses ADD COLUMN link TEXT DEFAULT ''`); } catch {} // no-op if already exists
-
-// Migration: rename amount_eur → amount_home for existing databases
-{
-  const cols = db.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
-  if (cols.includes('amount_eur') && !cols.includes('amount_home')) {
-    db.exec('ALTER TABLE expenses ADD COLUMN amount_home REAL NOT NULL DEFAULT 0');
-    db.exec('UPDATE expenses SET amount_home = amount_eur');
-    console.log('[migration] Copied amount_eur → amount_home for', db.prepare('SELECT COUNT(*) as n FROM expenses').get().n, 'rows');
-  }
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS expense_budgets (
-    category TEXT PRIMARY KEY,
-    budget_amount REAL NOT NULL
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS visitor_stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts INTEGER NOT NULL,
-    path TEXT NOT NULL,
-    country TEXT NOT NULL DEFAULT 'XX',
-    referrer TEXT DEFAULT '',
-    post_id TEXT DEFAULT ''
-  )
-`);
-db.exec(`CREATE INDEX IF NOT EXISTS idx_visitor_stats_ts ON visitor_stats (ts)`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sign_offs (
-    id TEXT PRIMARY KEY,
-    package_id TEXT NOT NULL,
-    package_label TEXT NOT NULL,
-    section_id TEXT NOT NULL,
-    date TEXT NOT NULL,
-    inspector_name TEXT DEFAULT '',
-    inspection_completed INTEGER DEFAULT 0,
-    no_critical_issues INTEGER DEFAULT 0,
-    execution_satisfactory INTEGER DEFAULT 0,
-    rework_needed INTEGER DEFAULT 0,
-    comments TEXT DEFAULT '',
-    signature_png TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS image_annotations (
-    image_url TEXT PRIMARY KEY,
-    annotations_json TEXT NOT NULL DEFAULT '[]',
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS pending_uploads (
-    url TEXT PRIMARY KEY,
-    uploaded_at INTEGER NOT NULL
-  )
-`);
-
-// Prune visitor stats older than 1 year — runs on startup and every 24h
-function pruneVisitorStats() {
-  const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
-  const { changes } = db.prepare('DELETE FROM visitor_stats WHERE ts < ?').run(cutoff);
-  if (changes > 0) console.log(`[visitor-stats] Pruned ${changes} entries older than 1 year`);
-}
-pruneVisitorStats();
-setInterval(pruneVisitorStats, 24 * 60 * 60 * 1000);
-
-// Cleanup orphaned uploads: runs hourly, deletes files uploaded >24h ago
-// that are no longer referenced in any sessions, blog posts, or expenses.
-async function cleanupOrphanedUploads() {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const candidates = db.prepare('SELECT url FROM pending_uploads WHERE uploaded_at < ?').all(cutoff);
-  if (!candidates.length) return;
-
-  let deleted = 0;
-  for (const { url } of candidates) {
-    // Check if this URL appears in any stored image_urls or blog content
-    const inSessions = db.prepare("SELECT 1 FROM sessions WHERE image_urls LIKE ? LIMIT 1").get(`%${url}%`);
-    const inBlogUrls = db.prepare("SELECT 1 FROM blog_posts WHERE image_urls LIKE ? LIMIT 1").get(`%${url}%`);
-    const inBlogContent = db.prepare("SELECT 1 FROM blog_posts WHERE content LIKE ? LIMIT 1").get(`%${url}%`);
-    const inExpenses = db.prepare("SELECT 1 FROM expenses WHERE receipt_urls LIKE ? LIMIT 1").get(`%${url}%`);
-
-    if (!inSessions && !inBlogUrls && !inBlogContent && !inExpenses) {
-      try {
-        await imageStore.delete(url, true); // also deletes thumbnail if present
-      } catch (e) {
-        // May already be gone — continue
-      }
-      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
-      deleted++;
-    } else {
-      // Still referenced — remove from pending list, no deletion needed
-      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
-    }
-  }
-  if (deleted > 0) console.log(`[cleanup] Deleted ${deleted} orphaned upload(s)`);
-}
-cleanupOrphanedUploads();
-setInterval(cleanupOrphanedUploads, 60 * 60 * 1000);
-
-// ─── Settings helpers ───────────────────────────────────────────────
-function getSetting(key, defaultValue = null) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+// ─── Settings helpers (async, db-aware) ──────────────────────────────
+async function getSetting(db, key, defaultValue = null) {
+  const row = await db.get(
+    'SELECT value FROM settings WHERE key = ? AND tenant_id = ?',
+    [key, db.tenantId]
+  );
   return row ? JSON.parse(row.value) : defaultValue;
 }
 
-function setSetting(key, value) {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
+async function setSetting(db, key, value) {
+  await db.run(
+    'INSERT OR REPLACE INTO settings (key, tenant_id, value) VALUES (?, ?, ?)',
+    [key, db.tenantId, JSON.stringify(value)]
+  );
 }
 
-// ─── MQTT setup ─────────────────────────────────────────────────────
+// ─── MQTT setup ──────────────────────────────────────────────────────
 let mqttClient = null;
 let mqttPendingPublish = false;
 
-function getMqttSettings() {
-  return getSetting('mqtt', {
+async function getMqttSettings(db) {
+  return getSetting(db, 'mqtt', {
     enabled: false,
     brokerUrl: 'mqtt://localhost:1883',
     username: '',
@@ -472,14 +389,13 @@ function getMqttSettings() {
   });
 }
 
-function connectMqtt() {
-  // Disconnect existing client
+async function connectMqtt(db) {
   if (mqttClient) {
-    try { mqttClient.end(true); } catch (e) {}
+    try { mqttClient.end(true); } catch {}
     mqttClient = null;
   }
 
-  const settings = getMqttSettings();
+  const settings = await getMqttSettings(db);
   if (!settings.enabled || !settings.brokerUrl) {
     console.log('MQTT: disabled or no broker configured');
     return;
@@ -488,48 +404,32 @@ function connectMqtt() {
   const opts = {};
   if (settings.username) opts.username = settings.username;
   if (settings.password) opts.password = settings.password;
-  opts.reconnectPeriod = 5000;
-  opts.connectTimeout = 10000;
+  opts.reconnectPeriod  = 5000;
+  opts.connectTimeout   = 10000;
 
   console.log(`MQTT: connecting to ${settings.brokerUrl}...`);
   mqttClient = mqtt.connect(settings.brokerUrl, opts);
 
   mqttClient.on('connect', () => {
     console.log(`MQTT connected to ${settings.brokerUrl}`);
-    // Publish any pending stats
     if (mqttPendingPublish) {
       mqttPendingPublish = false;
-      publishMqttStats();
+      publishMqttStats(db);
     } else {
-      // Publish initial stats on connect
-      publishMqttStats();
+      publishMqttStats(db);
     }
   });
-
-  mqttClient.on('error', (err) => {
-    console.error('MQTT error:', err.message);
-  });
-
-  mqttClient.on('offline', () => {
-    console.log('MQTT: offline');
-  });
-
-  mqttClient.on('reconnect', () => {
-    console.log('MQTT reconnecting...');
-  });
-
-  mqttClient.on('close', () => {
-    console.log('MQTT connection closed');
-  });
+  mqttClient.on('error',     err  => console.error('MQTT error:', err.message));
+  mqttClient.on('offline',   ()   => console.log('MQTT: offline'));
+  mqttClient.on('reconnect', ()   => console.log('MQTT reconnecting...'));
+  mqttClient.on('close',     ()   => console.log('MQTT connection closed'));
 }
 
-function publishMqttStats() {
+async function publishMqttStats(db) {
   try {
-    const settings = getMqttSettings();
-    if (!settings.enabled) {
-      console.log('MQTT: publish skipped — disabled');
-      return;
-    }
+    if (!db) db = getDefaultDb();
+    const settings = await getMqttSettings(db);
+    if (!settings.enabled) { console.log('MQTT: publish skipped — disabled'); return; }
     if (!mqttClient || !mqttClient.connected) {
       console.warn('MQTT not connected, skipping publish');
       mqttPendingPublish = true;
@@ -537,74 +437,51 @@ function publishMqttStats() {
     }
 
     const prefix = settings.topicPrefix || 'mybuild/stats';
-
-    // Compute stats from DB
-    const rows = db.prepare('SELECT section, duration_minutes FROM sessions').all();
-    const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
+    const rows = await db.all(
+      'SELECT section, duration_minutes FROM sessions WHERE tenant_id = ?',
+      [db.tenantId]
+    );
+    const sectionConfigs = await getSetting(db, 'sections', DEFAULT_SECTIONS);
     const excludedSections = new Set(
       sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
     );
 
     const sectionTotals = {};
     let totalMinutes = 0;
-
     for (const row of rows) {
-      const sec = row.section;
-      if (!sectionTotals[sec]) sectionTotals[sec] = 0;
-      sectionTotals[sec] += row.duration_minutes;
-      if (!excludedSections.has(sec)) totalMinutes += row.duration_minutes;
+      if (!sectionTotals[row.section]) sectionTotals[row.section] = 0;
+      sectionTotals[row.section] += row.duration_minutes;
+      if (!excludedSections.has(row.section)) totalMinutes += row.duration_minutes;
     }
 
-    const totalHours = (totalMinutes / 60).toFixed(1);
-    const sessionCount = rows.length;
-
-    // Get target hours for progress calculation
-    const generalSettings = getSetting('general', DEFAULT_GENERAL);
-    const targetHours = generalSettings.targetHours || 2500;
+    const totalHours    = (totalMinutes / 60).toFixed(1);
+    const sessionCount  = rows.length;
+    const generalSettings = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const targetHours   = generalSettings.targetHours || 2500;
     const buildProgress = Math.min(((totalMinutes / 60) / targetHours) * 100, 100).toFixed(1);
 
-    // Publish with error handling
-    const publishOptions = { retain: true, qos: 1 };
-    
-    console.log(`MQTT publish → ${prefix}/total_hours`, totalHours);
-    mqttClient.publish(`${prefix}/total_hours`, totalHours, publishOptions, (err) => {
-      if (err) console.error('MQTT publish error (total_hours):', err.message);
-    });
-    
-    console.log(`MQTT publish → ${prefix}/total_sessions`, sessionCount);
-    mqttClient.publish(`${prefix}/total_sessions`, String(sessionCount), publishOptions, (err) => {
-      if (err) console.error('MQTT publish error (total_sessions):', err.message);
-    });
-
-    console.log(`MQTT publish → ${prefix}/build_progress`, buildProgress);
-    mqttClient.publish(`${prefix}/build_progress`, buildProgress, publishOptions, (err) => {
-      if (err) console.error('MQTT publish error (build_progress):', err.message);
-    });
-
-    // Get the last session's images
-    const lastSessionRow = db.prepare('SELECT image_urls FROM sessions ORDER BY start_time DESC LIMIT 1').get();
-    if (lastSessionRow) {
-      const lastSessionImages = JSON.parse(lastSessionRow.image_urls || '[]');
-      const imageUrlsJson = JSON.stringify(lastSessionImages);
-      console.log(`MQTT publish → ${prefix}/last_session_images`, imageUrlsJson);
-      mqttClient.publish(`${prefix}/last_session_images`, imageUrlsJson, publishOptions, (err) => {
-        if (err) console.error('MQTT publish error (last_session_images):', err.message);
+    const pub = (topic, value) =>
+      mqttClient.publish(topic, value, { retain: true, qos: 1 }, err => {
+        if (err) console.error(`MQTT publish error (${topic}):`, err.message);
       });
+
+    pub(`${prefix}/total_hours`,   totalHours);
+    pub(`${prefix}/total_sessions`, String(sessionCount));
+    pub(`${prefix}/build_progress`, buildProgress);
+
+    const lastRow = await db.get(
+      "SELECT image_urls FROM sessions WHERE tenant_id = ? ORDER BY start_time DESC LIMIT 1",
+      [db.tenantId]
+    );
+    if (lastRow) {
+      pub(`${prefix}/last_session_images`, JSON.stringify(JSON.parse(lastRow.image_urls || '[]')));
     }
 
-    // Publish per section using dynamic sections
     for (const sec of sectionConfigs) {
-      const hours = ((sectionTotals[sec.id] || 0) / 60).toFixed(1);
-      console.log(`MQTT publish → ${prefix}/${sec.id}`, hours);
-      mqttClient.publish(`${prefix}/${sec.id}`, hours, publishOptions, (err) => {
-        if (err) console.error(`MQTT publish error (${sec.id}):`, err.message);
-      });
+      pub(`${prefix}/${sec.id}`, ((sectionTotals[sec.id] || 0) / 60).toFixed(1));
     }
 
-    // Publish HA discovery if enabled
-    if (settings.haDiscovery) {
-      publishHaDiscovery(settings, sectionConfigs, prefix);
-    }
+    if (settings.haDiscovery) publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings);
 
     console.log(`MQTT: published stats (total: ${totalHours}h, ${sessionCount} sessions)`);
   } catch (err) {
@@ -612,298 +489,323 @@ function publishMqttStats() {
   }
 }
 
-function publishHaDiscovery(settings, sectionConfigs, prefix) {
-  if (!mqttClient || !mqttClient.connected) {
-    console.log('MQTT: HA discovery skipped — not connected');
-    return;
-  }
-
+function publishHaDiscovery(settings, sectionConfigs, prefix, generalSettings) {
+  if (!mqttClient || !mqttClient.connected) return;
   const discoveryPrefix = settings.haDiscoveryPrefix || 'homeassistant';
-  const deviceId = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
-  const deviceName = getSetting('general', DEFAULT_GENERAL).projectName || DEFAULT_GENERAL.projectName;
-
-  const device = {
-    identifiers: [deviceId],
-    name: deviceName,
-    manufacturer: 'Benchlog',
-    model: 'MQTT Stats',
-  };
+  const deviceId   = (settings.topicPrefix || 'mybuild_stats').replace(/[^a-z0-9]/gi, '_');
+  const deviceName = (generalSettings && generalSettings.projectName) || DEFAULT_GENERAL.projectName;
+  const device = { identifiers: [deviceId], name: deviceName, manufacturer: 'Benchlog', model: 'MQTT Stats' };
 
   function publishSensor(objectId, name, stateTopic, unit, icon, stateClass) {
     const uniqueId = `${deviceId}_${objectId}`;
-    const configTopic = `${discoveryPrefix}/sensor/${uniqueId}/config`;
-    const payload = {
-      name,
-      state_topic: stateTopic,
-      unique_id: uniqueId,
-      object_id: uniqueId,
-      device,
-      icon,
-      value_template: '{{ value }}',
-      ...(unit ? { unit_of_measurement: unit } : {}),
-      ...(stateClass ? { state_class: stateClass } : {}),
-    };
-    mqttClient.publish(configTopic, JSON.stringify(payload), { retain: true, qos: 1 }, (err) => {
-      if (err) console.error(`MQTT HA discovery publish error (${objectId}):`, err.message);
-    });
+    mqttClient.publish(
+      `${discoveryPrefix}/sensor/${uniqueId}/config`,
+      JSON.stringify({
+        name, state_topic: stateTopic, unique_id: uniqueId, object_id: uniqueId,
+        device, icon, value_template: '{{ value }}',
+        ...(unit ? { unit_of_measurement: unit } : {}),
+        ...(stateClass ? { state_class: stateClass } : {}),
+      }),
+      { retain: true, qos: 1 },
+      err => { if (err) console.error(`MQTT HA discovery error (${objectId}):`, err.message); }
+    );
   }
 
-  publishSensor('total_hours', `${deviceName} Total Hours`, `${prefix}/total_hours`, 'h', 'mdi:clock-outline', 'measurement');
-  publishSensor('total_sessions', `${deviceName} Total Sessions`, `${prefix}/total_sessions`, 'sessions', 'mdi:counter', 'measurement');
-  publishSensor('build_progress', `${deviceName} Build Progress`, `${prefix}/build_progress`, '%', 'mdi:progress-check', 'measurement');
-  
-  // Add last session images as a sensor (JSON array of image URLs)
-  const lastSessionImagesTopic = `${prefix}/last_session_images`;
-  const uniqueIdImages = `${deviceId}_last_session_images`;
-  const configTopicImages = `${discoveryPrefix}/sensor/${uniqueIdImages}/config`;
-  const payloadImages = {
-    name: `${deviceName} Last Session Images`,
-    state_topic: lastSessionImagesTopic,
-    unique_id: uniqueIdImages,
-    object_id: uniqueIdImages,
-    device,
-    icon: 'mdi:image-multiple',
-    value_template: '{{ value }}',
-  };
-  mqttClient.publish(configTopicImages, JSON.stringify(payloadImages), { retain: true, qos: 1 }, (err) => {
-    if (err) console.error('MQTT HA discovery publish error (last_session_images):', err.message);
-  });
+  publishSensor('total_hours',   `${deviceName} Total Hours`,    `${prefix}/total_hours`,   'h',        'mdi:clock-outline',  'measurement');
+  publishSensor('total_sessions',`${deviceName} Total Sessions`, `${prefix}/total_sessions`,'sessions', 'mdi:counter',        'measurement');
+  publishSensor('build_progress',`${deviceName} Build Progress`, `${prefix}/build_progress`,'%',        'mdi:progress-check', 'measurement');
+
+  const uid = `${deviceId}_last_session_images`;
+  mqttClient.publish(
+    `${discoveryPrefix}/sensor/${uid}/config`,
+    JSON.stringify({
+      name: `${deviceName} Last Session Images`,
+      state_topic: `${prefix}/last_session_images`,
+      unique_id: uid, object_id: uid, device,
+      icon: 'mdi:image-multiple', value_template: '{{ value }}',
+    }),
+    { retain: true, qos: 1 }
+  );
 
   for (const sec of sectionConfigs) {
-    const label = sec.label || sec.id;
-    publishSensor(sec.id, `${deviceName} ${label}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools', 'measurement');
+    publishSensor(sec.id, `${deviceName} ${sec.label || sec.id}`, `${prefix}/${sec.id}`, 'h', 'mdi:tools', 'measurement');
   }
-
   console.log(`MQTT: published HA discovery configs to ${discoveryPrefix}/sensor/...`);
 }
 
-// Connect on startup
-connectMqtt();
-
-
-// ─── Auth Routes ────────────────────────────────────────────────────
-
-// POST /api/auth/setup — set initial password (only if none set)
-app.post('/api/auth/setup', (req, res) => {
-  const existing = getSetting('auth_password_hash', null);
-  if (existing) return res.status(400).json({ error: 'Password already set' });
-  const { password } = req.body;
-  if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
-  const hash = crypto.createHash('sha256').update(password).digest('hex');
-  setSetting('auth_password_hash', hash);
-  const token = createToken({ role: 'admin' });
-  res.json({ ok: true, token });
-});
-
-// POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
-  const stored = getSetting('auth_password_hash', null);
-  if (!stored) return res.status(400).json({ error: 'No password set. Please set up first.' });
-  const { password } = req.body;
-  const hash = crypto.createHash('sha256').update(password || '').digest('hex');
-  if (hash !== stored) return res.status(401).json({ error: 'Incorrect password' });
-  const token = createToken({ role: 'admin' });
-  res.json({ ok: true, token });
-});
-
-// GET /api/auth/status — check if password is set + if token is valid
-app.get('/api/auth/status', (req, res) => {
-  const hasPassword = !!getSetting('auth_password_hash', null);
-  const auth = req.headers.authorization;
-  let authenticated = false;
-  if (auth && auth.startsWith('Bearer ')) {
-    authenticated = !!verifyToken(auth.slice(7));
+// ─── Prune visitor stats ─────────────────────────────────────────────
+async function pruneVisitorStats() {
+  const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  try {
+    const db = getDefaultDb();
+    const { changes } = await db.run(
+      'DELETE FROM visitor_stats WHERE ts < ? AND tenant_id = ?',
+      [cutoff, db.tenantId]
+    );
+    if (changes > 0) console.log(`[visitor-stats] Pruned ${changes} entries older than 1 year`);
+  } catch (e) {
+    console.warn('[visitor-stats] prune error:', e.message);
   }
-  // In demo mode, treat as always authenticated so frontend skips login
-  res.json({ hasPassword: DEMO_MODE ? true : hasPassword, authenticated: DEMO_MODE ? true : authenticated, demoMode: DEMO_MODE });
+}
+
+// ─── Auth Routes ─────────────────────────────────────────────────────
+
+app.post('/api/auth/setup', async (req, res) => {
+  try {
+    const tenant = await getFirstTenant();
+    if (!tenant) return res.status(500).json({ error: 'No tenant found' });
+    if (tenant.password_hash) return res.status(400).json({ error: 'Password already set' });
+
+    const { password } = req.body;
+    if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+
+    await setTenantPassword(tenant.id, hash);
+    const db = getTenantDb(tenant.id);
+    await setSetting(db, 'auth_password_hash', hash);
+
+    const token = createToken({ role: 'admin', tenantId: tenant.id });
+    res.json({ ok: true, token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ─── Public Stats API ───────────────────────────────────────────────
-app.get('/api/stats', (req, res) => {
-  const rows = db.prepare('SELECT section, duration_minutes, start_time FROM sessions').all();
-  const generalSettings = getSetting('general', DEFAULT_GENERAL);
-  const targetHours = generalSettings.targetHours || 2500;
-  const progressMode = generalSettings.progressMode || 'time';
-
-  // Determine which sections count toward build hours
-  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
-  const excludedSections = new Set(
-    sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
-  );
-
-  const countedRows = rows.filter(r => !excludedSections.has(r.section));
-  const totalMinutes = countedRows.reduce((sum, r) => sum + r.duration_minutes, 0);
-  const totalHours = totalMinutes / 60;
-
-  // Calculate time-based progress
-  const timePct = Math.min((totalHours / targetHours) * 100, 100);
-
-  // Calculate package-based progress
-  let packagePct = 0;
-  if (progressMode === 'packages') {
-    const flowStatus = getSetting('flowchart_status', {});
-    const flowPackages = getSetting('flowchart_packages', {});
-    function getAllPackageIds(items) {
-      return items.flatMap(item => [item.id, ...getAllPackageIds(item.children || [])]);
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { password, username } = req.body;
+    let tenant = null;
+    if (username && DB_BACKEND === 'postgres') {
+      tenant = await getTenantBySlug(username);
+      // Fall back to first tenant if slug lookup fails (single-user postgres setup
+      // where the tenant was created before the username field existed)
+      if (!tenant) tenant = await getFirstTenant();
+    } else {
+      tenant = await getFirstTenant();
     }
-    const allIds = Object.values(flowPackages).flatMap(items => getAllPackageIds(items));
-    const doneCount = allIds.filter(id => flowStatus[id] === 'done').length;
-    packagePct = allIds.length > 0 ? Math.min((doneCount / allIds.length) * 100, 100) : 0;
+    if (!tenant) return res.status(400).json({ error: 'User not found' });
+    if (!tenant.password_hash) return res.status(400).json({ error: 'No password set. Please set up first.' });
+    const hash = crypto.createHash('sha256').update(password || '').digest('hex');
+    if (hash !== tenant.password_hash) return res.status(401).json({ error: 'Incorrect password' });
+    const token = createToken({ role: tenant.role || 'user', tenantId: tenant.id });
+    res.json({ ok: true, token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
+});
 
-  const progressPct = progressMode === 'packages' ? packagePct : timePct;
+app.get('/api/auth/status', async (req, res) => {
+  try {
+    const tenant = await getFirstTenant();
+    const hasPassword = !!(tenant && tenant.password_hash);
+    const auth = req.headers.authorization;
+    let authenticated = false;
+    let role = null;
+    if (auth && auth.startsWith('Bearer ')) {
+      const payload = verifyToken(auth.slice(7));
+      if (payload) { authenticated = true; role = payload.role || null; }
+    }
+    res.json({
+      hasPassword:   DEMO_MODE ? true : hasPassword,
+      authenticated: DEMO_MODE ? true : authenticated,
+      demoMode:      DEMO_MODE,
+      multiTenant:   DB_BACKEND === 'postgres',
+      role:          DEMO_MODE ? 'admin' : role,
+    });
+  } catch {
+    res.json({ hasPassword: false, authenticated: false, demoMode: DEMO_MODE });
+  }
+});
 
-  let estimatedFinish = null;
-  let hoursPerWeek = null;
-  if (countedRows.length >= 2) {
-    const sorted = [...countedRows].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
-    const firstDate = new Date(sorted[0].start_time);
-    const lastDate = new Date(sorted[sorted.length - 1].start_time);
-    const spanWeeks = (lastDate - firstDate) / (7 * 24 * 60 * 60 * 1000);
-    if (spanWeeks >= 0.5) {
-      hoursPerWeek = totalHours / spanWeeks;
-      const remaining = targetHours - totalHours;
-      if (remaining > 0) {
-        const remainingWeeks = remaining / hoursPerWeek;
-        estimatedFinish = new Date(Date.now() + remainingWeeks * 7 * 24 * 60 * 60 * 1000).toISOString();
+// ─── Public Stats API ────────────────────────────────────────────────
+app.get('/api/stats', async (req, res) => {
+  try {
+    const db = getDefaultDb();
+    const rows = await db.all(
+      'SELECT section, duration_minutes, start_time FROM sessions WHERE tenant_id = ?',
+      [db.tenantId]
+    );
+    const generalSettings  = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const targetHours      = generalSettings.targetHours || 2500;
+    const progressMode     = generalSettings.progressMode || 'time';
+    const sectionConfigs   = await getSetting(db, 'sections', DEFAULT_SECTIONS);
+    const excludedSections = new Set(
+      sectionConfigs.filter(s => s.countTowardsBuildHours === false).map(s => s.id)
+    );
+
+    const countedRows  = rows.filter(r => !excludedSections.has(r.section));
+    const totalMinutes = countedRows.reduce((sum, r) => sum + r.duration_minutes, 0);
+    const totalHours   = totalMinutes / 60;
+    const timePct      = Math.min((totalHours / targetHours) * 100, 100);
+
+    let packagePct = 0;
+    if (progressMode === 'packages') {
+      const flowStatus   = await getSetting(db, 'flowchart_status', {});
+      const flowPackages = await getSetting(db, 'flowchart_packages', {});
+      function getAllPackageIds(items) {
+        return items.flatMap(item => [item.id, ...getAllPackageIds(item.children || [])]);
+      }
+      const allIds   = Object.values(flowPackages).flatMap(items => getAllPackageIds(items));
+      const doneCount = allIds.filter(id => flowStatus[id] === 'done').length;
+      packagePct = allIds.length > 0 ? Math.min((doneCount / allIds.length) * 100, 100) : 0;
+    }
+
+    const progressPct = progressMode === 'packages' ? packagePct : timePct;
+
+    let estimatedFinish = null;
+    let hoursPerWeek    = null;
+    if (countedRows.length >= 2) {
+      const sorted    = [...countedRows].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+      const firstDate = new Date(sorted[0].start_time);
+      const lastDate  = new Date(sorted[sorted.length - 1].start_time);
+      const spanWeeks = (lastDate - firstDate) / (7 * 24 * 60 * 60 * 1000);
+      if (spanWeeks >= 0.5) {
+        hoursPerWeek = totalHours / spanWeeks;
+        const remaining = targetHours - totalHours;
+        if (remaining > 0) {
+          estimatedFinish = new Date(Date.now() + (remaining / hoursPerWeek) * 7 * 24 * 60 * 60 * 1000).toISOString();
+        }
       }
     }
-  }
 
-  const sectionHours = {};
-  for (const row of rows) {
-    if (!sectionHours[row.section]) sectionHours[row.section] = 0;
-    sectionHours[row.section] += row.duration_minutes / 60;
-  }
-  for (const k of Object.keys(sectionHours)) {
-    sectionHours[k] = parseFloat(sectionHours[k].toFixed(1));
-  }
-
-  res.json({
-    totalHours: parseFloat(totalHours.toFixed(1)),
-    targetHours,
-    progressPct: parseFloat(progressPct.toFixed(1)),
-    progressMode,
-    sessionCount: rows.length,
-    estimatedFinish,
-    hoursPerWeek: hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
-    projectName: generalSettings.projectName,
-    sectionHours,
-  });
-});
-
-// ─── API Routes ─────────────────────────────────────────────────────
-
-// GET /api/sessions — list all sessions (public read)
-app.get('/api/sessions', (req, res) => {
-  const rows = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all();
-  const sessions = rows.map(row => ({
-    id: row.id,
-    section: row.section,
-    startTime: row.start_time,
-    endTime: row.end_time,
-    durationMinutes: row.duration_minutes,
-    notes: row.notes,
-    plansReference: row.plans_reference,
-    imageUrls: JSON.parse(row.image_urls || '[]'),
-  }));
-  res.json(sessions);
-});
-
-// POST /api/sessions — create a session (auth required)
-app.post('/api/sessions', requireAuth, (req, res) => {
-  const { id, section, startTime, endTime, durationMinutes, notes, plansReference, imageUrls } = req.body;
-  db.prepare(`
-    INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, section, startTime, endTime, durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || []));
-  publishMqttStats();
-  res.json({ ok: true });
-});
-
-// PUT /api/sessions/:id — update a session (auth required)
-app.put('/api/sessions/:id', requireAuth, (req, res) => {
-  const { id } = req.params;
-  const updates = req.body;
-
-  const fields = [];
-  const values = [];
-  if (updates.section !== undefined) { fields.push('section = ?'); values.push(updates.section); }
-  if (updates.startTime !== undefined) { fields.push('start_time = ?'); values.push(updates.startTime); }
-  if (updates.endTime !== undefined) { fields.push('end_time = ?'); values.push(updates.endTime); }
-  if (updates.durationMinutes !== undefined) { fields.push('duration_minutes = ?'); values.push(updates.durationMinutes); }
-  if (updates.notes !== undefined) { fields.push('notes = ?'); values.push(updates.notes); }
-  if (updates.plansReference !== undefined) { fields.push('plans_reference = ?'); values.push(updates.plansReference); }
-  if (updates.imageUrls !== undefined) { fields.push('image_urls = ?'); values.push(JSON.stringify(updates.imageUrls)); }
-
-  if (fields.length > 0) {
-    values.push(id);
-    db.prepare(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  }
-  publishMqttStats();
-  res.json({ ok: true });
-});
-
-// DELETE /api/sessions/:id — delete a session (auth required)
-app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
-  const { id } = req.params;
-
-  const row = db.prepare('SELECT image_urls FROM sessions WHERE id = ?').get(id);
-  if (row) {
-    const imageUrls = JSON.parse(row.image_urls || '[]');
-    for (const url of imageUrls) {
-      imageStore.delete(url, true).catch(err => console.error('Failed to delete image file:', err.message));
+    const sectionHours = {};
+    for (const row of rows) {
+      if (!sectionHours[row.section]) sectionHours[row.section] = 0;
+      sectionHours[row.section] += row.duration_minutes / 60;
     }
-  }
+    for (const k of Object.keys(sectionHours)) sectionHours[k] = parseFloat(sectionHours[k].toFixed(1));
 
-  db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
-  publishMqttStats();
-  res.json({ ok: true });
+    res.json({
+      totalHours:     parseFloat(totalHours.toFixed(1)),
+      targetHours,
+      progressPct:    parseFloat(progressPct.toFixed(1)),
+      progressMode,
+      sessionCount:   rows.length,
+      estimatedFinish,
+      hoursPerWeek:   hoursPerWeek ? parseFloat(hoursPerWeek.toFixed(1)) : null,
+      projectName:    generalSettings.projectName,
+      sectionHours,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// POST /api/upload — upload images (auth required)
-// Multer buffers into memory, sharp processes, then saved via storage backend.
+// ─── Sessions API ────────────────────────────────────────────────────
+
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const db   = getDefaultDb();
+    const rows = await db.all(
+      'SELECT * FROM sessions WHERE tenant_id = ? ORDER BY start_time DESC',
+      [db.tenantId]
+    );
+    res.json(rows.map(row => ({
+      id: row.id, section: row.section,
+      startTime: row.start_time, endTime: row.end_time,
+      durationMinutes: row.duration_minutes, notes: row.notes,
+      plansReference: row.plans_reference,
+      imageUrls: JSON.parse(row.image_urls || '[]'),
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sessions', requireAuth, async (req, res) => {
+  try {
+    const { id, section, startTime, endTime, durationMinutes, notes, plansReference, imageUrls } = req.body;
+    await req.db.run(
+      `INSERT INTO sessions (id, tenant_id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.tenantId, section, startTime, endTime, durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || [])]
+    );
+    publishMqttStats(req.db);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+    const fields = [];
+    const values = [];
+    if (updates.section          !== undefined) { fields.push('section = ?');          values.push(updates.section); }
+    if (updates.startTime        !== undefined) { fields.push('start_time = ?');        values.push(updates.startTime); }
+    if (updates.endTime          !== undefined) { fields.push('end_time = ?');          values.push(updates.endTime); }
+    if (updates.durationMinutes  !== undefined) { fields.push('duration_minutes = ?');  values.push(updates.durationMinutes); }
+    if (updates.notes            !== undefined) { fields.push('notes = ?');             values.push(updates.notes); }
+    if (updates.plansReference   !== undefined) { fields.push('plans_reference = ?');   values.push(updates.plansReference); }
+    if (updates.imageUrls        !== undefined) { fields.push('image_urls = ?');        values.push(JSON.stringify(updates.imageUrls)); }
+    if (fields.length > 0) {
+      values.push(id, req.tenantId);
+      await req.db.run(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`, values);
+    }
+    publishMqttStats(req.db);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await req.db.get(
+      'SELECT image_urls FROM sessions WHERE id = ? AND tenant_id = ?',
+      [id, req.tenantId]
+    );
+    if (row) {
+      for (const url of JSON.parse(row.image_urls || '[]')) {
+        try {
+          const filename = path.basename(url);
+          const filePath = path.join(UPLOADS_DIR, filename);
+          if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
+          if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
+        } catch (err) { console.error('Failed to delete image file:', err.message); }
+      }
+    }
+    await req.db.run('DELETE FROM sessions WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    publishMqttStats(req.db);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Upload API ──────────────────────────────────────────────────────
+
 app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res) => {
   try {
-    const generalSettings = getSetting('general', DEFAULT_GENERAL);
+    const generalSettings = await getSetting(req.db, 'general', DEFAULT_GENERAL);
     const resizingEnabled = generalSettings.imageResizing !== false;
-    const maxWidth = generalSettings.imageMaxWidth || DEFAULT_GENERAL.imageMaxWidth;
-    const thumbWidth = 400;
-
+    const maxWidth        = generalSettings.imageMaxWidth || DEFAULT_GENERAL.imageMaxWidth;
+    const thumbWidth      = 400;
     const urls = [];
     for (const file of req.files) {
       const filename = `${uuidv4()}.jpg`;
-
-      // Start with the in-memory buffer from multer
       let buf = file.buffer;
-
-      // Pre-convert HEIC/HEIF to JPEG (sharp's libvips lacks HEVC decoder)
       if (file.mimetype === 'image/heic' || file.mimetype === 'image/heif') {
         buf = Buffer.from(await heicConvert({ buffer: buf, format: 'JPEG', quality: 0.95 }));
       }
-
-      // Resize main image (or just orient/convert to JPEG)
       if (resizingEnabled) {
         buf = await sharp(buf).rotate().resize(maxWidth, null, { withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
       } else {
         buf = await sharp(buf).rotate().jpeg({ quality: 90 }).toBuffer();
       }
-
-      // Generate thumbnail
       const thumbBuf = await sharp(buf).resize(thumbWidth, null, { withoutEnlargement: true }).jpeg({ quality: 75 }).toBuffer();
-
-      // Save main image and thumbnail via storage backend
       const url = await imageStore.save(filename, buf);
       await imageStore.save(thumbFilename(filename), thumbBuf);
-
       urls.push(url);
-      db.prepare('INSERT OR REPLACE INTO pending_uploads (url, uploaded_at) VALUES (?, ?)').run(url, Date.now());
-
-      // Persist URL in active timer so it survives page refresh
-      const activeTimer = db.prepare('SELECT image_urls FROM active_timer WHERE id = 1').get();
+      await req.db.run('INSERT OR REPLACE INTO pending_uploads (url, tenant_id, uploaded_at) VALUES (?, ?, ?)', [url, req.tenantId, Date.now()]);
+      const activeTimer = await req.db.get('SELECT image_urls FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
       if (activeTimer) {
         const existing = JSON.parse(activeTimer.image_urls || '[]');
-        db.prepare('UPDATE active_timer SET image_urls = ? WHERE id = 1').run(JSON.stringify([...existing, url]));
+        await req.db.run('UPDATE active_timer SET image_urls = ? WHERE tenant_id = ?', [JSON.stringify([...existing, url]), req.tenantId]);
       }
     }
     res.json({ urls });
@@ -913,19 +815,16 @@ app.post('/api/upload', requireAuth, upload.array('files', 10), async (req, res)
   }
 });
 
-// DELETE /api/upload — delete an image and its thumbnail (auth required)
 app.delete('/api/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
     if (url) {
-      await imageStore.delete(url, true); // true = also delete thumbnail
-      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
-
-      // Remove from active timer image list if present
-      const activeTimer = db.prepare('SELECT image_urls FROM active_timer WHERE id = 1').get();
+      await imageStore.delete(url, true);
+      await req.db.run('DELETE FROM pending_uploads WHERE url = ? AND tenant_id = ?', [url, req.tenantId]);
+      const activeTimer = await req.db.get('SELECT image_urls FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
       if (activeTimer) {
         const remaining = JSON.parse(activeTimer.image_urls || '[]').filter(u => u !== url);
-        db.prepare('UPDATE active_timer SET image_urls = ? WHERE id = 1').run(JSON.stringify(remaining));
+        await req.db.run('UPDATE active_timer SET image_urls = ? WHERE tenant_id = ?', [JSON.stringify(remaining), req.tenantId]);
       }
     }
     res.json({ ok: true });
@@ -935,100 +834,92 @@ app.delete('/api/upload', requireAuth, async (req, res) => {
 });
 
 // ─── General Settings API ────────────────────────────────────────────
-app.get('/api/settings/general', (req, res) => {
-  const settings = getSetting('general', DEFAULT_GENERAL);
-  res.json(settings);
+
+app.get('/api/settings/general', async (req, res) => {
+  try {
+    const db       = getDefaultDb();
+    const settings = await getSetting(db, 'general', DEFAULT_GENERAL);
+    res.json(settings);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/settings/general', requireAuth, (req, res) => {
-  const current = getSetting('general', DEFAULT_GENERAL);
-  const updates = req.body;
-  const newSettings = {
-    projectName: updates.projectName !== undefined ? updates.projectName : current.projectName,
-    targetHours: updates.targetHours !== undefined ? updates.targetHours : current.targetHours,
-    progressMode: updates.progressMode !== undefined ? updates.progressMode : (current.progressMode || 'time'),
-    imageResizing: updates.imageResizing !== undefined ? updates.imageResizing : (current.imageResizing ?? true),
-    imageMaxWidth: updates.imageMaxWidth !== undefined ? updates.imageMaxWidth : (current.imageMaxWidth || 1920),
-    timeFormat: updates.timeFormat !== undefined ? updates.timeFormat : (current.timeFormat || '24h'),
-    landingPage: updates.landingPage !== undefined ? updates.landingPage : (current.landingPage || 'tracker'),
-    homeCurrency: updates.homeCurrency !== undefined ? updates.homeCurrency : (current.homeCurrency || 'EUR'),
-  };
-  setSetting('general', newSettings);
-  res.json({ ok: true });
+app.put('/api/settings/general', requireAuth, async (req, res) => {
+  try {
+    const current  = await getSetting(req.db, 'general', DEFAULT_GENERAL);
+    const updates  = req.body;
+    const newSettings = {
+      projectName:  updates.projectName  !== undefined ? updates.projectName  : current.projectName,
+      targetHours:  updates.targetHours  !== undefined ? updates.targetHours  : current.targetHours,
+      progressMode: updates.progressMode !== undefined ? updates.progressMode : (current.progressMode || 'time'),
+      imageResizing:updates.imageResizing !== undefined ? updates.imageResizing : (current.imageResizing ?? true),
+      imageMaxWidth:updates.imageMaxWidth !== undefined ? updates.imageMaxWidth : (current.imageMaxWidth || 1920),
+      timeFormat:   updates.timeFormat   !== undefined ? updates.timeFormat   : (current.timeFormat || '24h'),
+      landingPage:  updates.landingPage  !== undefined ? updates.landingPage  : (current.landingPage || 'tracker'),
+      homeCurrency: updates.homeCurrency !== undefined ? updates.homeCurrency : (current.homeCurrency || 'EUR'),
+    };
+    await setSetting(req.db, 'general', newSettings);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── MQTT Settings API ──────────────────────────────────────────────
-app.get('/api/settings/mqtt', (req, res) => {
-  const settings = getMqttSettings();
-  res.json({
-    ...settings,
-    password: settings.password ? '••••••••' : '',
-  });
+// ─── MQTT Settings API ───────────────────────────────────────────────
+
+app.get('/api/settings/mqtt', async (req, res) => {
+  try {
+    const db       = getDefaultDb();
+    const settings = await getMqttSettings(db);
+    res.json({ ...settings, password: settings.password ? '••••••••' : '' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/settings/mqtt', requireAuth, (req, res) => {
-  const current = getMqttSettings();
-  const updates = req.body;
-  const newSettings = {
-    enabled: updates.enabled !== undefined ? updates.enabled : current.enabled,
-    brokerUrl: updates.brokerUrl !== undefined ? updates.brokerUrl : current.brokerUrl,
-    username: updates.username !== undefined ? updates.username : current.username,
-    topicPrefix: updates.topicPrefix !== undefined ? updates.topicPrefix : current.topicPrefix,
-    password: (updates.password && updates.password !== '••••••••') ? updates.password : current.password,
-    haDiscovery: updates.haDiscovery !== undefined ? updates.haDiscovery : current.haDiscovery,
-    haDiscoveryPrefix: updates.haDiscoveryPrefix !== undefined ? updates.haDiscoveryPrefix : current.haDiscoveryPrefix,
-  };
-  setSetting('mqtt', newSettings);
-  connectMqtt();
-  res.json({ ok: true });
+app.put('/api/settings/mqtt', requireAuth, async (req, res) => {
+  try {
+    const current  = await getMqttSettings(req.db);
+    const updates  = req.body;
+    const newSettings = {
+      enabled:         updates.enabled         !== undefined ? updates.enabled         : current.enabled,
+      brokerUrl:       updates.brokerUrl        !== undefined ? updates.brokerUrl        : current.brokerUrl,
+      username:        updates.username         !== undefined ? updates.username         : current.username,
+      topicPrefix:     updates.topicPrefix      !== undefined ? updates.topicPrefix      : current.topicPrefix,
+      password:        (updates.password && updates.password !== '••••••••') ? updates.password : current.password,
+      haDiscovery:     updates.haDiscovery      !== undefined ? updates.haDiscovery      : current.haDiscovery,
+      haDiscoveryPrefix: updates.haDiscoveryPrefix !== undefined ? updates.haDiscoveryPrefix : current.haDiscoveryPrefix,
+    };
+    await setSetting(req.db, 'mqtt', newSettings);
+    await connectMqtt(req.db);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/settings/mqtt/test', requireAuth, (req, res) => {
   const { brokerUrl, username, password } = req.body;
-  if (!brokerUrl) {
-    return res.status(400).json({ error: 'Missing brokerUrl' });
-  }
-
-  const url = brokerUrl.startsWith('mqtt://') || brokerUrl.startsWith('mqtts://') || brokerUrl.startsWith('ws://') || brokerUrl.startsWith('wss://')
-    ? brokerUrl
-    : `mqtt://${brokerUrl}`;
-
+  if (!brokerUrl) return res.status(400).json({ error: 'Missing brokerUrl' });
+  const url = /^mqtts?:\/\/|^wss?:\/\//.test(brokerUrl) ? brokerUrl : `mqtt://${brokerUrl}`;
   let responded = false;
   let testClient;
-
   const timeout = setTimeout(() => {
     if (!responded) {
       responded = true;
-      try { if (testClient) testClient.end(true); } catch (e) {}
+      try { if (testClient) testClient.end(true); } catch {}
       res.status(500).json({ error: 'Connection timed out after 5 seconds' });
     }
   }, 5000);
-
   try {
     const opts = { connectTimeout: 5000 };
     if (username) opts.username = username;
     if (password) opts.password = password;
-
     testClient = mqtt.connect(url, opts);
-
     testClient.on('connect', () => {
       if (!responded) {
-        // Try to publish a test message to verify authentication
-        const testTopic = `test/${Date.now()}`;
-        testClient.publish(testTopic, 'test', { qos: 0 }, (err) => {
+        testClient.publish(`test/${Date.now()}`, 'test', { qos: 0 }, err => {
           if (!responded) {
             if (err) {
-              responded = true;
-              clearTimeout(timeout);
-              testClient.end();
+              responded = true; clearTimeout(timeout); testClient.end();
               res.status(500).json({ error: 'Authentication failed: ' + err.message });
             } else {
-              // Wait a bit to ensure no delayed auth errors
               setTimeout(() => {
                 if (!responded) {
-                  responded = true;
-                  clearTimeout(timeout);
-                  testClient.end();
+                  responded = true; clearTimeout(timeout); testClient.end();
                   res.json({ success: true });
                 }
               }, 200);
@@ -1037,370 +928,317 @@ app.post('/api/settings/mqtt/test', requireAuth, (req, res) => {
         });
       }
     });
-
-    testClient.on('error', (err) => {
-      if (!responded) {
-        responded = true;
-        clearTimeout(timeout);
-        testClient.end();
-        res.status(500).json({ error: err.message });
-      }
+    testClient.on('error', err => {
+      if (!responded) { responded = true; clearTimeout(timeout); testClient.end(); res.status(500).json({ error: err.message }); }
     });
-
     testClient.on('close', () => {
-      if (!responded) {
-        responded = true;
-        clearTimeout(timeout);
-        res.status(500).json({ error: 'Connection closed unexpectedly (possible authentication failure)' });
-      }
+      if (!responded) { responded = true; clearTimeout(timeout); res.status(500).json({ error: 'Connection closed unexpectedly (possible authentication failure)' }); }
     });
   } catch (err) {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeout);
-      res.status(500).json({ error: err.message });
-    }
+    if (!responded) { responded = true; clearTimeout(timeout); res.status(500).json({ error: err.message }); }
   }
 });
 
-// ─── Sections API ───────────────────────────────────────────────────
+// ─── Sections API ────────────────────────────────────────────────────
 
-app.get('/api/sections', (req, res) => {
-  const sections = getSetting('sections', DEFAULT_SECTIONS);
-  res.json(sections);
+app.get('/api/sections', async (req, res) => {
+  try {
+    const db       = getDefaultDb();
+    const sections = await getSetting(db, 'sections', DEFAULT_SECTIONS);
+    res.json(sections);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Timer API ──────────────────────────────────────────────────────
-
-// POST /api/timer/start — start the timer (auth required)
-app.post('/api/timer/start', requireAuth, (req, res) => {
-  const { section } = req.body;
-  if (!section) {
-    return res.status(400).json({ error: 'Section is required' });
-  }
-
-  const startTime = new Date().toISOString();
-  
-  // Delete any existing timer (only one active at a time)
-  db.prepare('DELETE FROM active_timer').run();
-  
-  // Insert new timer
-  db.prepare('INSERT INTO active_timer (id, section, start_time) VALUES (1, ?, ?)').run(section, startTime);
-  
-  res.json({ ok: true, section, startedAt: startTime });
+app.put('/api/sections', requireAuth, async (req, res) => {
+  try {
+    const sections = req.body;
+    if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
+    await setSetting(req.db, 'sections', sections);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/timer/stop — stop the timer (auth required)
-app.post('/api/timer/stop', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
-  
-  if (!row) {
-    return res.status(404).json({ error: 'No active timer' });
-  }
+// ─── Timer API ───────────────────────────────────────────────────────
 
-  const endTime = new Date();
-  const startTime = new Date(row.start_time);
-  const durationMinutes = (endTime - startTime) / (1000 * 60);
-  
-  const { notes, plansReference, imageUrls } = req.body;
-
-  // Merge server-persisted image URLs with any sent from the client (deduplicated)
-  const serverImageUrls = JSON.parse(row.image_urls || '[]');
-  const mergedImageUrls = [...new Set([...serverImageUrls, ...(imageUrls || [])])];
-
-  // Create session ID
-  const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-  // Save session
-  db.prepare(`
-    INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, JSON.stringify(mergedImageUrls));
-  
-  // Delete active timer
-  db.prepare('DELETE FROM active_timer WHERE id = 1').run();
-  
-  // Publish updated MQTT stats
-  publishMqttStats();
-  
-  res.json({ 
-    ok: true, 
-    sessionId,
-    durationMinutes,
-    section: row.section
-  });
+app.post('/api/timer/start', requireAuth, async (req, res) => {
+  try {
+    const { section } = req.body;
+    if (!section) return res.status(400).json({ error: 'Section is required' });
+    const startTime = new Date().toISOString();
+    await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    await req.db.run(
+      'INSERT OR REPLACE INTO active_timer (tenant_id, section, start_time, image_urls) VALUES (?, ?, ?, ?)',
+      [req.tenantId, section, startTime, '[]']
+    );
+    res.json({ ok: true, section, startedAt: startTime });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/timer/status — get current timer status
-app.get('/api/timer/status', (req, res) => {
-  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
-  
-  if (!row) {
-    return res.json({ running: false });
-  }
-  
-  res.json({
-    running: true,
-    section: row.section,
-    startedAt: row.start_time,
-    imageUrls: JSON.parse(row.image_urls || '[]'),
-  });
+app.post('/api/timer/stop', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get('SELECT * FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'No active timer' });
+    const endTime        = new Date();
+    const startTime      = new Date(row.start_time);
+    const durationMinutes = (endTime - startTime) / (1000 * 60);
+    const { notes, plansReference, imageUrls } = req.body;
+    const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    await req.db.run(
+      `INSERT INTO sessions (id, tenant_id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, req.tenantId, row.section, row.start_time, endTime.toISOString(), durationMinutes, notes || '', plansReference || null, JSON.stringify(imageUrls || [])]
+    );
+    await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    publishMqttStats(req.db);
+    res.json({ ok: true, sessionId, durationMinutes, section: row.section });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/sections', requireAuth, (req, res) => {
-  const sections = req.body;
-  if (!Array.isArray(sections)) return res.status(400).json({ error: 'Expected array' });
-  setSetting('sections', sections);
-  res.json({ ok: true });
+app.get('/api/timer/status', async (req, res) => {
+  try {
+    const db  = getDefaultDb();
+    const row = await db.get('SELECT * FROM active_timer WHERE tenant_id = ?', [db.tenantId]);
+    if (!row) return res.json({ running: false });
+    res.json({ running: true, section: row.section, startedAt: row.start_time });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Export / Import ─────────────────────────────────────────────────
 
-// ─── Export / Import ────────────────────────────────────────────────
-
-// Multer for ZIP backup uploads (disk storage, up to 4 GB)
-const backupUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      const tmp = path.join(path.dirname(DB_PATH), 'tmp_import');
-      fs.mkdirSync(tmp, { recursive: true });
-      cb(null, tmp);
-    },
-    filename: (_req, _file, cb) => cb(null, `import-${Date.now()}.zip`),
-  }),
-  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
-});
-
-// GET /api/export  — streams a ZIP archive
 app.get('/api/export', requireAuth, async (req, res) => {
-  const includeSettings     = req.query.settings     !== '0';
-  const includeSessions     = req.query.sessions     !== '0';
-  const includeExpenses     = req.query.expenses     !== '0';
-  const includeBlog         = req.query.blog         !== '0';
-  const includeWorkPackages = req.query.workPackages !== '0';
-  const includeSignOffs     = req.query.signOffs     !== '0';
+  try {
+    const includeSettings     = req.query.settings     !== '0';
+    const includeSessions     = req.query.sessions     !== '0';
+    const includeExpenses     = req.query.expenses     !== '0';
+    const includeBlog         = req.query.blog         !== '0';
+    const includeWorkPackages = req.query.workPackages !== '0';
+    const includeSignOffs     = req.query.signOffs     !== '0';
 
-  const dateStr = new Date().toISOString().slice(0, 10);
-  res.setHeader('Content-Disposition', `attachment; filename="benchlog-backup-${dateStr}.zip"`);
-  res.setHeader('Content-Type', 'application/zip');
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Disposition', `attachment; filename="benchlog-backup-${dateStr}.zip"`);
+    res.setHeader('Content-Type', 'application/zip');
 
-  const archive = archiver('zip', { zlib: { level: 6 } });
-  archive.on('error', err => { console.error('[export] archive error:', err.message); res.end(); });
-  archive.pipe(res);
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', err => { console.error('[export] archive error:', err.message); res.end(); });
+    archive.pipe(res);
 
-  const data = { version: 2, exportedAt: new Date().toISOString() };
-  const addedFiles = new Set();
-  const filePromises = [];
-
-  const addFile = (store, url, archiveFolder) => {
-    if (!url || addedFiles.has(url)) return;
-    addedFiles.add(url);
-    const filename = path.basename(url);
-    filePromises.push(store.addToArchive(archive, url, `uploads/${archiveFolder}/${filename}`));
-  };
-
-  if (includeSettings) {
-    data.settings = {
-      general: getSetting('general', DEFAULT_GENERAL),
-      mqtt: getMqttSettings(),
-      sections: getSetting('sections', DEFAULT_SECTIONS),
-      flowchartStatus: getSetting('flowchart_status', {}),
+    const data       = { version: 2, exportedAt: new Date().toISOString() };
+    const addedFiles = new Set();
+    const addFile    = (dir, filename, archiveFolder) => {
+      if (!filename || addedFiles.has(filename)) return;
+      const fp = path.join(dir, filename);
+      if (fs.existsSync(fp)) { archive.file(fp, { name: `uploads/${archiveFolder}/${filename}` }); addedFiles.add(filename); }
     };
-  }
 
-  if (includeWorkPackages) {
-    data.workPackages = getSetting('flowchart_packages', {});
-  }
-
-  if (includeSessions) {
-    data.sessions = db.prepare('SELECT * FROM sessions ORDER BY start_time DESC').all().map(row => {
-      const imageUrls = JSON.parse(row.image_urls || '[]');
-      imageUrls.forEach(u => addFile(imageStore, u, 'sessions'));
-      return {
-        id: row.id, section: row.section,
-        startTime: row.start_time, endTime: row.end_time,
-        durationMinutes: row.duration_minutes, notes: row.notes,
-        plansReference: row.plans_reference, imageUrls,
+    if (includeSettings) {
+      data.settings = {
+        general:        await getSetting(req.db, 'general',           DEFAULT_GENERAL),
+        mqtt:           await getMqttSettings(req.db),
+        sections:       await getSetting(req.db, 'sections',          DEFAULT_SECTIONS),
+        flowchartStatus:await getSetting(req.db, 'flowchart_status',  {}),
       };
-    });
+    }
+    if (includeWorkPackages) data.workPackages = await getSetting(req.db, 'flowchart_packages', {});
+
+    if (includeSessions) {
+      const rows = await req.db.all(
+        'SELECT * FROM sessions WHERE tenant_id = ? ORDER BY start_time DESC',
+        [req.tenantId]
+      );
+      data.sessions = rows.map(row => {
+        const imageUrls = JSON.parse(row.image_urls || '[]');
+        imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+        return { id: row.id, section: row.section, startTime: row.start_time, endTime: row.end_time,
+          durationMinutes: row.duration_minutes, notes: row.notes, plansReference: row.plans_reference, imageUrls };
+      });
+    }
+
+    if (includeExpenses) {
+      const rows = await req.db.all(
+        'SELECT * FROM expenses WHERE tenant_id = ? ORDER BY date DESC',
+        [req.tenantId]
+      );
+      data.expenses = rows.map(row => {
+        const receiptUrls = JSON.parse(row.receipt_urls || '[]');
+        receiptUrls.forEach(u => addFile(RECEIPTS_DIR, path.basename(u), 'receipts'));
+        return expenseRow(row);
+      });
+    }
+
+    if (includeBlog) {
+      const rows = await req.db.all(
+        'SELECT * FROM blog_posts WHERE tenant_id = ? ORDER BY published_at DESC',
+        [req.tenantId]
+      );
+      data.blogPosts = rows.map(row => {
+        const imageUrls = JSON.parse(row.image_urls || '[]');
+        imageUrls.forEach(u => addFile(UPLOADS_DIR, path.basename(u), 'sessions'));
+        return { id: row.id, title: row.title, content: row.content, section: row.section,
+          imageUrls, publishedAt: row.published_at, updatedAt: row.updated_at };
+      });
+    }
+
+    if (includeSignOffs) {
+      const rows = await req.db.all(
+        'SELECT * FROM sign_offs WHERE tenant_id = ? ORDER BY date DESC',
+        [req.tenantId]
+      );
+      data.signOffs = rows.map(r => ({
+        id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
+        date: r.date, inspectorName: r.inspector_name,
+        inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
+        executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
+        comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
+      }));
+    }
+
+    const annRows = await req.db.all(
+      'SELECT * FROM image_annotations WHERE tenant_id = ?',
+      [req.tenantId]
+    );
+    data.annotations = annRows.map(r => ({
+      imageUrl: r.image_url, annotations: JSON.parse(r.annotations_json || '[]'), updatedAt: r.updated_at,
+    }));
+
+    archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
+    await archive.finalize();
+  } catch (err) {
+    console.error('[export]', err.message);
+    res.status(500).json({ error: err.message });
   }
-
-  if (includeExpenses) {
-    data.expenses = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all().map(row => {
-      const receiptUrls = JSON.parse(row.receipt_urls || '[]');
-      receiptUrls.forEach(u => addFile(receiptStore, u, 'receipts'));
-      return expenseRow(row);
-    });
-  }
-
-  if (includeBlog) {
-    data.blogPosts = db.prepare('SELECT * FROM blog_posts ORDER BY published_at DESC').all().map(row => {
-      const imageUrls = JSON.parse(row.image_urls || '[]');
-      imageUrls.forEach(u => addFile(imageStore, u, 'sessions'));
-      return {
-        id: row.id, title: row.title, content: row.content,
-        section: row.section, imageUrls,
-        publishedAt: row.published_at, updatedAt: row.updated_at,
-      };
-    });
-  }
-
-  if (includeSignOffs) data.signOffs = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC').all().map(r => ({
-    id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
-    date: r.date, inspectorName: r.inspector_name,
-    inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
-    executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
-    comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
-  }));
-
-  // Always include annotations (they belong to whichever images are exported)
-  data.annotations = db.prepare('SELECT * FROM image_annotations').all().map(r => ({
-    imageUrl: r.image_url,
-    annotations: JSON.parse(r.annotations_json || '[]'),
-    updatedAt: r.updated_at,
-  }));
-
-  archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
-  await Promise.all(filePromises); // wait for any async storage reads (R2) before finalising
-  await archive.finalize();
 });
 
-// Helper: apply settings from import data
-function applySettings(settings) {
-  if (settings.general) setSetting('general', settings.general);
+async function applySettings(db, settings) {
+  if (settings.general) await setSetting(db, 'general', settings.general);
   if (settings.mqtt) {
-    const cur = getMqttSettings();
-    const m = { ...settings.mqtt };
+    const cur = await getMqttSettings(db);
+    const m   = { ...settings.mqtt };
     if (!m.password) m.password = cur.password;
-    setSetting('mqtt', m);
+    await setSetting(db, 'mqtt', m);
   }
-  if (settings.sections)          setSetting('sections', settings.sections);
-  if (settings.flowchartStatus)   setSetting('flowchart_status', settings.flowchartStatus);
-  if (settings.flowchartPackages) setSetting('flowchart_packages', settings.flowchartPackages);
-  connectMqtt();
+  if (settings.sections)        await setSetting(db, 'sections',           settings.sections);
+  if (settings.flowchartStatus) await setSetting(db, 'flowchart_status',   settings.flowchartStatus);
+  if (settings.flowchartPackages) await setSetting(db, 'flowchart_packages', settings.flowchartPackages);
+  await connectMqtt(db);
 }
 
-// Helper: import structured data object into the DB
-function applyImportData(data, results) {
-  if (data.settings) { applySettings(data.settings); results.settingsImported = true; }
-  if (data.workPackages) { setSetting('flowchart_packages', data.workPackages); results.workPackagesImported = true; }
+async function applyImportData(db, tenantId, data, results) {
+  if (data.settings)     { await applySettings(db, data.settings); results.settingsImported = true; }
+  if (data.workPackages) { await setSetting(db, 'flowchart_packages', data.workPackages); results.workPackagesImported = true; }
 
   for (const session of (data.sessions || [])) {
-    const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(session.id);
+    const existing = await db.get('SELECT id FROM sessions WHERE id = ? AND tenant_id = ?', [session.id, tenantId]);
     const urls = JSON.stringify(session.imageUrls || []);
     if (existing) {
-      db.prepare(`UPDATE sessions SET section=?,start_time=?,end_time=?,duration_minutes=?,notes=?,plans_reference=?,image_urls=? WHERE id=?`)
-        .run(session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls, session.id);
+      await db.run(
+        `UPDATE sessions SET section=?,start_time=?,end_time=?,duration_minutes=?,notes=?,plans_reference=?,image_urls=? WHERE id=? AND tenant_id=?`,
+        [session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls, session.id, tenantId]
+      );
     } else {
-      db.prepare(`INSERT INTO sessions(id,section,start_time,end_time,duration_minutes,notes,plans_reference,image_urls) VALUES(?,?,?,?,?,?,?,?)`)
-        .run(session.id, session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls);
+      await db.run(
+        `INSERT INTO sessions(id,tenant_id,section,start_time,end_time,duration_minutes,notes,plans_reference,image_urls) VALUES(?,?,?,?,?,?,?,?,?)`,
+        [session.id, tenantId, session.section, session.startTime, session.endTime, session.durationMinutes, session.notes||'', session.plansReference||null, urls]
+      );
     }
     results.sessionsImported++;
   }
 
   for (const exp of (data.expenses || [])) {
-    const existing = db.prepare('SELECT id FROM expenses WHERE id = ?').get(exp.id);
+    const existing = await db.get('SELECT id FROM expenses WHERE id = ? AND tenant_id = ?', [exp.id, tenantId]);
     const rUrls = JSON.stringify(exp.receiptUrls || []);
     const tags  = JSON.stringify(exp.tags || []);
     if (existing) {
-      db.prepare(`UPDATE expenses SET date=?,amount=?,currency=?,exchange_rate=?,amount_home=?,description=?,vendor=?,category=?,assembly_section=?,part_number=?,is_certification_relevant=?,receipt_urls=?,notes=?,tags=?,link=?,updated_at=? WHERE id=?`)
-        .run(exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.updatedAt, exp.id);
+      await db.run(
+        `UPDATE expenses SET date=?,amount=?,currency=?,exchange_rate=?,amount_home=?,description=?,vendor=?,category=?,assembly_section=?,part_number=?,is_certification_relevant=?,receipt_urls=?,notes=?,tags=?,link=?,updated_at=? WHERE id=? AND tenant_id=?`,
+        [exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.updatedAt, exp.id, tenantId]
+      );
     } else {
-      db.prepare(`INSERT INTO expenses(id,date,amount,currency,exchange_rate,amount_home,description,vendor,category,assembly_section,part_number,is_certification_relevant,receipt_urls,notes,tags,link,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(exp.id, exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.createdAt, exp.updatedAt);
+      await db.run(
+        `INSERT INTO expenses(id,tenant_id,date,amount,currency,exchange_rate,amount_home,description,vendor,category,assembly_section,part_number,is_certification_relevant,receipt_urls,notes,tags,link,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [exp.id, tenantId, exp.date, exp.amount, exp.currency, exp.exchangeRate, exp.amountHome, exp.description, exp.vendor||'', exp.category, exp.assemblySection||'', exp.partNumber||'', exp.isCertificationRelevant?1:0, rUrls, exp.notes||'', tags, exp.link||'', exp.createdAt, exp.updatedAt]
+      );
     }
     results.expensesImported++;
   }
 
   for (const post of (data.blogPosts || [])) {
-    const existing = db.prepare('SELECT id FROM blog_posts WHERE id = ?').get(post.id);
+    const existing = await db.get('SELECT id FROM blog_posts WHERE id = ? AND tenant_id = ?', [post.id, tenantId]);
     const iUrls = JSON.stringify(post.imageUrls || []);
     if (existing) {
-      db.prepare(`UPDATE blog_posts SET title=?,content=?,section=?,image_urls=?,updated_at=? WHERE id=?`)
-        .run(post.title, post.content, post.section||'', iUrls, post.updatedAt, post.id);
+      await db.run(
+        `UPDATE blog_posts SET title=?,content=?,section=?,image_urls=?,updated_at=? WHERE id=? AND tenant_id=?`,
+        [post.title, post.content, post.section||'', iUrls, post.updatedAt, post.id, tenantId]
+      );
     } else {
-      db.prepare(`INSERT INTO blog_posts(id,title,content,section,image_urls,published_at,updated_at) VALUES(?,?,?,?,?,?,?)`)
-        .run(post.id, post.title, post.content, post.section||'', iUrls, post.publishedAt, post.updatedAt);
+      await db.run(
+        `INSERT INTO blog_posts(id,tenant_id,title,content,section,image_urls,published_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+        [post.id, tenantId, post.title, post.content, post.section||'', iUrls, post.publishedAt, post.updatedAt]
+      );
     }
     results.blogPostsImported++;
   }
 
   for (const s of (data.signOffs || [])) {
-    const existing = db.prepare('SELECT id FROM sign_offs WHERE id = ?').get(s.id);
+    const existing = await db.get('SELECT id FROM sign_offs WHERE id = ? AND tenant_id = ?', [s.id, tenantId]);
     if (existing) {
-      db.prepare(`UPDATE sign_offs SET package_id=?,package_label=?,section_id=?,date=?,inspector_name=?,inspection_completed=?,no_critical_issues=?,execution_satisfactory=?,rework_needed=?,comments=?,signature_png=? WHERE id=?`)
-        .run(s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.id);
+      await db.run(
+        `UPDATE sign_offs SET package_id=?,package_label=?,section_id=?,date=?,inspector_name=?,inspection_completed=?,no_critical_issues=?,execution_satisfactory=?,rework_needed=?,comments=?,signature_png=? WHERE id=? AND tenant_id=?`,
+        [s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.id, tenantId]
+      );
     } else {
-      db.prepare(`INSERT INTO sign_offs(id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(s.id, s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.createdAt);
+      await db.run(
+        `INSERT INTO sign_offs(id,tenant_id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [s.id, tenantId, s.packageId, s.packageLabel, s.sectionId||'', s.date, s.inspectorName||'', s.inspectionCompleted?1:0, s.noCriticalIssues?1:0, s.executionSatisfactory?1:0, s.reworkNeeded?1:0, s.comments||'', s.signaturePng, s.createdAt]
+      );
     }
     results.signOffsImported++;
   }
 
   for (const a of (data.annotations || [])) {
     if (!a.imageUrl) continue;
-    db.prepare(`
-      INSERT INTO image_annotations (image_url, annotations_json, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(image_url) DO UPDATE SET annotations_json = excluded.annotations_json, updated_at = excluded.updated_at
-    `).run(a.imageUrl, JSON.stringify(a.annotations || []), a.updatedAt || new Date().toISOString());
+    await db.run(
+      `INSERT OR REPLACE INTO image_annotations (image_url, tenant_id, annotations_json, updated_at) VALUES (?, ?, ?, ?)`,
+      [a.imageUrl, tenantId, JSON.stringify(a.annotations || []), a.updatedAt || new Date().toISOString()]
+    );
   }
 
-  publishMqttStats();
+  publishMqttStats(db);
 }
 
-// POST /api/import — accepts a .zip backup or legacy .json file
 app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, res) => {
   const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0, workPackagesImported: false, signOffsImported: 0 };
-
-  // Legacy JSON path (no file uploaded, body contains JSON)
   if (!req.file) {
     try {
       const data = req.body;
       if (!data || !data.version) return res.status(400).json({ error: 'No backup file provided' });
-      applyImportData(data, results);
+      await applyImportData(req.db, req.tenantId, data, results);
       return res.json({ ok: true, ...results });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
   }
-
-  const zipPath = req.file.path;
-  const extractDir = path.join(path.dirname(DB_PATH), `tmp_extract_${Date.now()}`);
-
+  const zipPath   = req.file.path;
+  const extractDir = path.join(DATA_DIR, `tmp_extract_${Date.now()}`);
   try {
-    // Extract ZIP
-    await fs.createReadStream(zipPath)
-      .pipe(unzipper.Extract({ path: extractDir }))
-      .promise();
-
-    // Parse data.json
+    await fs.createReadStream(zipPath).pipe(unzipper.Extract({ path: extractDir })).promise();
     const dataJsonPath = path.join(extractDir, 'data.json');
     if (!fs.existsSync(dataJsonPath)) throw new Error('Invalid backup: data.json not found in ZIP');
     const data = JSON.parse(fs.readFileSync(dataJsonPath, 'utf8'));
-
-    // Copy session images
     const sessDir = path.join(extractDir, 'uploads', 'sessions');
     if (fs.existsSync(sessDir)) {
       for (const file of fs.readdirSync(sessDir)) {
-        const buf = fs.readFileSync(path.join(sessDir, file));
-        const ct = file.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
-        await imageStore.save(file, buf, ct);
-        results.filesImported++;
+        const dst = path.join(UPLOADS_DIR, file);
+        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(sessDir, file), dst); results.filesImported++; }
       }
     }
-
-    // Copy receipts
     const recDir = path.join(extractDir, 'uploads', 'receipts');
     if (fs.existsSync(recDir)) {
       for (const file of fs.readdirSync(recDir)) {
-        const buf = fs.readFileSync(path.join(recDir, file));
-        const ct = file.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
-        await receiptStore.save(file, buf, ct);
-        results.filesImported++;
+        const dst = path.join(RECEIPTS_DIR, file);
+        if (!fs.existsSync(dst)) { fs.copyFileSync(path.join(recDir, file), dst); results.filesImported++; }
       }
     }
-
-    applyImportData(data, results);
+    await applyImportData(req.db, req.tenantId, data, results);
     res.json({ ok: true, ...results });
   } catch (err) {
     console.error('[import]', err.message);
@@ -1411,189 +1249,268 @@ app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, 
   }
 });
 
-// ─── Blog Posts API ─────────────────────────────────────────────────
+// ─── Admin Routes ────────────────────────────────────────────────────
 
-// GET /api/blog — list all blog posts + work sessions (with optional filters)
-app.get('/api/blog', (req, res) => {
-  const { section, year, month, plansSection } = req.query;
+app.get('/api/admin/stats', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const tables = ['sessions', 'blog_posts', 'expenses', 'expense_budgets', 'sign_offs', 'image_annotations', 'visitor_stats', 'pending_uploads'];
+    const stats = [];
+    for (const table of tables) {
+      try {
+        const row = await req.db.get(`SELECT COUNT(*) as count FROM ${table} WHERE tenant_id = ?`, [req.tenantId]);
+        stats.push({ table, count: Number(row?.count || 0) });
+      } catch { stats.push({ table, count: 0 }); }
+    }
+    res.json(stats);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
-  // ── Blog posts — skipped when filtering by plansSection (manual posts have no plans reference) ──
-  const blogPosts = plansSection ? [] : (() => {
-    let blogSql = 'SELECT * FROM blog_posts';
-    const blogConditions = [];
-    const blogParams = [];
-    if (section) { blogConditions.push('section = ?'); blogParams.push(section); }
-    if (year) { blogConditions.push("strftime('%Y', published_at) = ?"); blogParams.push(year); }
-    if (month) { blogConditions.push("strftime('%m', published_at) = ?"); blogParams.push(month.padStart(2, '0')); }
-    if (blogConditions.length > 0) blogSql += ' WHERE ' + blogConditions.join(' AND ');
-    return db.prepare(blogSql).all(...blogParams).map(row => ({
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const users = await listTenants();
+    res.json(users.map(u => ({
+      id: u.id, slug: u.slug, displayName: u.display_name,
+      email: u.email, role: u.role || 'user',
+      createdAt: u.created_at, isActive: u.is_active !== 0,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { slug, displayName, password, role, email } = req.body;
+    if (!slug || !displayName) return res.status(400).json({ error: 'slug and displayName are required' });
+    if (!password || password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+    const tenantId = uuidv4();
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    await createTenantRow({ id: tenantId, slug, display_name: displayName, email, role: role || 'user', password_hash: hash });
+    if (DB_BACKEND === 'sqlite') {
+      const sqlite = openSqlite(tenantDbPath(tenantId));
+      initTenantSchema(sqlite, tenantId);
+    }
+    res.json({ ok: true, id: tenantId });
+  } catch (err) {
+    if (err.message?.includes('UNIQUE') || err.message?.includes('unique') || err.message?.includes('duplicate')) {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { displayName, role, password, email } = req.body;
+    const fields = {};
+    if (displayName !== undefined) fields.display_name = displayName;
+    if (role !== undefined) fields.role = role;
+    if (email !== undefined) fields.email = email;
+    if (password) {
+      if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+      fields.password_hash = crypto.createHash('sha256').update(password).digest('hex');
+    }
+    if (Object.keys(fields).length === 0) return res.status(400).json({ error: 'No fields to update' });
+    await updateTenantRow(id, fields);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === req.tenantId) return res.status(400).json({ error: 'Cannot delete your own account' });
+    await deleteTenantRow(id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Blog Posts API ──────────────────────────────────────────────────
+
+app.get('/api/blog', async (req, res) => {
+  try {
+    const db = getDefaultDb();
+    const { section, year, month, plansSection } = req.query;
+
+    const blogPosts = plansSection ? [] : await (async () => {
+      let sql = 'SELECT * FROM blog_posts WHERE tenant_id = ?';
+      const params = [db.tenantId];
+      if (section)      { sql += ' AND section = ?';                            params.push(section); }
+      if (year)         { sql += ' AND substr(published_at, 1, 4) = ?';            params.push(year); }
+      if (month)        { sql += ' AND substr(published_at, 6, 2) = ?';            params.push(month.padStart(2, '0')); }
+      const rows = await db.all(sql, params);
+      return rows.map(row => ({
+        id: row.id, title: row.title, content: row.content, section: row.section,
+        imageUrls: JSON.parse(row.image_urls || '[]'),
+        publishedAt: row.published_at, updatedAt: row.updated_at, source: 'blog',
+      }));
+    })();
+
+    let sessSql = 'SELECT * FROM sessions WHERE tenant_id = ?';
+    const sessParams = [db.tenantId];
+    if (section)      { sessSql += ' AND section = ?';                           sessParams.push(section); }
+    if (year)         { sessSql += ' AND substr(start_time, 1, 4) = ?';             sessParams.push(year); }
+    if (month)        { sessSql += ' AND substr(start_time, 6, 2) = ?';             sessParams.push(month.padStart(2, '0')); }
+    if (plansSection) { sessSql += ' AND plans_reference LIKE ?';                sessParams.push(`%Section ${plansSection}%`); }
+    const sessRows     = await db.all(sessSql, sessParams);
+    const sectionConfigs = await getSetting(db, 'sections', DEFAULT_SECTIONS);
+    const sectionLabels  = {};
+    for (const s of sectionConfigs) sectionLabels[s.id] = s.label;
+
+    const sessionPosts = sessRows.map(row => {
+      const label = sectionLabels[row.section] || row.section;
+      const hours  = Math.floor(row.duration_minutes / 60);
+      const mins   = Math.round(row.duration_minutes % 60);
+      const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      return {
+        id: 'session-' + row.id, title: `${label} — Work Session (${durationStr})`,
+        content: row.notes || '', section: row.section,
+        imageUrls: JSON.parse(row.image_urls || '[]'),
+        publishedAt: row.start_time, updatedAt: row.start_time, source: 'session',
+        plansReference: row.plans_reference, durationMinutes: row.duration_minutes,
+      };
+    });
+
+    const all = [...blogPosts, ...sessionPosts].sort((a, b) =>
+      new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
+    );
+    res.json(all);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/blog/archive', async (req, res) => {
+  try {
+    const db = getDefaultDb();
+    const rows = await db.all(`
+      SELECT year, month, SUM(cnt) as count FROM (
+        SELECT substr(published_at, 1, 4) as year, substr(published_at, 6, 2) as month, COUNT(*) as cnt
+        FROM blog_posts WHERE tenant_id = ? GROUP BY year, month
+        UNION ALL
+        SELECT substr(start_time, 1, 4) as year, substr(start_time, 6, 2) as month, COUNT(*) as cnt
+        FROM sessions WHERE tenant_id = ? GROUP BY year, month
+      ) GROUP BY year, month ORDER BY year DESC, month DESC
+    `, [db.tenantId, db.tenantId]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/blog/:id', async (req, res) => {
+  try {
+    const db  = getDefaultDb();
+    const row = await db.get(
+      'SELECT * FROM blog_posts WHERE id = ? AND tenant_id = ?',
+      [req.params.id, db.tenantId]
+    );
+    if (!row) return res.status(404).json({ error: 'Post not found' });
+    res.json({
       id: row.id, title: row.title, content: row.content, section: row.section,
       imageUrls: JSON.parse(row.image_urls || '[]'),
-      publishedAt: row.published_at, updatedAt: row.updated_at, source: 'blog',
-    }));
-  })();
-
-  // ── Work sessions as posts ──
-  let sessSql = 'SELECT * FROM sessions';
-  const sessConditions = [];
-  const sessParams = [];
-  if (section) { sessConditions.push('section = ?'); sessParams.push(section); }
-  if (year) { sessConditions.push("strftime('%Y', start_time) = ?"); sessParams.push(year); }
-  if (month) { sessConditions.push("strftime('%m', start_time) = ?"); sessParams.push(month.padStart(2, '0')); }
-  if (plansSection) { sessConditions.push("plans_reference LIKE ?"); sessParams.push(`%Section ${plansSection}%`); }
-  if (sessConditions.length > 0) sessSql += ' WHERE ' + sessConditions.join(' AND ');
-
-  const sessRows = db.prepare(sessSql).all(...sessParams);
-  const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
-  const sectionLabels = {};
-  for (const s of sectionConfigs) sectionLabels[s.id] = s.label;
-
-  const sessionPosts = sessRows.map(row => {
-    const label = sectionLabels[row.section] || row.section;
-    const date = new Date(row.start_time);
-    const hours = Math.floor(row.duration_minutes / 60);
-    const mins = Math.round(row.duration_minutes % 60);
-    const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-    return {
-      id: 'session-' + row.id,
-      title: `${label} — Work Session (${durationStr})`,
-      content: row.notes || '',
-      section: row.section,
-      imageUrls: JSON.parse(row.image_urls || '[]'),
-      publishedAt: row.start_time,
-      updatedAt: row.start_time,
-      source: 'session',
-      plansReference: row.plans_reference,
-      durationMinutes: row.duration_minutes,
-    };
-  });
-
-  // ── Merge and sort ──
-  const all = [...blogPosts, ...sessionPosts].sort((a, b) =>
-    new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
-  );
-  res.json(all);
+      publishedAt: row.published_at, updatedAt: row.updated_at,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/blog/archive — get archive tree (years → months → count) from both tables
-app.get('/api/blog/archive', (req, res) => {
-  const rows = db.prepare(`
-    SELECT year, month, SUM(cnt) as count FROM (
-      SELECT strftime('%Y', published_at) as year, strftime('%m', published_at) as month, COUNT(*) as cnt
-      FROM blog_posts GROUP BY year, month
-      UNION ALL
-      SELECT strftime('%Y', start_time) as year, strftime('%m', start_time) as month, COUNT(*) as cnt
-      FROM sessions GROUP BY year, month
-    ) GROUP BY year, month
-    ORDER BY year DESC, month DESC
-  `).all();
-  res.json(rows);
+app.post('/api/blog', requireAuth, async (req, res) => {
+  try {
+    const { id, title, content, section, imageUrls, publishedAt } = req.body;
+    const postId = id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const now    = new Date().toISOString();
+    await req.db.run(
+      `INSERT INTO blog_posts (id, tenant_id, title, content, section, image_urls, published_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [postId, req.tenantId, title, content || '', section || null, JSON.stringify(imageUrls || []), publishedAt || now, now]
+    );
+    res.json({ ok: true, id: postId });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/blog/:id — get single post
-app.get('/api/blog/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM blog_posts WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Post not found' });
-  res.json({
-    id: row.id,
-    title: row.title,
-    content: row.content,
-    section: row.section,
-    imageUrls: JSON.parse(row.image_urls || '[]'),
-    publishedAt: row.published_at,
-    updatedAt: row.updated_at,
-  });
-});
-
-// POST /api/blog — create a blog post (auth required)
-app.post('/api/blog', requireAuth, (req, res) => {
-  const { id, title, content, section, imageUrls, publishedAt } = req.body;
-  const postId = id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO blog_posts (id, title, content, section, image_urls, published_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(postId, title, content || '', section || null, JSON.stringify(imageUrls || []), publishedAt || now, now);
-  res.json({ ok: true, id: postId });
-});
-
-// PUT /api/blog/:id — update a blog post (auth required)
-app.put('/api/blog/:id', requireAuth, (req, res) => {
-  const { id } = req.params;
-  const updates = req.body;
-  const fields = [];
-  const values = [];
-
-  if (updates.title !== undefined) { fields.push('title = ?'); values.push(updates.title); }
-  if (updates.content !== undefined) { fields.push('content = ?'); values.push(updates.content); }
-  if (updates.section !== undefined) { fields.push('section = ?'); values.push(updates.section); }
-  if (updates.imageUrls !== undefined) { fields.push('image_urls = ?'); values.push(JSON.stringify(updates.imageUrls)); }
-  if (updates.publishedAt !== undefined) { fields.push('published_at = ?'); values.push(updates.publishedAt); }
-  fields.push('updated_at = ?'); values.push(new Date().toISOString());
-
-  if (fields.length > 0) {
-    values.push(id);
-    db.prepare(`UPDATE blog_posts SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  }
-  res.json({ ok: true });
-});
-
-// DELETE /api/blog/:id — delete a blog post (auth required)
-app.delete('/api/blog/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT image_urls, content FROM blog_posts WHERE id = ?').get(req.params.id);
-  if (row) {
-    const imageUrls = JSON.parse(row.image_urls || '[]');
-    const contentMatches = [...(row.content || '').matchAll(/<img[^>]+src="([^"]+)"/g)].map(m => m[1]);
-    const allUrls = [...new Set([...imageUrls, ...contentMatches])].filter(Boolean);
-    for (const url of allUrls) {
-      imageStore.delete(url, true).catch(err => console.error('Failed to delete blog image:', err.message));
+app.put('/api/blog/:id', requireAuth, async (req, res) => {
+  try {
+    const { id }  = req.params;
+    const updates = req.body;
+    const fields  = [];
+    const values  = [];
+    if (updates.title      !== undefined) { fields.push('title = ?');       values.push(updates.title); }
+    if (updates.content    !== undefined) { fields.push('content = ?');     values.push(updates.content); }
+    if (updates.section    !== undefined) { fields.push('section = ?');     values.push(updates.section); }
+    if (updates.imageUrls  !== undefined) { fields.push('image_urls = ?');  values.push(JSON.stringify(updates.imageUrls)); }
+    if (updates.publishedAt !== undefined){ fields.push('published_at = ?');values.push(updates.publishedAt); }
+    fields.push('updated_at = ?'); values.push(new Date().toISOString());
+    if (fields.length > 0) {
+      values.push(id, req.tenantId);
+      await req.db.run(`UPDATE blog_posts SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`, values);
     }
-  }
-  db.prepare('DELETE FROM blog_posts WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Flowchart Status API ───────────────────────────────────────────
-// GET /api/flowchart-status — public read
-app.get('/api/flowchart-status', (req, res) => {
-  const data = getSetting('flowchart_status', {});
-  res.json(data);
+app.delete('/api/blog/:id', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get(
+      'SELECT image_urls, content FROM blog_posts WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId]
+    );
+    if (row) {
+      const imageUrls     = JSON.parse(row.image_urls || '[]');
+      const contentMatches = [...(row.content || '').matchAll(/<img[^>]+src="([^"]+)"/g)].map(m => m[1]);
+      const allUrls        = [...new Set([...imageUrls, ...contentMatches])].filter(u => u.startsWith('/files/'));
+      for (const url of allUrls) {
+        try {
+          const filename = path.basename(url);
+          const filePath = path.join(UPLOADS_DIR, filename);
+          if (filename && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          const tPath = path.join(UPLOADS_DIR, thumbFilename(filename));
+          if (fs.existsSync(tPath)) fs.unlinkSync(tPath);
+        } catch (err) { console.error('Failed to delete blog image file:', err.message); }
+      }
+    }
+    await req.db.run('DELETE FROM blog_posts WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT /api/flowchart-status — auth required, save all statuses
-app.put('/api/flowchart-status', requireAuth, (req, res) => {
-  setSetting('flowchart_status', req.body);
-  res.json({ ok: true });
+// ─── Flowchart Status API ─────────────────────────────────────────────
+
+app.get('/api/flowchart-status', async (req, res) => {
+  try {
+    const db   = getDefaultDb();
+    const data = await getSetting(db, 'flowchart_status', {});
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/flowchart-packages — public read
-app.get('/api/flowchart-packages', (req, res) => {
-  const data = getSetting('flowchart_packages', {});
-  res.json(data);
+app.put('/api/flowchart-status', requireAuth, async (req, res) => {
+  try {
+    await setSetting(req.db, 'flowchart_status', req.body);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT /api/flowchart-packages — auth required
-app.put('/api/flowchart-packages', requireAuth, (req, res) => {
-  if (typeof req.body !== 'object' || Array.isArray(req.body)) {
-    return res.status(400).json({ error: 'Expected object' });
-  }
-  setSetting('flowchart_packages', req.body);
-  res.json({ ok: true });
+app.get('/api/flowchart-packages', async (req, res) => {
+  try {
+    const db   = getDefaultDb();
+    const data = await getSetting(db, 'flowchart_packages', {});
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/templates/work-packages — list available template files
+app.put('/api/flowchart-packages', requireAuth, async (req, res) => {
+  try {
+    if (typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Expected object' });
+    }
+    await setSetting(req.db, 'flowchart_packages', req.body);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/templates/work-packages', (_req, res) => {
   try {
     const files = fs.readdirSync(TEMPLATES_WP_PATH)
       .filter(f => f.endsWith('.json'))
       .map(f => ({ filename: f, name: f.replace(/\.json$/i, '').replace(/-/g, ' ') }));
     res.json(files);
-  } catch {
-    res.json([]);
-  }
+  } catch { res.json([]); }
 });
 
-// GET /api/templates/work-packages/:filename — serve a single template file
 app.get('/api/templates/work-packages/:filename', (req, res) => {
   const filename = path.basename(req.params.filename);
   const filePath = path.join(TEMPLATES_WP_PATH, filename);
@@ -1603,7 +1520,7 @@ app.get('/api/templates/work-packages/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
-// ─── Expenses API ────────────────────────────────────────────────────
+// ─── Expenses API ─────────────────────────────────────────────────────
 
 const EXPENSE_CATEGORIES = ['airframe','engine','avionics','landing-gear','paint','tools','certification','insurance','hangar','other'];
 
@@ -1622,120 +1539,146 @@ function expenseRow(row) {
   };
 }
 
-// GET /api/expenses
-app.get('/api/expenses', requireAuth, (req, res) => {
-  const { category, section, year, month, certification } = req.query;
-  let sql = 'SELECT * FROM expenses WHERE 1=1';
-  const params = [];
-  if (category) { sql += ' AND category = ?'; params.push(category); }
-  if (section) { sql += ' AND assembly_section = ?'; params.push(section); }
-  if (year) { sql += " AND strftime('%Y', date) = ?"; params.push(year); }
-  if (month) { sql += " AND strftime('%m', date) = ?"; params.push(month.padStart(2, '0')); }
-  if (certification === '1') { sql += ' AND is_certification_relevant = 1'; }
-  sql += ' ORDER BY date DESC, created_at DESC';
-  res.json(db.prepare(sql).all(...params).map(expenseRow));
+app.get('/api/expenses', requireAuth, async (req, res) => {
+  try {
+    const { category, section, year, month, certification } = req.query;
+    let sql    = 'SELECT * FROM expenses WHERE tenant_id = ?';
+    const params = [req.tenantId];
+    if (category)        { sql += ' AND category = ?';                           params.push(category); }
+    if (section)         { sql += ' AND assembly_section = ?';                   params.push(section); }
+    if (year)            { sql += ' AND substr(date, 1, 4) = ?';                  params.push(year); }
+    if (month)           { sql += ' AND substr(date, 6, 2) = ?';                  params.push(month.padStart(2, '0')); }
+    if (certification === '1') { sql += ' AND is_certification_relevant = 1'; }
+    sql += ' ORDER BY date DESC, created_at DESC';
+    const rows = await req.db.all(sql, params);
+    res.json(rows.map(expenseRow));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/expenses/stats
-app.get('/api/expenses/stats', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM expenses').all();
-  const totalHome = rows.reduce((s, r) => s + r.amount_home, 0);
-  const byCategory = {};
-  const bySection = {};
-  for (const cat of EXPENSE_CATEGORIES) byCategory[cat] = 0;
-  for (const r of rows) {
-    byCategory[r.category] = (byCategory[r.category] || 0) + r.amount_home;
-    if (r.assembly_section) bySection[r.assembly_section] = (bySection[r.assembly_section] || 0) + r.amount_home;
-  }
-  const budgets = {};
-  for (const b of db.prepare('SELECT * FROM expense_budgets').all()) budgets[b.category] = b.budget_amount;
-  // Monthly totals for last 12 months
-  const monthly = db.prepare(`
-    SELECT strftime('%Y-%m', date) as month, SUM(amount_home) as total
-    FROM expenses GROUP BY month ORDER BY month DESC LIMIT 12
-  `).all();
-  res.json({ totalHome, byCategory, bySection, budgets, monthly, count: rows.length });
+app.get('/api/expenses/stats', requireAuth, async (req, res) => {
+  try {
+    const rows      = await req.db.all('SELECT * FROM expenses WHERE tenant_id = ?', [req.tenantId]);
+    const totalHome = rows.reduce((s, r) => s + r.amount_home, 0);
+    const byCategory = {};
+    const bySection  = {};
+    for (const cat of EXPENSE_CATEGORIES) byCategory[cat] = 0;
+    for (const r of rows) {
+      byCategory[r.category] = (byCategory[r.category] || 0) + r.amount_home;
+      if (r.assembly_section) bySection[r.assembly_section] = (bySection[r.assembly_section] || 0) + r.amount_home;
+    }
+    const budgetRows = await req.db.all('SELECT * FROM expense_budgets WHERE tenant_id = ?', [req.tenantId]);
+    const budgets    = {};
+    for (const b of budgetRows) budgets[b.category] = b.budget_amount;
+    const monthly = await req.db.all(
+      `SELECT substr(date, 1, 7) as month, SUM(amount_home) as total FROM expenses WHERE tenant_id = ? GROUP BY month ORDER BY month DESC LIMIT 12`,
+      [req.tenantId]
+    );
+    res.json({ totalHome, byCategory, bySection, budgets, monthly, count: rows.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/expenses/export/csv
-app.get('/api/expenses/export/csv', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM expenses ORDER BY date DESC').all();
-  const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes,Link';
-  const lines = rows.map(r => [
-    r.date, `"${(r.description||'').replace(/"/g,'""')}"`, `"${(r.vendor||'').replace(/"/g,'""')}"`,
-    r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_home.toFixed(2),
-    r.part_number || '', r.is_certification_relevant ? 'Yes' : 'No',
-    `"${(r.notes||'').replace(/"/g,'""')}"`, r.link || ''
-  ].join(','));
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="expenses.csv"');
-  res.send([header, ...lines].join('\n'));
+app.get('/api/expenses/export/csv', requireAuth, async (req, res) => {
+  try {
+    const rows   = await req.db.all('SELECT * FROM expenses WHERE tenant_id = ? ORDER BY date DESC', [req.tenantId]);
+    const header = 'Date,Description,Vendor,Category,Section,Amount,Currency,Exchange Rate,Amount EUR,Part Number,Certification Relevant,Notes,Link';
+    const lines  = rows.map(r => [
+      r.date, `"${(r.description||'').replace(/"/g,'""')}"`, `"${(r.vendor||'').replace(/"/g,'""')}"`,
+      r.category, r.assembly_section || '', r.amount, r.currency, r.exchange_rate, r.amount_home.toFixed(2),
+      r.part_number || '', r.is_certification_relevant ? 'Yes' : 'No',
+      `"${(r.notes||'').replace(/"/g,'""')}"`, r.link || ''
+    ].join(','));
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="expenses.csv"');
+    res.send([header, ...lines].join('\n'));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/expenses/budgets
-app.get('/api/expenses/budgets', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM expense_budgets').all();
-  const budgets = {};
-  for (const r of rows) budgets[r.category] = r.budget_amount;
-  res.json(budgets);
+app.get('/api/expenses/budgets', requireAuth, async (req, res) => {
+  try {
+    const rows    = await req.db.all('SELECT * FROM expense_budgets WHERE tenant_id = ?', [req.tenantId]);
+    const budgets = {};
+    for (const r of rows) budgets[r.category] = r.budget_amount;
+    res.json(budgets);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT /api/expenses/budgets
-app.put('/api/expenses/budgets', requireAuth, (req, res) => {
-  const budgets = req.body;
-  const upsert = db.prepare('INSERT OR REPLACE INTO expense_budgets (category, budget_amount) VALUES (?, ?)');
-  const del = db.prepare('DELETE FROM expense_budgets WHERE category = ?');
-  for (const cat of EXPENSE_CATEGORIES) {
-    if (budgets[cat] != null && budgets[cat] > 0) upsert.run(cat, budgets[cat]);
-    else del.run(cat);
-  }
-  res.json({ ok: true });
+app.put('/api/expenses/budgets', requireAuth, async (req, res) => {
+  try {
+    const budgets = req.body;
+    for (const cat of EXPENSE_CATEGORIES) {
+      if (budgets[cat] != null && budgets[cat] > 0) {
+        await req.db.run(
+          'INSERT OR REPLACE INTO expense_budgets (category, tenant_id, budget_amount) VALUES (?, ?, ?)',
+          [cat, req.tenantId, budgets[cat]]
+        );
+      } else {
+        await req.db.run(
+          'DELETE FROM expense_budgets WHERE category = ? AND tenant_id = ?',
+          [cat, req.tenantId]
+        );
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/expenses/:id
-app.get('/api/expenses/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  res.json(expenseRow(row));
+app.get('/api/expenses/:id', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get('SELECT * FROM expenses WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json(expenseRow(row));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/expenses
-app.post('/api/expenses', requireAuth, (req, res) => {
-  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
-  if (!date || !amount || !description) return res.status(400).json({ error: 'date, amount and description are required' });
-  const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const rate = exchangeRate || 1.0;
-  const now = new Date().toISOString();
-  db.prepare(`INSERT INTO expenses (id, date, amount, currency, exchange_rate, amount_home, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, link, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), link || '', now, now);
-  res.json({ ok: true, id });
+app.post('/api/expenses', requireAuth, async (req, res) => {
+  try {
+    const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
+    if (!date || !amount || !description) return res.status(400).json({ error: 'date, amount and description are required' });
+    const id   = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const rate = exchangeRate || 1.0;
+    const now  = new Date().toISOString();
+    await req.db.run(
+      `INSERT INTO expenses (id, tenant_id, date, amount, currency, exchange_rate, amount_home, description, vendor, category, assembly_section, part_number, is_certification_relevant, receipt_urls, notes, tags, link, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.tenantId, date, amount, currency || 'EUR', rate, amount * rate, description, vendor || '', category || 'other', assemblySection || '', partNumber || '', isCertificationRelevant ? 1 : 0, JSON.stringify(receiptUrls || []), notes || '', JSON.stringify(tags || []), link || '', now, now]
+    );
+    res.json({ ok: true, id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT /api/expenses/:id
-app.put('/api/expenses/:id', requireAuth, (req, res) => {
-  const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
-  const existing = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Not found' });
-  const rate = exchangeRate ?? existing.exchange_rate;
-  const amt = amount ?? existing.amount;
-  db.prepare(`UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_home=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, link=?, updated_at=? WHERE id=?`)
-    .run(date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate, description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category, assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number, isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant, JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)), notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), link ?? existing.link ?? '', new Date().toISOString(), req.params.id);
-  res.json({ ok: true });
+app.put('/api/expenses/:id', requireAuth, async (req, res) => {
+  try {
+    const existing = await req.db.get('SELECT * FROM expenses WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const { date, amount, currency, exchangeRate, description, vendor, category, assemblySection, partNumber, isCertificationRelevant, receiptUrls, notes, tags, link } = req.body;
+    const rate = exchangeRate ?? existing.exchange_rate;
+    const amt  = amount      ?? existing.amount;
+    await req.db.run(
+      `UPDATE expenses SET date=?, amount=?, currency=?, exchange_rate=?, amount_home=?, description=?, vendor=?, category=?, assembly_section=?, part_number=?, is_certification_relevant=?, receipt_urls=?, notes=?, tags=?, link=?, updated_at=? WHERE id=? AND tenant_id=?`,
+      [date ?? existing.date, amt, currency ?? existing.currency, rate, amt * rate,
+       description ?? existing.description, vendor ?? existing.vendor, category ?? existing.category,
+       assemblySection ?? existing.assembly_section, partNumber ?? existing.part_number,
+       isCertificationRelevant != null ? (isCertificationRelevant ? 1 : 0) : existing.is_certification_relevant,
+       JSON.stringify(receiptUrls ?? JSON.parse(existing.receipt_urls)),
+       notes ?? existing.notes, JSON.stringify(tags ?? JSON.parse(existing.tags)), link ?? existing.link ?? '',
+       new Date().toISOString(), req.params.id, req.tenantId]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE /api/expenses/:id
-app.delete('/api/expenses/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT receipt_urls FROM expenses WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  for (const url of JSON.parse(row.receipt_urls || '[]')) {
-    receiptStore.delete(url).catch(() => {});
-  }
-  db.prepare('DELETE FROM expenses WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
+app.delete('/api/expenses/:id', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get('SELECT receipt_urls FROM expenses WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    for (const url of JSON.parse(row.receipt_urls || '[]')) {
+      try { const fp = path.join(RECEIPTS_DIR, path.basename(url)); if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+    }
+    await req.db.run('DELETE FROM expenses WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/expenses/upload — upload receipts (images + PDFs)
 app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), async (req, res) => {
   try {
     const urls = [];
@@ -1751,50 +1694,46 @@ app.post('/api/expenses/upload', requireAuth, receiptUpload.array('files', 10), 
         receiptUrl = await receiptStore.save(filename, buf);
       }
       urls.push(receiptUrl);
-      db.prepare('INSERT OR REPLACE INTO pending_uploads (url, uploaded_at) VALUES (?, ?)').run(receiptUrl, Date.now());
+      await req.db.run('INSERT OR REPLACE INTO pending_uploads (url, tenant_id, uploaded_at) VALUES (?, ?, ?)', [receiptUrl, req.tenantId, Date.now()]);
     }
     res.json({ urls });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE /api/expenses/upload
 app.delete('/api/expenses/upload', requireAuth, async (req, res) => {
   const { url } = req.body;
   try {
     if (url) {
       await receiptStore.delete(url);
-      db.prepare('DELETE FROM pending_uploads WHERE url = ?').run(url);
+      await req.db.run('DELETE FROM pending_uploads WHERE url = ? AND tenant_id = ?', [url, req.tenantId]);
     }
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Factory Reset ───────────────────────────────────────────────────
+// ─── Factory Reset ────────────────────────────────────────────────────
+
 app.post('/api/reset', requireAuth, async (req, res) => {
   try {
-    // Delete all user data from the database
-    db.prepare('DELETE FROM sessions').run();
-    db.prepare('DELETE FROM blog_posts').run();
-    db.prepare('DELETE FROM expenses').run();
-    db.prepare('DELETE FROM sign_offs').run();
-    db.prepare('DELETE FROM image_annotations').run();
-    db.prepare('DELETE FROM active_timer').run();
-    db.prepare('DELETE FROM pending_uploads').run();
-    // Reset settings to defaults (keep password hash)
-    db.prepare("DELETE FROM settings WHERE key != 'password_hash'").run();
-    // Delete all uploaded files from whichever storage backend is active
-    await Promise.all([imageStore.deleteAll(), receiptStore.deleteAll()]);
+    await req.db.run('DELETE FROM sessions WHERE tenant_id = ?',           [req.tenantId]);
+    await req.db.run('DELETE FROM blog_posts WHERE tenant_id = ?',         [req.tenantId]);
+    await req.db.run('DELETE FROM expenses WHERE tenant_id = ?',           [req.tenantId]);
+    await req.db.run('DELETE FROM sign_offs WHERE tenant_id = ?',          [req.tenantId]);
+    await req.db.run('DELETE FROM image_annotations WHERE tenant_id = ?',  [req.tenantId]);
+    await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?',       [req.tenantId]);
+    await req.db.run("DELETE FROM settings WHERE key != ? AND tenant_id = ?", ['auth_password_hash', req.tenantId]);
+    [UPLOADS_DIR, RECEIPTS_DIR].forEach(dir => {
+      if (fs.existsSync(dir)) {
+        for (const file of fs.readdirSync(dir)) {
+          try { fs.unlinkSync(path.join(dir, file)); } catch {}
+        }
+      }
+    });
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── OpenGraph meta tag injection ───────────────────────────────────
+// ─── OpenGraph meta tag injection ────────────────────────────────────
 const distIndexPath = path.join(DIST_PATH, 'index.html');
 
 function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
@@ -1802,7 +1741,7 @@ function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
     `<meta property="og:type" content="website" />`,
     `<meta property="og:title" content="${title}" />`,
     `<meta property="og:description" content="${description}" />`,
-    pageUrl ? `<meta property="og:url" content="${pageUrl}" />` : '',
+    pageUrl  ? `<meta property="og:url" content="${pageUrl}" />` : '',
     imageUrl ? `<meta property="og:image" content="${imageUrl}" />` : '',
     `<meta name="twitter:card" content="${imageUrl ? 'summary_large_image' : 'summary'}" />`,
     `<meta name="twitter:title" content="${title}" />`,
@@ -1814,340 +1753,366 @@ function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
 
 function baseUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const host  = req.headers['x-forwarded-host']  || req.get('host');
   return `${proto}://${host}`;
 }
 
-app.get('/blog', (req, res) => {
+app.get('/blog', async (req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
-  const html = fs.readFileSync(distIndexPath, 'utf8');
-  const general = getSetting('general', DEFAULT_GENERAL);
-  const projectName = general.projectName || 'Build Tracker';
-
-  // Get total hours and latest session image
-  const totalRow = db.prepare(`SELECT COALESCE(SUM(duration_minutes),0) as total FROM sessions`).get();
-  const totalHours = Math.round((totalRow?.total || 0) / 60 * 10) / 10;
-  const latestSession = db.prepare(`SELECT image_urls FROM sessions WHERE image_urls != '[]' ORDER BY start_time DESC LIMIT 1`).get();
-  const imageUrls = latestSession ? JSON.parse(latestSession.image_urls || '[]') : [];
-  const firstImage = imageUrls[0];
-  const base = baseUrl(req);
-  const imageUrl = firstImage ? `${base}${firstImage}` : null;
-
-  const injected = injectOgTags(html, {
-    title: `${projectName} — Build Journal`,
-    description: `${totalHours}h logged so far. Follow along on this RV-10 homebuilt aircraft build.`,
-    imageUrl,
-    pageUrl: `${base}/blog`,
-  });
-  res.type('html').send(injected);
-});
-
-app.get('/blog/:postId', (req, res) => {
-  if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
-  const html = fs.readFileSync(distIndexPath, 'utf8');
-  const general = getSetting('general', DEFAULT_GENERAL);
-  const projectName = general.projectName || 'Build Tracker';
-  const base = baseUrl(req);
-  const { postId } = req.params;
-
-  let title, description, imageUrl;
-
-  if (postId.startsWith('session-')) {
-    const sessionId = postId.replace('session-', '');
-    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-    if (row) {
-      const sectionConfigs = getSetting('sections', DEFAULT_SECTIONS);
-      const label = (sectionConfigs.find(s => s.id === row.section)?.label) || row.section;
-      const hours = Math.floor(row.duration_minutes / 60);
-      const mins = Math.round(row.duration_minutes % 60);
-      const dur = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-      title = `${label} — Work Session (${dur})`;
-      description = row.notes || `${dur} build session logged on ${new Date(row.start_time).toLocaleDateString()}`;
-      const imgs = JSON.parse(row.image_urls || '[]');
-      imageUrl = imgs[0] ? `${base}${imgs[0]}` : null;
-    }
-  } else {
-    const row = db.prepare('SELECT * FROM blog_posts WHERE id = ?').get(postId);
-    if (row) {
-      title = row.title;
-      const text = row.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      description = text.slice(0, 200) || `Build journal entry — ${projectName}`;
-      const imgs = JSON.parse(row.image_urls || '[]');
-      // Also check for inline images in content
-      const match = row.content.match(/src="(\/files\/[^"]+)"/);
-      imageUrl = imgs[0] ? `${base}${imgs[0]}` : match ? `${base}${match[1]}` : null;
-    }
-  }
-
-  if (!title) {
-    // Post not found — fall back to generic blog tags
-    return res.type('html').send(injectOgTags(html, {
+  try {
+    const html    = fs.readFileSync(distIndexPath, 'utf8');
+    const db      = getDefaultDb();
+    const general = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const projectName = general.projectName || 'Build Tracker';
+    const totalRow    = await db.get(
+      `SELECT COALESCE(SUM(duration_minutes),0) as total FROM sessions WHERE tenant_id = ?`,
+      [db.tenantId]
+    );
+    const totalHours = Math.round((totalRow?.total || 0) / 60 * 10) / 10;
+    const latestSession = await db.get(
+      `SELECT image_urls FROM sessions WHERE tenant_id = ? AND image_urls != '[]' ORDER BY start_time DESC LIMIT 1`,
+      [db.tenantId]
+    );
+    const imageUrls = latestSession ? JSON.parse(latestSession.image_urls || '[]') : [];
+    const base      = baseUrl(req);
+    const imageUrl  = imageUrls[0] ? `${base}${imageUrls[0]}` : null;
+    const injected  = injectOgTags(html, {
       title: `${projectName} — Build Journal`,
-      description: 'Follow along on this RV-10 homebuilt aircraft build.',
-      imageUrl: null, pageUrl: `${base}/blog`,
+      description: `${totalHours}h logged so far. Follow along on this RV-10 homebuilt aircraft build.`,
+      imageUrl, pageUrl: `${base}/blog`,
+    });
+    res.type('html').send(injected);
+  } catch { res.sendFile(distIndexPath); }
+});
+
+app.get('/blog/:postId', async (req, res) => {
+  if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
+  try {
+    const html    = fs.readFileSync(distIndexPath, 'utf8');
+    const db      = getDefaultDb();
+    const general = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const projectName = general.projectName || 'Build Tracker';
+    const base    = baseUrl(req);
+    const { postId } = req.params;
+    let title, description, imageUrl;
+
+    if (postId.startsWith('session-')) {
+      const sessionId = postId.replace('session-', '');
+      const row       = await db.get('SELECT * FROM sessions WHERE id = ? AND tenant_id = ?', [sessionId, db.tenantId]);
+      if (row) {
+        const sectionConfigs = await getSetting(db, 'sections', DEFAULT_SECTIONS);
+        const label = (sectionConfigs.find(s => s.id === row.section)?.label) || row.section;
+        const hours = Math.floor(row.duration_minutes / 60);
+        const mins  = Math.round(row.duration_minutes % 60);
+        const dur   = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+        title       = `${label} — Work Session (${dur})`;
+        description = row.notes || `${dur} build session logged on ${new Date(row.start_time).toLocaleDateString()}`;
+        const imgs  = JSON.parse(row.image_urls || '[]');
+        imageUrl    = imgs[0] ? `${base}${imgs[0]}` : null;
+      }
+    } else {
+      const row = await db.get('SELECT * FROM blog_posts WHERE id = ? AND tenant_id = ?', [postId, db.tenantId]);
+      if (row) {
+        title = row.title;
+        const text = row.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        description = text.slice(0, 200) || `Build journal entry — ${projectName}`;
+        const imgs  = JSON.parse(row.image_urls || '[]');
+        const match = row.content.match(/src="(\/files\/[^"]+)"/);
+        imageUrl    = imgs[0] ? `${base}${imgs[0]}` : match ? `${base}${match[1]}` : null;
+      }
+    }
+
+    if (!title) {
+      return res.type('html').send(injectOgTags(html, {
+        title: `${projectName} — Build Journal`,
+        description: 'Follow along on this RV-10 homebuilt aircraft build.',
+        imageUrl: null, pageUrl: `${base}/blog`,
+      }));
+    }
+    res.type('html').send(injectOgTags(html, {
+      title: `${title} — ${projectName}`, description, imageUrl,
+      pageUrl: `${base}/blog/${postId}`,
     }));
-  }
-
-  res.type('html').send(injectOgTags(html, {
-    title: `${title} — ${projectName}`,
-    description,
-    imageUrl,
-    pageUrl: `${base}/blog/${postId}`,
-  }));
+  } catch { res.sendFile(distIndexPath); }
 });
 
-// ─── Sign-offs ───────────────────────────────────────────────────────
-app.get('/api/signoffs', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM sign_offs ORDER BY date DESC, created_at DESC').all();
-  res.json(rows.map(r => ({
-    id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
-    date: r.date, inspectorName: r.inspector_name,
-    inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
-    executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
-    comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
-  })));
+// ─── Sign-offs ────────────────────────────────────────────────────────
+
+app.get('/api/signoffs', requireAuth, async (req, res) => {
+  try {
+    const rows = await req.db.all(
+      'SELECT * FROM sign_offs WHERE tenant_id = ? ORDER BY date DESC, created_at DESC',
+      [req.tenantId]
+    );
+    res.json(rows.map(r => ({
+      id: r.id, packageId: r.package_id, packageLabel: r.package_label, sectionId: r.section_id,
+      date: r.date, inspectorName: r.inspector_name,
+      inspectionCompleted: !!r.inspection_completed, noCriticalIssues: !!r.no_critical_issues,
+      executionSatisfactory: !!r.execution_satisfactory, reworkNeeded: !!r.rework_needed,
+      comments: r.comments, signaturePng: r.signature_png, createdAt: r.created_at,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/signoffs', requireAuth, (req, res) => {
-  const { id, packageId, packageLabel, sectionId, date, inspectorName,
-    inspectionCompleted, noCriticalIssues, executionSatisfactory, reworkNeeded,
-    comments, signaturePng } = req.body;
-  if (!packageId || !packageLabel || !date || !signaturePng) return res.status(400).json({ error: 'Missing required fields' });
-  db.prepare(`INSERT INTO sign_offs (id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id || uuidv4(), packageId, packageLabel, sectionId || '', date,
-      inspectorName || '', inspectionCompleted?1:0, noCriticalIssues?1:0,
-      executionSatisfactory?1:0, reworkNeeded?1:0, comments || '', signaturePng);
-  res.json({ ok: true });
+app.post('/api/signoffs', requireAuth, async (req, res) => {
+  try {
+    const { id, packageId, packageLabel, sectionId, date, inspectorName,
+      inspectionCompleted, noCriticalIssues, executionSatisfactory, reworkNeeded,
+      comments, signaturePng } = req.body;
+    if (!packageId || !packageLabel || !date || !signaturePng) return res.status(400).json({ error: 'Missing required fields' });
+    await req.db.run(
+      `INSERT INTO sign_offs (id,tenant_id,package_id,package_label,section_id,date,inspector_name,inspection_completed,no_critical_issues,execution_satisfactory,rework_needed,comments,signature_png) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id || uuidv4(), req.tenantId, packageId, packageLabel, sectionId || '', date,
+       inspectorName || '', inspectionCompleted?1:0, noCriticalIssues?1:0,
+       executionSatisfactory?1:0, reworkNeeded?1:0, comments || '', signaturePng]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/signoffs/:id', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM sign_offs WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
+app.delete('/api/signoffs/:id', requireAuth, async (req, res) => {
+  try {
+    await req.db.run('DELETE FROM sign_offs WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Image Annotations ───────────────────────────────────────────────
-app.get('/api/annotations', (req, res) => {
-  const imageUrl = req.query.url;
-  if (!imageUrl) return res.json({ annotations: [] });
-  const row = db.prepare('SELECT annotations_json FROM image_annotations WHERE image_url = ?').get(imageUrl);
-  res.json({ annotations: row ? JSON.parse(row.annotations_json) : [] });
+// ─── Image Annotations ────────────────────────────────────────────────
+
+app.get('/api/annotations', async (req, res) => {
+  try {
+    const imageUrl = req.query.url;
+    if (!imageUrl) return res.json({ annotations: [] });
+    const db  = getDefaultDb();
+    const row = await db.get(
+      'SELECT annotations_json FROM image_annotations WHERE image_url = ? AND tenant_id = ?',
+      [imageUrl, db.tenantId]
+    );
+    res.json({ annotations: row ? JSON.parse(row.annotations_json) : [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/annotations', requireAuth, (req, res) => {
-  const imageUrl = req.query.url;
-  if (!imageUrl) return res.status(400).json({ error: 'url query param required' });
-  const { annotations = [] } = req.body;
-  db.prepare(`
-    INSERT INTO image_annotations (image_url, annotations_json, updated_at)
-    VALUES (?, ?, datetime('now'))
-    ON CONFLICT(image_url) DO UPDATE SET annotations_json = excluded.annotations_json, updated_at = excluded.updated_at
-  `).run(imageUrl, JSON.stringify(annotations));
-  res.json({ ok: true });
+app.put('/api/annotations', requireAuth, async (req, res) => {
+  try {
+    const imageUrl = req.query.url;
+    if (!imageUrl) return res.status(400).json({ error: 'url query param required' });
+    const { annotations = [] } = req.body;
+    await req.db.run(
+      `INSERT OR REPLACE INTO image_annotations (image_url, tenant_id, annotations_json, updated_at) VALUES (?, ?, ?, datetime('now'))`,
+      [imageUrl, req.tenantId, JSON.stringify(annotations)]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Visitor tracking ────────────────────────────────────────────────
-app.post('/api/track', (req, res) => {
-  // Skip bots
+// ─── Visitor tracking ─────────────────────────────────────────────────
+
+app.post('/api/track', async (req, res) => {
   const ua = (req.headers['user-agent'] || '').toLowerCase();
   if (/bot|crawler|spider|scraper|headless|prerender|curl|wget/.test(ua)) return res.json({ ok: true });
-
-  const country = ((req.headers['cf-ipcountry'] || 'XX') + '').toUpperCase().slice(0, 2);
-  const { path: pagePath = '/blog', postId = '', referrer: clientReferrer = '' } = req.body || {};
-
-  // Prefer client-sent referrer (document.referrer, captures external source even for SPA nav)
-  // Fall back to HTTP Referer header for direct loads
-  let referrer = '';
-  const refSource = clientReferrer || req.headers['referer'] || '';
   try {
-    if (refSource) {
-      const url = new URL(refSource);
-      const host = (req.headers['host'] || '').split(':')[0];
-      if (host && !url.hostname.endsWith(host)) referrer = url.hostname;
-    }
-  } catch {}
-
-  db.prepare('INSERT INTO visitor_stats (ts, path, country, referrer, post_id) VALUES (?, ?, ?, ?, ?)')
-    .run(Date.now(), pagePath, country, referrer, postId || '');
-  res.json({ ok: true });
+    const db      = getDefaultDb();
+    const country = ((req.headers['cf-ipcountry'] || 'XX') + '').toUpperCase().slice(0, 2);
+    const { path: pagePath = '/blog', postId = '', referrer: clientReferrer = '' } = req.body || {};
+    let referrer = '';
+    const refSource = clientReferrer || req.headers['referer'] || '';
+    try {
+      if (refSource) {
+        const url  = new URL(refSource);
+        const host = (req.headers['host'] || '').split(':')[0];
+        if (host && !url.hostname.endsWith(host)) referrer = url.hostname;
+      }
+    } catch {}
+    await db.run(
+      'INSERT INTO visitor_stats (tenant_id, ts, path, country, referrer, post_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [db.tenantId, Date.now(), pagePath, country, referrer, postId || '']
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Visitor stats ────────────────────────────────────────────────────
-app.get('/api/stats/visitors', requireAuth, (req, res) => {
-  const days = Math.min(parseInt(req.query.days) || 30, 365);
-  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+app.get('/api/stats/visitors', requireAuth, async (req, res) => {
+  try {
+    const days   = Math.min(parseInt(req.query.days) || 30, 365);
+    const since  = Date.now() - days * 24 * 60 * 60 * 1000;
+    const tid    = req.tenantId;
 
-  const total = db.prepare('SELECT COUNT(*) as n FROM visitor_stats').get().n;
-  const totalPeriod = db.prepare('SELECT COUNT(*) as n FROM visitor_stats WHERE ts > ?').get(since).n;
+    const totalRow        = await req.db.get('SELECT COUNT(*) as n FROM visitor_stats WHERE tenant_id = ?', [tid]);
+    const totalPeriodRow  = await req.db.get('SELECT COUNT(*) as n FROM visitor_stats WHERE tenant_id = ? AND ts > ?', [tid, since]);
 
-  const countries = db.prepare(`
-    SELECT country, COUNT(*) as count FROM visitor_stats
-    WHERE ts > ? AND country NOT IN ('XX','T1')
-    GROUP BY country ORDER BY count DESC LIMIT 20
-  `).all(since);
-
-  const referrers = db.prepare(`
-    SELECT referrer as domain, COUNT(*) as count FROM visitor_stats
-    WHERE ts > ? AND referrer != ''
-    GROUP BY referrer ORDER BY count DESC LIMIT 20
-  `).all(since);
-
-  const topPosts = db.prepare(`
-    SELECT v.post_id, b.title, COUNT(*) as count
-    FROM visitor_stats v
-    LEFT JOIN blog_posts b ON b.id = v.post_id
-    WHERE v.ts > ? AND v.post_id != ''
-    GROUP BY v.post_id ORDER BY count DESC LIMIT 10
-  `).all(since);
-
-  const daily = db.prepare(`
-    SELECT date(ts / 1000, 'unixepoch') as date, COUNT(*) as count
-    FROM visitor_stats WHERE ts > ?
-    GROUP BY date ORDER BY date ASC
-  `).all(since);
-
-  res.json({ total, totalPeriod, countries, referrers, topPosts, daily, days });
+    const countries = await req.db.all(
+      `SELECT country, COUNT(*) as count FROM visitor_stats WHERE tenant_id = ? AND ts > ? AND country NOT IN ('XX','T1') GROUP BY country ORDER BY count DESC LIMIT 20`,
+      [tid, since]
+    );
+    const referrers = await req.db.all(
+      `SELECT referrer as domain, COUNT(*) as count FROM visitor_stats WHERE tenant_id = ? AND ts > ? AND referrer != '' GROUP BY referrer ORDER BY count DESC LIMIT 20`,
+      [tid, since]
+    );
+    const topPosts = await req.db.all(
+      `SELECT v.post_id, MIN(b.title) as title, COUNT(*) as count FROM visitor_stats v LEFT JOIN blog_posts b ON b.id = v.post_id AND b.tenant_id = ? WHERE v.tenant_id = ? AND v.ts > ? AND v.post_id != '' GROUP BY v.post_id ORDER BY count DESC LIMIT 10`,
+      [tid, tid, since]
+    );
+    const daily = await req.db.all(
+      DB_BACKEND === 'postgres'
+        ? `SELECT to_char(to_timestamp(ts / 1000.0), 'YYYY-MM-DD') as date, COUNT(*) as count FROM visitor_stats WHERE tenant_id = ? AND ts > ? GROUP BY date ORDER BY date ASC`
+        : `SELECT date(ts / 1000, 'unixepoch') as date, COUNT(*) as count FROM visitor_stats WHERE tenant_id = ? AND ts > ? GROUP BY date ORDER BY date ASC`,
+      [tid, since]
+    );
+    res.json({ total: totalRow.n, totalPeriod: totalPeriodRow.n, countries, referrers, topPosts, daily, days });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/stats/visitors', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM visitor_stats').run();
-  res.json({ ok: true });
+app.delete('/api/stats/visitors', requireAuth, async (req, res) => {
+  try {
+    await req.db.run('DELETE FROM visitor_stats WHERE tenant_id = ?', [req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Debug / Diagnostics ────────────────────────────────────────────
-app.get('/api/debug/stats', requireAuth, (req, res) => {
-  const mem = process.memoryUsage();
-  const counts = {
-    sessions: db.prepare('SELECT COUNT(*) as n FROM sessions').get().n,
-    expenses: db.prepare("SELECT COUNT(*) as n FROM expenses").get().n,
-    blogPosts: db.prepare("SELECT COUNT(*) as n FROM blog_posts").get().n,
-  };
-  // Count files in upload directories
-  const countFiles = (dir, filter) => { try { const files = fs.readdirSync(dir); return filter ? files.filter(filter).length : files.length; } catch { return 0; } };
-  res.json({
-    timestamp: Date.now(),
-    uptime: process.uptime(),
-    memory: {
-      rss: mem.rss,
-      heapTotal: mem.heapTotal,
-      heapUsed: mem.heapUsed,
-      external: mem.external,
-      arrayBuffers: mem.arrayBuffers,
-    },
-    db: {
-      path: DB_PATH,
-      sessions: counts.sessions,
-      expenses: counts.expenses,
-      blogPosts: counts.blogPosts,
-    },
-    uploads: {
-      sessionImages: countFiles(UPLOADS_DIR, f => !f.includes('_thumb')),
-      sessionThumbs: countFiles(UPLOADS_DIR, f => f.includes('_thumb')),
-      receipts: countFiles(RECEIPTS_DIR),
-    },
-    node: {
-      version: process.version,
-      platform: process.platform,
-      arch: process.arch,
-    },
-    storage: {
-      backend: STORAGE_BACKEND,
-      bucket: STORAGE_BACKEND === 'r2' ? R2_BUCKET : null,
-    },
-  });
+// ─── Debug / Diagnostics ─────────────────────────────────────────────
+
+app.get('/api/debug/stats', requireAuth, async (req, res) => {
+  try {
+    const mem = process.memoryUsage();
+    const tid = req.tenantId;
+    const sessRow    = await req.db.get('SELECT COUNT(*) as n FROM sessions WHERE tenant_id = ?',   [tid]);
+    const expRow     = await req.db.get('SELECT COUNT(*) as n FROM expenses WHERE tenant_id = ?',   [tid]);
+    const blogRow    = await req.db.get('SELECT COUNT(*) as n FROM blog_posts WHERE tenant_id = ?', [tid]);
+    const countFiles = (dir, filter) => { try { const files = fs.readdirSync(dir); return filter ? files.filter(filter).length : files.length; } catch { return 0; } };
+    res.json({
+      timestamp: Date.now(), uptime: process.uptime(),
+      memory: { rss: mem.rss, heapTotal: mem.heapTotal, heapUsed: mem.heapUsed, external: mem.external, arrayBuffers: mem.arrayBuffers },
+      db: { backend: DB_BACKEND, sessions: sessRow.n, expenses: expRow.n, blogPosts: blogRow.n },
+      uploads: {
+        sessionImages: countFiles(UPLOADS_DIR, f => !f.includes('_thumb')),
+        sessionThumbs: countFiles(UPLOADS_DIR, f => f.includes('_thumb')),
+        receipts: countFiles(RECEIPTS_DIR),
+      },
+      node: { version: process.version, platform: process.platform, arch: process.arch },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Debug logs endpoint ─────────────────────────────────────────────
 app.get('/api/debug/logs', requireAuth, (req, res) => {
   const since = parseInt(req.query.since) || 0;
   res.json(since ? SERVER_LOG_BUFFER.filter(e => e.ts > since) : SERVER_LOG_BUFFER);
 });
 
-// ─── Webhook API Key management ──────────────────────────────────────
-app.get('/api/settings/webhook-key', requireAuth, (req, res) => {
-  let key = getSetting('webhook_api_key', null);
-  if (!key) {
-    key = crypto.randomBytes(32).toString('hex');
-    setSetting('webhook_api_key', key);
-    console.log('[webhook] Generated new API key');
-  }
-  res.json({ key });
+// ─── Webhook API Key management ───────────────────────────────────────
+
+app.get('/api/settings/webhook-key', requireAuth, async (req, res) => {
+  try {
+    let key = await getSetting(req.db, 'webhook_api_key', null);
+    if (!key) {
+      key = crypto.randomBytes(32).toString('hex');
+      await setSetting(req.db, 'webhook_api_key', key);
+      console.log('[webhook] Generated new API key');
+    }
+    res.json({ key });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/settings/webhook-key/regenerate', requireAuth, (req, res) => {
-  const key = crypto.randomBytes(32).toString('hex');
-  setSetting('webhook_api_key', key);
-  console.log('[webhook] Regenerated API key');
-  res.json({ key });
+app.post('/api/settings/webhook-key/regenerate', requireAuth, async (req, res) => {
+  try {
+    const key = crypto.randomBytes(32).toString('hex');
+    await setSetting(req.db, 'webhook_api_key', key);
+    console.log('[webhook] Regenerated API key');
+    res.json({ key });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Webhook Timer endpoints (no JWT — use permanent API key) ─────────
-// GET/POST /api/webhook/timer/start?key=<key>
-app.all('/api/webhook/timer/start', requireWebhookKey, (req, res) => {
-  // Use section from query/body, else last used section, else 'empennage'
-  const requestedSection = (req.query.section || req.body?.section || '').trim();
-  let section = requestedSection;
-  if (!section) {
-    const lastSession = db.prepare('SELECT section FROM sessions ORDER BY end_time DESC LIMIT 1').get();
-    section = lastSession ? lastSession.section : 'empennage';
-  }
+// ─── Webhook Timer endpoints ──────────────────────────────────────────
 
-  const startTime = new Date().toISOString();
-  db.prepare('DELETE FROM active_timer').run();
-  db.prepare('INSERT INTO active_timer (id, section, start_time) VALUES (1, ?, ?)').run(section, startTime);
-  console.log(`[webhook] Timer started — section: ${section}`);
-  res.json({ ok: true, section, startedAt: startTime });
+app.all('/api/webhook/timer/start', requireWebhookKey, async (req, res) => {
+  try {
+    const requestedSection = (req.query.section || req.body?.section || '').trim();
+    let section = requestedSection;
+    if (!section) {
+      const lastSession = await req.db.get(
+        'SELECT section FROM sessions WHERE tenant_id = ? ORDER BY end_time DESC LIMIT 1',
+        [req.tenantId]
+      );
+      section = lastSession ? lastSession.section : 'empennage';
+    }
+    const startTime = new Date().toISOString();
+    await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    await req.db.run(
+      'INSERT OR REPLACE INTO active_timer (tenant_id, section, start_time, image_urls) VALUES (?, ?, ?, ?)',
+      [req.tenantId, section, startTime, '[]']
+    );
+    console.log(`[webhook] Timer started — section: ${section}`);
+    res.json({ ok: true, section, startedAt: startTime });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET/POST /api/webhook/timer/stop?key=<key>
-app.all('/api/webhook/timer/stop', requireWebhookKey, (req, res) => {
-  const row = db.prepare('SELECT * FROM active_timer WHERE id = 1').get();
-  if (!row) return res.status(404).json({ error: 'No active timer' });
-
-  const endTime = new Date();
-  const startTime = new Date(row.start_time);
-  const durationMinutes = (endTime - startTime) / (1000 * 60);
-  const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-  db.prepare(`
-    INSERT INTO sessions (id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(sessionId, row.section, row.start_time, endTime.toISOString(), durationMinutes, '', null, JSON.stringify([]));
-
-  db.prepare('DELETE FROM active_timer WHERE id = 1').run();
-  publishMqttStats();
-  console.log(`[webhook] Timer stopped — section: ${row.section}, duration: ${durationMinutes.toFixed(1)} min`);
-  res.json({ ok: true, sessionId, durationMinutes, section: row.section });
+app.all('/api/webhook/timer/stop', requireWebhookKey, async (req, res) => {
+  try {
+    const row = await req.db.get('SELECT * FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'No active timer' });
+    const endTime         = new Date();
+    const startTime       = new Date(row.start_time);
+    const durationMinutes = (endTime - startTime) / (1000 * 60);
+    const sessionId       = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    await req.db.run(
+      `INSERT INTO sessions (id, tenant_id, section, start_time, end_time, duration_minutes, notes, plans_reference, image_urls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, req.tenantId, row.section, row.start_time, endTime.toISOString(), durationMinutes, '', null, '[]']
+    );
+    await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
+    publishMqttStats(req.db);
+    console.log(`[webhook] Timer stopped — section: ${row.section}, duration: ${durationMinutes.toFixed(1)} min`);
+    res.json({ ok: true, sessionId, durationMinutes, section: row.section });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Start ──────────────────────────────────────────────────────────
-app.get("*", (_req, res) => {
+// ─── SPA fallback ─────────────────────────────────────────────────────
+
+app.get('*', async (_req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.sendFile(distIndexPath);
-  const html = fs.readFileSync(distIndexPath, 'utf8');
-  const general = getSetting('general', DEFAULT_GENERAL);
-  const projectName = general.projectName || 'Build Tracker';
-  const injected = injectOgTags(html, {
-    title: `${projectName} — BenchLog`,
-    description: 'Track your build project — log sessions, visualize progress, document your journey.',
-    imageUrl: null,
-    pageUrl: null,
-  });
-  res.type('html').send(injected);
+  try {
+    const html    = fs.readFileSync(distIndexPath, 'utf8');
+    const db      = getDefaultDb();
+    const general = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const projectName = general.projectName || 'Build Tracker';
+    const injected = injectOgTags(html, {
+      title:       `${projectName} — BenchLog`,
+      description: 'Track your build project — log sessions, visualize progress, document your journey.',
+      imageUrl: null, pageUrl: null,
+    });
+    res.type('html').send(injected);
+  } catch { res.sendFile(distIndexPath); }
 });
 
-// ─── Global error handler (logs uncaught route errors) ───────────────
+// ─── Global error handler ─────────────────────────────────────────────
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error('[unhandled]', err.message, err.stack);
   res.status(500).json({ error: err.message });
 });
 
-app.listen(PORT, () => {
-  console.log(`Benchlog API running on port ${PORT}`);
-  console.log(`SQLite: ${DB_PATH}`);
-  if (STORAGE_BACKEND === 'r2') {
-    console.log(`Storage: Cloudflare R2 — bucket: ${R2_BUCKET}`);
-  } else {
-    console.log(`Storage: Local disk — ${UPLOADS_DIR}`);
-  }
-});
+function startServer() {
+  app.listen(PORT, () => {
+    console.log(`Benchlog API running on port ${PORT}`);
+    console.log(`DB backend: ${DB_BACKEND}`);
+    if (DB_BACKEND === 'sqlite') console.log(`Data dir: ${DATA_DIR}`);
+    const storageBackend = process.env.STORAGE_BACKEND || 'local';
+    if (storageBackend === 'r2') {
+      console.log(`Storage: Cloudflare R2 — bucket: ${process.env.R2_BUCKET}`);
+    } else {
+      console.log(`Storage: Local disk — ${UPLOADS_DIR}`);
+    }
+  });
+
+  // Connect MQTT after tenant is initialised
+  (async () => {
+    try {
+      const db = getDefaultDb();
+      await connectMqtt(db);
+    } catch (e) {
+      console.warn('[mqtt] Could not connect on startup:', e.message);
+    }
+  })();
+
+  // Prune old visitor stats daily
+  pruneVisitorStats();
+  setInterval(pruneVisitorStats, 24 * 60 * 60 * 1000);
+}

@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Wrench, Lock } from 'lucide-react';
+import { Wrench, Lock, User } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function LoginPage() {
-  const { needsSetup, login, setup } = useAuth();
+  const { needsSetup, multiTenant, login, setup } = useAuth();
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -23,7 +24,7 @@ export default function LoginPage() {
         await setup(password);
         toast.success('Password set successfully!');
       } else {
-        await login(password);
+        await login(password, multiTenant ? username : undefined);
       }
     } catch (err: any) {
       toast.error(err.message);
@@ -46,6 +47,24 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="bg-card border border-border rounded-xl p-6 space-y-4">
+          {multiTenant && !needsSetup && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Username</label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  placeholder="Enter username"
+                  className="pl-10"
+                  required
+                  autoFocus
+                  autoComplete="username"
+                />
+              </div>
+            </div>
+          )}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Password</label>
             <div className="relative">
@@ -58,7 +77,7 @@ export default function LoginPage() {
                 className="pl-10"
                 required
                 minLength={4}
-                autoFocus
+                autoFocus={!multiTenant || needsSetup}
               />
             </div>
           </div>

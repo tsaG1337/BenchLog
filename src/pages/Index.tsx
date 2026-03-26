@@ -11,7 +11,7 @@ import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet, ClipboardCheck } from 'lucide-react';
+import { Wrench, BarChart3, Clock, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet, ClipboardCheck, ShieldCheck } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -22,7 +22,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 const Index = () => {
-  const { logout, demoMode } = useAuth();
+  const { logout, demoMode, role } = useAuth();
   const location = useLocation();
   const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | 'about' | null>(
     (location.state as any)?.openSettings ? 'settings' : null
@@ -244,6 +244,13 @@ const Index = () => {
                     <Settings className="w-4 h-4 mr-2" /> Settings
                   </DropdownMenuItem>
                 </>
+              )}
+              {role === 'admin' && !demoMode && (
+                <DropdownMenuItem asChild>
+                  <Link to="/admin" className="flex items-center w-full">
+                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
+                  </Link>
+                </DropdownMenuItem>
               )}
               {/* About / Sign out */}
               <DropdownMenuSeparator />
