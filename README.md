@@ -1,6 +1,6 @@
 # Benchlog
 
-A self-hosted web application for tracking a homebuilt aircraft (or any large construction project). Log build sessions, document your work through a public blog, visualize package-level progress, and monitor everything from a clean dashboard — all running on your own infrastructure.
+A self-hosted web application for tracking a homebuilt aircraft (or any large construction project). Log build sessions, document your work through a public blog, visualize package-level progress, track inventory and expenses, and monitor everything from a clean dashboard — all running on your own infrastructure.
 
 Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 
@@ -13,11 +13,12 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 - **Server-side timer** — start a session from the UI; the timer runs on the server and survives page refreshes or browser restarts
 - **Section tagging** — assign each session to an assembly section (Empennage, Wings, Fuselage, etc.)
 - **Plans reference** — log the Section, Page, and Step number from the manufacturer's plans
-- **Session notes** — free-text notes on what was accomplished
+- **Session notes** — free-text notes with voice dictation support (Chrome/Edge)
 - **Photo attachments** — upload photos per session; images are automatically resized on upload (configurable max width, default 1920px) and thumbnails are generated for fast loading
 - **Manual entry** — add sessions retrospectively with full date, duration, section, and photo support
+- **Paginated history** — session list loads in pages for fast rendering with large datasets
 
-![Tracker](docs/screenshots/tracker.PNG)
+![Tracker](docs/screenshots/screenshot-timer-dark.jpg)
 
 ---
 
@@ -29,7 +30,7 @@ Originally built for a [Van's RV-10](https://www.vansaircraft.com/rv-10/) build.
 - Hours broken down by assembly section with a visual bar chart
 - Sections marked as non-billable (e.g. "Other") are excluded from totals and averages
 
-![Dashboard](docs/screenshots/dashboard.PNG)
+![Dashboard](docs/screenshots/screenshot-dashboard-light.jpg)
 
 ---
 
@@ -49,8 +50,6 @@ Organize your entire build into a tree of **work packages**, mirroring the struc
 
 Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 Rudder"**) are linked directly to the build blog. Hovering a chip in the progress overview reveals a **blog icon** — clicking it closes the overlay and instantly filters the blog to show all posts and sessions referencing that plans section. This makes the build tracker a live index into your build journal.
 
-![Build Progress](docs/screenshots/build-progress.PNG)
-
 ---
 
 ### 📝 Build Blog / Journal
@@ -62,7 +61,22 @@ Work packages named with a leading section number (e.g. **"10 Tailcone"**, **"7 
 - **Public read access** — share your entire build log with the community, no login required
 - Image uploads supported in both blog posts and session posts
 
-![Blog](docs/screenshots/blog.PNG)
+![Blog](docs/screenshots/screenshot-blog-light.jpg)
+
+---
+
+### 📦 Inventory
+
+Track every part, tool, and consumable on the build.
+
+- **Parts catalog** — create parts with name, part number, description, manufacturer, unit, and category
+- **Stock entries** — record how many of each part you have, where it's stored, its condition, and status (In Stock, Reserved, Used, etc.)
+- **Locations** — define physical storage locations (shelf, bin, drawer); each stock entry is tied to a location
+- **Initial stock on create** — when adding a new part, optionally create the first stock entry in one step
+- **Search and filter** — find parts by name, part number, or manufacturer; filter by category or status
+- **Low stock awareness** — easily identify what you're running low on before starting a new assembly phase
+
+![Inventory](docs/screenshots/screenshot-inventory-light.jpg)
 
 ---
 
@@ -82,6 +96,8 @@ Track every euro (or dollar) spent on the build, from raw materials to tools to 
 - **CSV and PDF export** — CSV for spreadsheets; PDF report with a formatted summary, category breakdown, and full itemized list sorted by date; suitable for accountants or certification paperwork
 - **Included in backups** — expenses and receipts are part of the ZIP export/import
 
+![Expenses](docs/screenshots/screenshot-expenses-light.jpg)
+
 ---
 
 ### ⚙️ Settings
@@ -93,6 +109,7 @@ Track every euro (or dollar) spent on the build, from raw materials to tools to 
 - **Theme** — Light, Dark, or system default (Auto)
 - **Home Currency** — set the currency used as the base for expense conversion (default: EUR)
 - **Blog Visibility** — individually toggle the activity heatmap, build stats bar, and progress bar on the public blog
+- **Maintenance mode** — put the app into read-only mode for non-admin users during updates or maintenance windows
 - **MQTT publishing** — publish build stats to any MQTT broker after every session:
   - Total hours, progress %, session count, last session images
   - Per-section hours (one topic per section)
@@ -100,9 +117,11 @@ Track every euro (or dollar) spent on the build, from raw materials to tools to 
 - **Export / Import** — full ZIP backup and restore including sessions, expenses, blog posts, settings, and all uploaded files
 - **Integrations** — generate a permanent webhook API key for use with Siri Shortcuts or any HTTP client (see below)
 
-| General Settings | MQTT & Export |
-|---|---|
-| ![Settings](docs/screenshots/settings.PNG) | ![MQTT](docs/screenshots/mqtt.PNG) |
+| Export & Backup |
+|---|
+| ![Export](docs/screenshots/screenshot-export-light.jpg) |
+
+> **MQTT with an externally hosted server:** If Benchlog is hosted on a remote server (not your local network), your MQTT broker must be reachable from that server — either by exposing it publicly (with authentication), using a cloud broker, or connecting via VPN/tunnel. Home Assistant Auto-Discovery works the same way regardless of where Benchlog is hosted.
 
 ---
 
@@ -138,7 +157,18 @@ Generate a formatted report of your build sessions as a **PDF** or plain text fi
 - **Custom logo** — a logo is placed top-right on the PDF cover; replace or upload your own during export
 - Section summary with billable total shown in the dialog before generating
 
-![Build Report](docs/screenshots/build-report.PNG)
+![Build Report](docs/screenshots/screenshot-report-light.jpg)
+
+---
+
+### 📈 Visitor Analytics
+
+The public blog includes lightweight, privacy-respecting analytics — no third-party scripts, no cookies.
+
+- **Country breakdown** — page views mapped to country via IP geolocation (MaxMind GeoLite2)
+- **Referrer tracking** — see where your readers come from
+- **Top posts** — most-viewed blog posts and sessions
+- Data is pruned automatically after 1 year; can be cleared manually from the admin panel
 
 ---
 
@@ -147,6 +177,25 @@ Generate a formatted report of your build sessions as a **PDF** or plain text fi
 - Single-user password setup on first run
 - JWT Bearer tokens (72-hour expiry)
 - **Public read access** for the blog, stats, and build progress — authenticated write access for everything else
+- Deactivated accounts are blocked at login and on all subsequent API calls
+
+---
+
+### 🛠 Admin Panel
+
+Available at `/admin` for admin-role accounts.
+
+- **User management** — view all accounts, toggle active/inactive status, reset passwords
+- **Table browser** — inspect any database table directly; browse rows, delete individual records
+- **Job registry** — view all scheduled background jobs, their last run time, status, and next scheduled execution
+- **Webhook events** — log of recent inbound webhook events with status and summary
+
+**Background jobs:**
+
+| Job | Schedule | Description |
+|---|---|---|
+| `cleanupPendingUploads` | Hourly | Removes orphaned uploaded files not referenced by any session, blog post, or active timer |
+| `pruneVisitorStats` | Daily | Deletes visitor analytics records older than 1 year |
 
 ---
 
@@ -156,9 +205,10 @@ Generate a formatted report of your build sessions as a **PDF** or plain text fi
 |---|---|
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix UI) |
 | Backend | Node.js, Express (CommonJS) |
-| Database | SQLite via `better-sqlite3` |
+| Database | SQLite (`better-sqlite3`) — default; PostgreSQL optional for multi-tenant deployments |
 | Image Processing | `sharp` (server-side resize + thumbnail generation) |
-| Auth | Custom JWT (HS256), SHA-256 password hash |
+| Auth | Custom JWT (HS256), bcrypt password hash |
+| Object Storage | MinIO / S3-compatible (images and receipts) |
 | Deployment | Docker + docker-compose |
 | Home Automation | MQTT (Home Assistant integration) |
 
@@ -188,7 +238,9 @@ services:
       - ./data:/data
     environment:
       PORT: 3001
+      DATA_DIR: /data
       DB_PATH: /data/database.db
+      # ADMIN_PASSWORD: yourpassword   # optional — pre-sets the password on first run
 ```
 
 ```bash
@@ -215,6 +267,33 @@ Check the [Releases page](https://github.com/tsag1337/benchlog/releases) for ava
 > | `1` | Auto-updates within v1.x.x — gets new features and fixes, never a breaking v2 | Users who want updates without surprises |
 > | `stable` | Manually promoted by the maintainer after testing — always a vetted release | **Most users** |
 > | `latest` | Tracks the `main` branch — may include unreleased changes | Development / testing only |
+
+### Optional: PostgreSQL backend
+
+By default Benchlog uses SQLite — no setup required. To use PostgreSQL instead (e.g. for multi-user deployments), activate the `postgres` profile:
+
+```bash
+# Start both benchlog and the postgres service
+docker compose --profile postgres up -d
+```
+
+Set the following in your `.env`:
+
+```env
+DB_BACKEND=postgres
+DATABASE_URL=postgresql://benchlog:yourpassword@benchlog-db:5432/benchlog
+POSTGRES_PASSWORD=yourpassword
+```
+
+### Optional: OCR service
+
+Enables label scanning in the Inventory module (scan a part bag label to auto-fill fields). Built on RapidOCR — CPU-only, no GPU needed.
+
+```bash
+docker compose --profile ocr up -d
+```
+
+Set `OCR_URL=http://benchlog-ocr:8000` in your `.env` to connect Benchlog to the OCR service.
 
 ### Build from Source
 
@@ -244,11 +323,43 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 
 ## Environment Variables
 
+### Core
+
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3001` | HTTP server port |
-| `DB_PATH` | `./data/database.db` | Path to SQLite database file |
-| `JWT_SECRET` | *(auto-generated)* | Secret key for signing JWT tokens. If not set, a random secret is generated on first run and saved to `/data/.jwt_secret` so it persists across restarts. |
+| `DATA_DIR` | `./data` | Directory for database, JWT secret, and local uploads |
+| `DB_PATH` | `$DATA_DIR/database.db` | Path to SQLite database file (SQLite mode only) |
+| `JWT_SECRET` | *(auto-generated)* | Secret for signing JWT tokens. Auto-generated on first run and persisted to `$DATA_DIR/.jwt_secret` if not set. |
+| `ADMIN_PASSWORD` | — | Pre-sets the admin password on first startup. Ignored if a password is already set. |
+| `DEMO_MODE` | `false` | Set to `true` for a public read-only demo — all write operations are blocked, no login required. |
+
+### Database
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_BACKEND` | `sqlite` | `sqlite` (default, single-user) or `postgres` (multi-tenant) |
+| `DATABASE_URL` | — | PostgreSQL connection string. Required when `DB_BACKEND=postgres`. Example: `postgresql://user:pass@host:5432/benchlog` |
+
+### Image Storage
+
+| Variable | Default | Description |
+|---|---|---|
+| `STORAGE_BACKEND` | `local` | `local` stores uploads in `$DATA_DIR`; `r2` uses Cloudflare R2 (or any S3-compatible bucket) |
+| `R2_ACCOUNT_ID` | — | Cloudflare account ID (required when `STORAGE_BACKEND=r2`) |
+| `R2_ACCESS_KEY` | — | R2 / S3 access key ID |
+| `R2_SECRET_KEY` | — | R2 / S3 secret access key |
+| `R2_BUCKET` | — | Bucket name |
+| `R2_PUBLIC_URL` | — | Public base URL for serving stored files (e.g. `https://assets.example.com`) |
+| `R2_ENDPOINT` | *(Cloudflare default)* | Override for non-Cloudflare S3-compatible endpoints |
+
+### Optional services
+
+| Variable | Default | Description |
+|---|---|---|
+| `OCR_URL` | — | URL of the OCR service for inventory label scanning (e.g. `http://benchlog-ocr:8000`). Activate the `ocr` Docker Compose profile to start the service. |
+| `INTERNAL_API_KEY` | — | Enables `/api/internal/*` endpoints for service-to-service calls (e.g. from the account management server). Generate with `openssl rand -hex 32`. |
+| `CORS_ORIGIN` | — | Allowed CORS origin(s) for cross-domain requests. Comma-separated list or a single URL. |
 
 ---
 
@@ -258,7 +369,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/sessions` | List all work sessions |
+| GET | `/api/sessions` | List work sessions (paginated — supports `?limit=` and `?offset=`) |
 | GET | `/api/stats` | Build stats (total hours, progress %, est. finish) |
 | GET | `/api/blog` | List blog posts (includes sessions as posts) |
 | GET | `/api/blog/:id` | Get a single blog post |
@@ -303,12 +414,32 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 | GET | `/api/expenses/export/csv` | Download all expenses as CSV |
 | POST | `/api/expenses/upload` | Upload a receipt (image or PDF) |
 | DELETE | `/api/expenses/upload` | Delete a receipt |
+| GET | `/api/inventory/parts` | List parts (supports `?search=`, `?category=`) |
+| POST | `/api/inventory/parts` | Create a part |
+| PUT | `/api/inventory/parts/:id` | Update a part |
+| DELETE | `/api/inventory/parts/:id` | Delete a part |
+| GET | `/api/inventory/stock` | List all stock entries |
+| POST | `/api/inventory/stock` | Create a stock entry |
+| PUT | `/api/inventory/stock/:id` | Update a stock entry |
+| DELETE | `/api/inventory/stock/:id` | Delete a stock entry |
+| GET | `/api/inventory/locations` | List storage locations |
+| POST | `/api/inventory/locations` | Create a location |
+| PUT | `/api/inventory/locations/:id` | Update a location |
+| DELETE | `/api/inventory/locations/:id` | Delete a location |
 | GET | `/api/export` | Export full backup (ZIP with all data and files) |
 | POST | `/api/import` | Restore from a backup (ZIP or legacy JSON) |
 | GET | `/api/stats/visitors` | Visitor statistics (countries, referrers, top posts) |
 | DELETE | `/api/stats/visitors` | Clear all visitor statistics |
 | POST | `/api/auth/login` | Authenticate and receive a JWT |
 | POST | `/api/auth/setup` | Set the initial password (first run only) |
+
+### Admin endpoints (admin role required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/admin/table/:table` | Browse rows from a whitelisted database table |
+| DELETE | `/api/admin/table/:table` | Delete a row from a whitelisted table |
+| GET | `/api/admin/jobs` | List all scheduled background jobs and their status |
 
 ### Webhook endpoints (API key required — no JWT)
 
