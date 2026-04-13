@@ -5,7 +5,7 @@ import { useSections } from '@/contexts/SectionsContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Pencil, Trash2, Clock, Wrench, X } from 'lucide-react';
+import { ArrowLeft, Pencil, Trash2, Clock, Wrench, X, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BlockRenderer, parseTipTapContent, extractImagesFromJson } from './editor/BlockRenderer';
 
@@ -53,6 +53,18 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
   const isSafeImageUrl = (url: string) => /^(https?:\/\/|\/)/i.test(url);
   const sessionImages  = isSession && post.imageUrls?.length ? post.imageUrls.filter(isSafeImageUrl) : [];
   const contentSegments = useMemo(() => isJsonContent ? [] : parseSegments(post.content), [post.content, isJsonContent]);
+
+  const handleShare = () => {
+    const url = `${window.location.origin}/blog/${post.id}`;
+    if (navigator.share) {
+      navigator.share({ title: post.title, url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(
+        () => toast.success('Link copied to clipboard'),
+        () => toast.info(`Copy: ${url}`),
+      );
+    }
+  };
 
   const handleDelete = async () => {
     if (isSession) {
@@ -139,16 +151,21 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <h1 className="flex-1 text-2xl md:text-3xl font-bold text-foreground leading-tight">{post.title}</h1>
-          {isAuthenticated && (
-            <div className="flex items-center gap-1 shrink-0">
-              <Button variant="ghost" size="icon" onClick={onEdit}>
-                <Pencil className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
-                <Trash2 className="w-4 h-4" />
-              </Button>
-            </div>
-          )}
+          <div className="flex items-center gap-1 shrink-0">
+            {isAuthenticated && (
+              <>
+                <Button variant="ghost" size="icon" onClick={onEdit}>
+                  <Pencil className="w-4 h-4" />
+                </Button>
+                <Button variant="ghost" size="icon" onClick={handleDelete} className="text-destructive hover:text-destructive">
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </>
+            )}
+            <Button variant="ghost" size="icon" onClick={handleShare} title="Share">
+              <Share2 className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-3 text-sm text-muted-foreground flex-wrap mt-1 ml-8">
           {isSession && <Wrench className="w-4 h-4" />}

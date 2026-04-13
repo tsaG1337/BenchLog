@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSections } from '@/contexts/SectionsContext';
 import {
   fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings,
   fetchBuildStats, fetchFlowchartPackages, trackPageView,
+  deleteBlogPost, deleteSessionApi,
   type BlogPost, type BlogArchiveEntry, type BuildStats, type PackagesMap, type FlowItem,
 } from '@/lib/api';
 import { BlogPostView } from '@/components/blog/BlogPostView';
@@ -12,6 +13,7 @@ import { BlogEditor } from '@/components/blog/BlogEditor';
 import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
 import { AppShell, MIcon } from '@/components/AppShell';
 import { thumbUrl, imageUrl } from '@/lib/utils';
+import { Pencil, Trash2, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -68,6 +70,8 @@ export default function BlogPage() {
   const { isAuthenticated } = useAuth();
   const { sections, labels, icons } = useSections();
   const [searchParams] = useSearchParams();
+  const { postId } = useParams<{ postId?: string }>();
+  const navigate = useNavigate();
 
   // ─── State ──────────────────────────────────────────────────────
   const [posts, setPosts] = useState<BlogPost[]>([]);
@@ -106,6 +110,14 @@ export default function BlogPage() {
 
   useEffect(() => { loadPosts(filters); }, [filters, loadPosts]);
 
+  // Deep-link: if the URL contains a postId, open that post on mount.
+  useEffect(() => {
+    if (!postId) return;
+    fetchBlogPost(postId)
+      .then(post => { setActivePost(post); setView('post'); })
+      .catch(() => toast.error('Post not found'));
+  }, [postId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     fetchBlogArchive().then(setArchive).catch(() => {});
     fetchGeneralSettings().then(s => { setProjectName(s.projectName); setShowSessionStats(s.blogShowSessionStats ?? true); }).catch(() => {});
@@ -121,6 +133,7 @@ export default function BlogPage() {
   };
 
   const handlePostClick = async (post: BlogPost) => {
+    navigate(`/blog/${post.id}`);
     if (post.source === 'session') {
       setActivePost(post);
       setView('post');
@@ -135,6 +148,12 @@ export default function BlogPage() {
     }
   };
 
+  const handleBack = () => {
+    navigate('/blog');
+    setView('list');
+    setActivePost(null);
+  };
+
   const handleLoadMore = async () => {
     setLoadingMore(true);
     await loadPosts(filters, page + 1, true);
@@ -142,9 +161,49 @@ export default function BlogPage() {
   };
 
   const handleSaved = () => {
+    navigate('/blog');
     setView('list');
     setActivePost(null);
     loadPosts(filters);
+  };
+
+  const handleShare = (post: BlogPost) => {
+    const url = `${window.location.origin}/blog/${post.id}`;
+    if (navigator.share) {
+      navigator.share({ title: post.title, url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(
+        () => toast.success('Link copied to clipboard'),
+        () => toast.info(`Copy: ${url}`),
+      );
+    }
+  };
+
+  const handleDeleteFromCard = async (post: BlogPost) => {
+    const label = post.source === 'session' ? 'work session' : 'blog post';
+    if (!confirm(`Delete this ${label}? This cannot be undone.`)) return;
+    try {
+      if (post.source === 'session') {
+        await deleteSessionApi(post.id.replace(/^session-/, ''));
+      } else {
+        await deleteBlogPost(post.id);
+      }
+      setPosts(prev => prev.filter(p => p.id !== post.id));
+      toast.success(`${label.charAt(0).toUpperCase() + label.slice(1)} deleted`);
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
+  const handleEditFromCard = async (post: BlogPost) => {
+    navigate(`/blog/${post.id}`);
+    if (post.source !== 'session') {
+      const full = await fetchBlogPost(post.id).catch(() => post);
+      setActivePost(full);
+    } else {
+      setActivePost(post);
+    }
+    setView('editor');
   };
 
   // ─── Computed ───────────────────────────────────────────────────
@@ -209,7 +268,7 @@ export default function BlogPage() {
           ) : view === 'post' && activePost ? (
             <BlogPostView
               post={activePost}
-              onBack={() => { setView('list'); setActivePost(null); }}
+              onBack={handleBack}
               onEdit={() => setView('editor')}
               onDeleted={handleSaved}
             />
@@ -390,7 +449,9 @@ export default function BlogPage() {
                     icons={icons}
                     onClick={() => handlePostClick(post)}
                     isAuthenticated={isAuthenticated}
-                    onEdit={() => handlePostClick(post)}
+                    onEdit={() => handleEditFromCard(post)}
+                    onDelete={() => handleDeleteFromCard(post)}
+                    onShare={() => handleShare(post)}
                   />
                 ))}
 
@@ -444,7 +505,7 @@ function StatCard({ label, value, accent, sub }: { label: string; value: string;
 // SESSION / BLOG POST CARD
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function SessionCard({
-  post, labels, icons, onClick, isAuthenticated, onEdit,
+  post, labels, icons, onClick, isAuthenticated, onEdit, onDelete, onShare,
 }: {
   post: BlogPost;
   labels: Record<string, string>;
@@ -452,6 +513,8 @@ function SessionCard({
   onClick: () => void;
   isAuthenticated: boolean;
   onEdit: () => void;
+  onDelete: () => void;
+  onShare: () => void;
 }) {
   const isSession = post.source === 'session';
   const isBlog = post.source === 'blog' || !post.source;
@@ -501,7 +564,7 @@ function SessionCard({
 
         {/* Right content */}
         <div className="flex-grow p-4 md:p-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-2 mb-3">
             <div>
               <h3 className="font-headline font-bold text-lg text-foreground">
                 {post.title}
@@ -516,14 +579,43 @@ function SessionCard({
                   </div>
                 )}
                 {post.plansReference && (
-                  <div
-                    className="flex items-center gap-1 border-l pl-3 text-muted-foreground border-border"
-                  >
+                  <div className="flex items-center gap-1 border-l pl-3 text-muted-foreground border-border">
                     <MIcon name="description" className="text-sm" />
                     <span className="font-label text-xs uppercase">{post.plansReference}</span>
                   </div>
                 )}
               </div>
+            </div>
+            {/* Action buttons */}
+            <div
+              className="flex items-center gap-1 shrink-0 self-start"
+              onClick={e => e.stopPropagation()}
+            >
+              {isAuthenticated && (
+                <>
+                  <button
+                    onClick={onEdit}
+                    title="Edit"
+                    className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={onDelete}
+                    title="Delete"
+                    className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-destructive transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
+              <button
+                onClick={onShare}
+                title="Share"
+                className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
 

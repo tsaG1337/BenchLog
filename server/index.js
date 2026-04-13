@@ -418,7 +418,14 @@ if (DB_BACKEND === 'postgres') {
 
   initPostgresSchema(_pgPool)
     .then(() => ensureFirstTenant({ adminPassword: process.env.ADMIN_PASSWORD }))
-    .then(() => startServer())
+    .then(async () => {
+      try {
+        const _migrateDb = getDefaultDb();
+        const _tenantId = getDefaultTenantId();
+        if (_tenantId) await migrateSignOffsToSessions(_migrateDb, _tenantId);
+      } catch {}
+      startServer();
+    })
     .catch(err => {
       console.error('[init] PostgreSQL init failed:', err.message);
       process.exit(1);
@@ -484,6 +491,12 @@ if (DB_BACKEND === 'postgres') {
           console.warn(`[init] Schema update warning for tenant ${tenant.slug}:`, e.message);
         }
       }
+      // Migrate old sign_offs to inspection_sessions (idempotent)
+      try {
+        const _migrateDb = getDefaultDb();
+        const _tenantId = getDefaultTenantId();
+        if (_tenantId) await migrateSignOffsToSessions(_migrateDb, _tenantId);
+      } catch {}
       startServer();
     })
     .catch(e => {
@@ -2139,6 +2152,32 @@ async function buildExport(archive, db, tenantId, options, onProgress) {
       prog({ stage: 'signoffs', label: 'Sign-offs', current: i + 1, total: rows.length });
     }
     archive.append(JSON.stringify(signOffs, null, 2), { name: 'sign_offs/signoffs.json' });
+
+    // Also export new-style inspection sessions (same checkbox — same conceptual data).
+    const iSessions = await db.all('SELECT * FROM inspection_sessions WHERE tenant_id = ? ORDER BY created_at DESC', [tenantId]);
+    if (iSessions.length > 0) {
+      manifest.includes.inspectionSessions = true;
+      const inspectionData = [];
+      for (const s of iSessions) {
+        const pkgRows = await db.all('SELECT * FROM inspection_packages WHERE session_id = ? AND tenant_id = ? ORDER BY sort_order', [s.id, tenantId]);
+        const packages = [];
+        for (const pkg of pkgRows) {
+          const subRows = await db.all('SELECT * FROM inspection_sub_items WHERE package_id = ? AND tenant_id = ? ORDER BY sort_order', [pkg.id, tenantId]);
+          packages.push({
+            id: pkg.id, packageId: pkg.package_id, packageLabel: pkg.package_label,
+            sectionId: pkg.section_id, outcome: pkg.outcome, notes: pkg.notes, sortOrder: pkg.sort_order,
+            subItems: subRows.map(si => ({ id: si.id, label: si.label, outcome: si.outcome, notes: si.notes, sortOrder: si.sort_order })),
+          });
+        }
+        inspectionData.push({
+          id: s.id, sessionName: s.session_name, date: s.date,
+          inspectorName: s.inspector_name, inspectorId: s.inspector_id,
+          notes: s.notes, signaturePng: s.signature_png, createdAt: s.created_at,
+          packages,
+        });
+      }
+      archive.append(JSON.stringify(inspectionData, null, 2), { name: 'inspection_sessions/sessions.json' });
+    }
   }
 
   if (includeInventory) {
@@ -2368,6 +2407,36 @@ async function applyImportData(db, tenantId, data, results, tenantSlug = null) {
       );
     }
     results.signOffsImported++;
+  }
+
+  for (const s of (data.inspectionSessions || [])) {
+    const existing = await db.get('SELECT id FROM inspection_sessions WHERE id = ? AND tenant_id = ?', [s.id, tenantId]);
+    if (existing) {
+      await db.run(
+        `UPDATE inspection_sessions SET session_name=?,date=?,inspector_name=?,inspector_id=?,notes=?,signature_png=? WHERE id=? AND tenant_id=?`,
+        [s.sessionName, s.date, s.inspectorName||'', s.inspectorId||'', s.notes||'', s.signaturePng||'', s.id, tenantId]
+      );
+    } else {
+      await db.run(
+        `INSERT INTO inspection_sessions(id,tenant_id,session_name,date,inspector_name,inspector_id,notes,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+        [s.id, tenantId, s.sessionName, s.date, s.inspectorName||'', s.inspectorId||'', s.notes||'', s.signaturePng||'', s.createdAt]
+      );
+    }
+    await db.run('DELETE FROM inspection_sub_items WHERE tenant_id = ? AND package_id IN (SELECT id FROM inspection_packages WHERE session_id = ? AND tenant_id = ?)', [tenantId, s.id, tenantId]);
+    await db.run('DELETE FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [s.id, tenantId]);
+    for (const pkg of (s.packages || [])) {
+      await db.run(
+        `INSERT INTO inspection_packages(id,session_id,tenant_id,package_id,package_label,section_id,outcome,notes,sort_order) VALUES(?,?,?,?,?,?,?,?,?)`,
+        [pkg.id, s.id, tenantId, pkg.packageId, pkg.packageLabel, pkg.sectionId||'', pkg.outcome||'ok', pkg.notes||'', pkg.sortOrder||0]
+      );
+      for (const si of (pkg.subItems || [])) {
+        await db.run(
+          `INSERT INTO inspection_sub_items(id,package_id,tenant_id,label,outcome,notes,sort_order) VALUES(?,?,?,?,?,?,?)`,
+          [si.id, pkg.id, tenantId, si.label, si.outcome||'ok', si.notes||'', si.sortOrder||0]
+        );
+      }
+    }
+    results.inspectionSessionsImported = (results.inspectionSessionsImported || 0) + 1;
   }
 
   // Inventory data (locations, parts, stock, check sessions/items, expense budgets)
@@ -2731,6 +2800,41 @@ async function applyNewImportFormat(db, tenantId, extractDir, results, tenantSlu
     }
   }
 
+  // Inspection sessions
+  const inspectionSessionsPath = path.join(extractDir, 'inspection_sessions', 'sessions.json');
+  if (fs.existsSync(inspectionSessionsPath)) {
+    const inspSessions = JSON.parse(fs.readFileSync(inspectionSessionsPath, 'utf8'));
+    for (const s of inspSessions) {
+      const existing = await db.get('SELECT id FROM inspection_sessions WHERE id = ? AND tenant_id = ?', [s.id, tenantId]);
+      if (existing) {
+        await db.run(
+          `UPDATE inspection_sessions SET session_name=?,date=?,inspector_name=?,inspector_id=?,notes=?,signature_png=? WHERE id=? AND tenant_id=?`,
+          [s.sessionName, s.date, s.inspectorName||'', s.inspectorId||'', s.notes||'', s.signaturePng||'', s.id, tenantId]
+        );
+      } else {
+        await db.run(
+          `INSERT INTO inspection_sessions(id,tenant_id,session_name,date,inspector_name,inspector_id,notes,signature_png,created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+          [s.id, tenantId, s.sessionName, s.date, s.inspectorName||'', s.inspectorId||'', s.notes||'', s.signaturePng||'', s.createdAt]
+        );
+      }
+      await db.run('DELETE FROM inspection_sub_items WHERE tenant_id = ? AND package_id IN (SELECT id FROM inspection_packages WHERE session_id = ? AND tenant_id = ?)', [tenantId, s.id, tenantId]);
+      await db.run('DELETE FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [s.id, tenantId]);
+      for (const pkg of (s.packages || [])) {
+        await db.run(
+          `INSERT INTO inspection_packages(id,session_id,tenant_id,package_id,package_label,section_id,outcome,notes,sort_order) VALUES(?,?,?,?,?,?,?,?,?)`,
+          [pkg.id, s.id, tenantId, pkg.packageId, pkg.packageLabel, pkg.sectionId||'', pkg.outcome||'ok', pkg.notes||'', pkg.sortOrder||0]
+        );
+        for (const si of (pkg.subItems || [])) {
+          await db.run(
+            `INSERT INTO inspection_sub_items(id,package_id,tenant_id,label,outcome,notes,sort_order) VALUES(?,?,?,?,?,?,?)`,
+            [si.id, pkg.id, tenantId, si.label, si.outcome||'ok', si.notes||'', si.sortOrder||0]
+          );
+        }
+      }
+      results.inspectionSessionsImported = (results.inspectionSessionsImported || 0) + 1;
+    }
+  }
+
   // Inventory
   const inventoryPath = path.join(extractDir, 'inventory', 'inventory.json');
   if (fs.existsSync(inventoryPath)) {
@@ -2742,7 +2846,7 @@ async function applyNewImportFormat(db, tenantId, extractDir, results, tenantSlu
 }
 
 app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, res) => {
-  const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0, workPackagesImported: false, signOffsImported: 0, inventoryImported: 0 };
+  const results = { settingsImported: false, sessionsImported: 0, expensesImported: 0, blogPostsImported: 0, filesImported: 0, workPackagesImported: false, signOffsImported: 0, inspectionSessionsImported: 0, inventoryImported: 0 };
   if (!req.file) {
     try {
       const data = req.body;
@@ -4613,6 +4717,183 @@ app.delete('/api/signoffs/:id', requireAuth, async (req, res) => {
       await signatureStore.delete(row.signature_png).catch(() => {});
     }
     await req.db.run('DELETE FROM sign_offs WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// ─── Inspection Sessions ───────────────────────────────────────────────
+
+/** Idempotent migration: convert existing sign_offs rows to inspection_sessions + inspection_packages */
+async function migrateSignOffsToSessions(db, tenantId) {
+  try {
+    const rows = await db.all('SELECT * FROM sign_offs WHERE tenant_id = ? ORDER BY date ASC, created_at ASC', [tenantId]);
+    if (!rows.length) return;
+    for (const r of rows) {
+      const already = await db.get(
+        "SELECT id FROM inspection_sessions WHERE tenant_id = ? AND notes LIKE ?",
+        [tenantId, `%migrated:${r.id}%`]
+      );
+      if (already) continue;
+      const sessionId = uuidv4();
+      await db.transaction(async (tx) => {
+        await tx.run(
+          `INSERT INTO inspection_sessions (id,tenant_id,session_name,date,inspector_name,inspector_id,notes,signature_png,created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [sessionId, tenantId, r.package_label || 'Inspection', r.date, r.inspector_name || '', '',
+           `migrated:${r.id}`, r.signature_png || '', r.created_at || new Date().toISOString()]
+        );
+        const outcome = r.rework_needed ? 'rework' : (r.execution_satisfactory ? 'ok' : 'na');
+        await tx.run(
+          `INSERT INTO inspection_packages (id,session_id,tenant_id,package_id,package_label,section_id,outcome,notes,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [uuidv4(), sessionId, tenantId, r.package_id || '', r.package_label || '', r.section_id || '', outcome, r.comments || '', 0]
+        );
+      });
+    }
+    console.log(`[migration] Converted ${rows.length} sign_offs row(s) to inspection_sessions`);
+  } catch (e) {
+    console.warn('[migration] sign_offs migration warning:', e.message);
+  }
+}
+
+app.get('/api/inspection-sessions', requireAuth, async (req, res) => {
+  try {
+    const sessions = await req.db.all(
+      'SELECT * FROM inspection_sessions WHERE tenant_id = ? ORDER BY date DESC, created_at DESC',
+      [req.tenantId]
+    );
+    if (!sessions.length) return res.json([]);
+
+    const sessionIds = sessions.map(s => s.id);
+    const pkgPlaceholders = sessionIds.map(() => '?').join(',');
+    const pkgs = await req.db.all(
+      `SELECT * FROM inspection_packages WHERE tenant_id = ? AND session_id IN (${pkgPlaceholders}) ORDER BY sort_order ASC`,
+      [req.tenantId, ...sessionIds]
+    );
+
+    const subItems = pkgs.length
+      ? await req.db.all(
+          `SELECT * FROM inspection_sub_items WHERE tenant_id = ? AND package_id IN (${pkgs.map(() => '?').join(',')}) ORDER BY sort_order ASC`,
+          [req.tenantId, ...pkgs.map(p => p.id)]
+        )
+      : [];
+
+    const subByPkg = {};
+    for (const si of subItems) {
+      if (!subByPkg[si.package_id]) subByPkg[si.package_id] = [];
+      subByPkg[si.package_id].push({ id: si.id, label: si.label, outcome: si.outcome, notes: si.notes || '', sortOrder: si.sort_order });
+    }
+    const pkgBySession = {};
+    for (const p of pkgs) {
+      if (!pkgBySession[p.session_id]) pkgBySession[p.session_id] = [];
+      pkgBySession[p.session_id].push({
+        id: p.id, packageId: p.package_id, packageLabel: p.package_label,
+        sectionId: p.section_id || '', outcome: p.outcome || 'ok', notes: p.notes || '',
+        sortOrder: p.sort_order, subItems: subByPkg[p.id] || [],
+      });
+    }
+    res.json(sessions.map(s => ({
+      id: s.id, sessionName: s.session_name, date: s.date,
+      inspectorName: s.inspector_name || '', inspectorId: s.inspector_id || '',
+      notes: s.notes || '', signaturePng: s.signature_png || '',
+      packages: pkgBySession[s.id] || [], createdAt: s.created_at,
+    })));
+  } catch (err) { serverError(res, err); }
+});
+
+app.post('/api/inspection-sessions', requireAuth, async (req, res) => {
+  try {
+    const { sessionName, date, inspectorName, inspectorId, notes, signaturePng, packages } = req.body;
+    if (!sessionName || !date) return res.status(400).json({ error: 'sessionName and date are required' });
+    let sigValue = signaturePng || '';
+    if (sigValue.startsWith('data:')) {
+      const base64 = sigValue.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(base64, 'base64');
+      sigValue = await signatureStore.save(`${uuidv4()}.png`, buf, 'image/png', req.user?.slug);
+    }
+    const sessionId = uuidv4();
+    await req.db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT INTO inspection_sessions (id,tenant_id,session_name,date,inspector_name,inspector_id,notes,signature_png) VALUES (?,?,?,?,?,?,?,?)`,
+        [sessionId, req.tenantId, sessionName, date, inspectorName || '', inspectorId || '', notes || '', sigValue]
+      );
+      for (let i = 0; i < (packages || []).length; i++) {
+        const p = packages[i];
+        const pkgId = uuidv4();
+        await tx.run(
+          `INSERT INTO inspection_packages (id,session_id,tenant_id,package_id,package_label,section_id,outcome,notes,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [pkgId, sessionId, req.tenantId, p.packageId || '', p.packageLabel || '', p.sectionId || '', p.outcome || 'ok', p.notes || '', i]
+        );
+        for (let j = 0; j < (p.subItems || []).length; j++) {
+          const si = p.subItems[j];
+          await tx.run(
+            `INSERT INTO inspection_sub_items (id,package_id,tenant_id,label,outcome,notes,sort_order) VALUES (?,?,?,?,?,?,?)`,
+            [uuidv4(), pkgId, req.tenantId, si.label || '', si.outcome || 'ok', si.notes || '', j]
+          );
+        }
+      }
+    });
+    res.json({ id: sessionId, ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+app.put('/api/inspection-sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const { sessionName, date, inspectorName, inspectorId, notes, signaturePng, packages } = req.body;
+    const existing = await req.db.get('SELECT id, signature_png FROM inspection_sessions WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    let sigValue = signaturePng || '';
+    if (sigValue.startsWith('data:')) {
+      if (existing.signature_png && !existing.signature_png.startsWith('data:')) {
+        await signatureStore.delete(existing.signature_png).catch(() => {});
+      }
+      const base64 = sigValue.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(base64, 'base64');
+      sigValue = await signatureStore.save(`${uuidv4()}.png`, buf, 'image/png', req.user?.slug);
+    } else if (!sigValue) {
+      sigValue = existing.signature_png || '';
+    }
+    await req.db.transaction(async (tx) => {
+      await tx.run(
+        `UPDATE inspection_sessions SET session_name=?,date=?,inspector_name=?,inspector_id=?,notes=?,signature_png=? WHERE id=? AND tenant_id=?`,
+        [sessionName, date, inspectorName || '', inspectorId || '', notes || '', sigValue, req.params.id, req.tenantId]
+      );
+      const oldPkgs = await tx.all('SELECT id FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+      for (const op of oldPkgs) {
+        await tx.run('DELETE FROM inspection_sub_items WHERE package_id = ? AND tenant_id = ?', [op.id, req.tenantId]);
+      }
+      await tx.run('DELETE FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+      for (let i = 0; i < (packages || []).length; i++) {
+        const p = packages[i];
+        const pkgId = uuidv4();
+        await tx.run(
+          `INSERT INTO inspection_packages (id,session_id,tenant_id,package_id,package_label,section_id,outcome,notes,sort_order) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [pkgId, req.params.id, req.tenantId, p.packageId || '', p.packageLabel || '', p.sectionId || '', p.outcome || 'ok', p.notes || '', i]
+        );
+        for (let j = 0; j < (p.subItems || []).length; j++) {
+          const si = p.subItems[j];
+          await tx.run(
+            `INSERT INTO inspection_sub_items (id,package_id,tenant_id,label,outcome,notes,sort_order) VALUES (?,?,?,?,?,?,?)`,
+            [uuidv4(), pkgId, req.tenantId, si.label || '', si.outcome || 'ok', si.notes || '', j]
+          );
+        }
+      }
+    });
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+app.delete('/api/inspection-sessions/:id', requireAuth, async (req, res) => {
+  try {
+    const existing = await req.db.get('SELECT id, signature_png FROM inspection_sessions WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    if (existing.signature_png && !existing.signature_png.startsWith('data:')) {
+      await signatureStore.delete(existing.signature_png).catch(() => {});
+    }
+    const pkgs = await req.db.all('SELECT id FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    for (const p of pkgs) {
+      await req.db.run('DELETE FROM inspection_sub_items WHERE package_id = ? AND tenant_id = ?', [p.id, req.tenantId]);
+    }
+    await req.db.run('DELETE FROM inspection_packages WHERE session_id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    await req.db.run('DELETE FROM inspection_sessions WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
     res.json({ ok: true });
   } catch (err) { serverError(res, err); }
 });

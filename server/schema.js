@@ -152,6 +152,49 @@ function initTenantSchema(tenantSqlite, tenantId) {
   `);
 
   tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inspection_sessions (
+      id             TEXT NOT NULL,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      session_name   TEXT NOT NULL,
+      date           TEXT NOT NULL,
+      inspector_name TEXT DEFAULT '',
+      inspector_id   TEXT DEFAULT '',
+      notes          TEXT DEFAULT '',
+      signature_png  TEXT DEFAULT '',
+      created_at     TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (id, tenant_id)
+    )
+  `);
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inspection_packages (
+      id            TEXT NOT NULL PRIMARY KEY,
+      session_id    TEXT NOT NULL,
+      tenant_id     TEXT NOT NULL DEFAULT '',
+      package_id    TEXT NOT NULL,
+      package_label TEXT NOT NULL,
+      section_id    TEXT DEFAULT '',
+      outcome       TEXT DEFAULT 'ok',
+      notes         TEXT DEFAULT '',
+      sort_order    INTEGER DEFAULT 0
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_insp_pkg_session ON inspection_packages (session_id, tenant_id)`);
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inspection_sub_items (
+      id         TEXT NOT NULL PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      tenant_id  TEXT NOT NULL DEFAULT '',
+      label      TEXT NOT NULL,
+      outcome    TEXT DEFAULT 'ok',
+      notes      TEXT DEFAULT '',
+      sort_order INTEGER DEFAULT 0
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_insp_sub_pkg ON inspection_sub_items (package_id, tenant_id)`);
+
+  tenantSqlite.exec(`
     CREATE TABLE IF NOT EXISTS pending_uploads (
       url         TEXT NOT NULL,
       tenant_id   TEXT NOT NULL DEFAULT '',
@@ -363,6 +406,40 @@ async function initPostgresSchema(pool) {
       created_at             TEXT DEFAULT (${NOW_TEXT}),
       PRIMARY KEY (id, tenant_id)
     )`,
+    `CREATE TABLE IF NOT EXISTS inspection_sessions (
+      id             TEXT NOT NULL,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      session_name   TEXT NOT NULL,
+      date           TEXT NOT NULL,
+      inspector_name TEXT DEFAULT '',
+      inspector_id   TEXT DEFAULT '',
+      notes          TEXT DEFAULT '',
+      signature_png  TEXT DEFAULT '',
+      created_at     TEXT DEFAULT (${NOW_TEXT}),
+      PRIMARY KEY (id, tenant_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS inspection_packages (
+      id            TEXT NOT NULL PRIMARY KEY,
+      session_id    TEXT NOT NULL,
+      tenant_id     TEXT NOT NULL DEFAULT '',
+      package_id    TEXT NOT NULL,
+      package_label TEXT NOT NULL,
+      section_id    TEXT DEFAULT '',
+      outcome       TEXT DEFAULT 'ok',
+      notes         TEXT DEFAULT '',
+      sort_order    INTEGER DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_insp_pkg_session ON inspection_packages (session_id, tenant_id)`,
+    `CREATE TABLE IF NOT EXISTS inspection_sub_items (
+      id         TEXT NOT NULL PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      tenant_id  TEXT NOT NULL DEFAULT '',
+      label      TEXT NOT NULL,
+      outcome    TEXT DEFAULT 'ok',
+      notes      TEXT DEFAULT '',
+      sort_order INTEGER DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_insp_sub_pkg ON inspection_sub_items (package_id, tenant_id)`,
     `CREATE TABLE IF NOT EXISTS pending_uploads (
       url         TEXT NOT NULL,
       tenant_id   TEXT NOT NULL DEFAULT '',

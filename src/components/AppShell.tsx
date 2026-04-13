@@ -4,6 +4,9 @@ import { Eye } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AboutDialog } from '@/components/AboutDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
+import { ExportDialog } from '@/components/ExportDialog';
+import { fetchSessions } from '@/lib/api';
+import type { WorkSession } from '@/lib/types';
 
 // ─── Icon helper (Material Symbols via CSS) ─────────────────────────
 export function MIcon({ name, className = '', style }: { name: string; className?: string; style?: React.CSSProperties }) {
@@ -19,24 +22,26 @@ export function MIcon({ name, className = '', style }: { name: string; className
 
 // ─── Sidebar nav items ──────────────────────────────────────────────
 const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'analytics', to: '/dashboard' },
-  { id: 'blog', label: 'Blog', icon: 'receipt_long', to: '/blog' },
-  { id: 'tracker', label: 'Session Tracker', icon: 'timer', to: '/tracker' },
-  { id: 'expenses', label: 'Expenses', icon: 'account_balance_wallet', to: '/expenses' },
-  { id: 'inventory', label: 'Inventory', icon: 'inventory_2', to: '/inventory' },
+  { id: 'dashboard',   label: 'Dashboard',      icon: 'analytics',             to: '/dashboard' },
+  { id: 'blog',        label: 'Blog',            icon: 'receipt_long',          to: '/blog' },
+  { id: 'tracker',     label: 'Session Tracker', icon: 'timer',                 to: '/tracker' },
+  { id: 'expenses',    label: 'Expenses',        icon: 'account_balance_wallet', to: '/expenses' },
+  { id: 'inventory',   label: 'Inventory',       icon: 'inventory_2',           to: '/inventory' },
+  { id: 'inspections', label: 'Inspections',     icon: 'fact_check',            to: '/inspections' },
 ];
 
 // ─── Props ──────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
-  dashboard: 'Dashboard',
-  blog: 'Build Log',
-  tracker: 'Session Tracker',
-  expenses: 'Project Expenses',
-  inventory: 'Parts Inventory',
+  dashboard:   'Dashboard',
+  blog:        'Build Log',
+  tracker:     'Session Tracker',
+  expenses:    'Project Expenses',
+  inventory:   'Parts Inventory',
+  inspections: 'Inspections',
 };
 
 interface AppShellProps {
-  activePage: 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory';
+  activePage: 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections';
   projectName: string;
   pageTitle?: string;
   headerRight?: React.ReactNode;
@@ -51,6 +56,18 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [exportSessions, setExportSessions] = useState<WorkSession[]>([]);
+
+  const handleExportClick = async () => {
+    try {
+      const page = await fetchSessions({ limit: 10000 });
+      setExportSessions(page.sessions);
+    } catch {
+      setExportSessions([]);
+    }
+    setShowExport(true);
+  };
 
   useEffect(() => {
     if (!sidebarOpen) return;
@@ -75,9 +92,9 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
       <div
         className={`fixed left-0 top-0 h-screen w-72 z-50 overflow-y-auto transition-transform duration-300 ease-out bg-card ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        <div className="flex items-center justify-between p-6">
+        <div className="flex items-center justify-between p-4">
           <div>
-            <span className="font-headline font-black text-2xl tracking-tighter block leading-tight text-foreground">
+            <span className="font-headline font-black text-xl tracking-tighter block leading-tight text-foreground">
               BenchLog
             </span>
             <span className="font-label text-xs block mt-0.5 text-muted-foreground">
@@ -88,11 +105,11 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
             <MIcon name="close" className="text-xl text-foreground" />
           </button>
         </div>
-        <div className="px-6 pb-6">
-          <div className="flex flex-col gap-6">
+        <div className="px-4 pb-4">
+          <div className="flex flex-col gap-4">
             {/* NAVIGATION */}
-            <div className="flex flex-col gap-1">
-              <div className="font-bold text-xs tracking-widest uppercase mb-2 text-muted-foreground">
+            <div className="flex flex-col gap-0.5">
+              <div className="font-bold text-xs tracking-widest uppercase mb-1 text-muted-foreground">
                 Navigation
               </div>
               {NAV_ITEMS.map(item => {
@@ -102,7 +119,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                     key={item.id}
                     to={item.to}
                     onClick={() => setSidebarOpen(false)}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded transition-colors text-sm ${isActive ? 'font-medium bg-primary/[0.12] text-primary' : 'hover:opacity-80 text-foreground'}`}
+                    className={`flex items-center gap-3 px-3 py-1.5 rounded transition-colors text-sm ${isActive ? 'font-medium bg-primary/[0.12] text-primary' : 'hover:opacity-80 text-foreground'}`}
                   >
                     <MIcon name={item.icon} className={`text-xl ${!isActive ? 'text-muted-foreground' : ''}`} />
                     {item.label}
@@ -111,16 +128,32 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
               })}
             </div>
 
+            {/* EXPORT */}
+            {(isAuthenticated || demoMode) && (
+              <div className="flex flex-col gap-0.5">
+                <div className="font-bold text-xs tracking-widest uppercase mb-1 text-muted-foreground">
+                  Export
+                </div>
+                <button
+                  onClick={() => { setSidebarOpen(false); handleExportClick(); }}
+                  className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-left text-foreground w-full"
+                >
+                  <MIcon name="picture_as_pdf" className="text-xl text-muted-foreground" />
+                  Build Report
+                </button>
+              </div>
+            )}
+
             {/* ACCOUNT */}
-            <div className="flex flex-col gap-1">
-              <div className="font-bold text-xs tracking-widest uppercase mb-2 text-muted-foreground">
+            <div className="flex flex-col gap-0.5">
+              <div className="font-bold text-xs tracking-widest uppercase mb-1 text-muted-foreground">
                 Account
               </div>
 
               {isAuthenticated && !demoMode && (
                 <button
                   onClick={() => { setSidebarOpen(false); setShowSettings(true); }}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-left text-foreground w-full"
+                  className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-left text-foreground w-full"
                 >
                   <MIcon name="settings" className="text-xl text-muted-foreground" />
                   Settings
@@ -129,7 +162,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
 
               <button
                 onClick={() => { setSidebarOpen(false); setShowAbout(true); }}
-                className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-left text-foreground"
+                className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-left text-foreground"
               >
                 <MIcon name="info" className="text-xl text-muted-foreground" />
                 About
@@ -138,7 +171,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
               <a
                 href={`mailto:bugs@benchlog.build?subject=${encodeURIComponent('[BenchLog Bug] ' + projectName)}`}
                 onClick={() => setSidebarOpen(false)}
-                className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
+                className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
               >
                 <MIcon name="bug_report" className="text-xl text-muted-foreground" />
                 Report a Bug
@@ -148,7 +181,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                 <Link
                   to="/admin"
                   onClick={() => setSidebarOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
+                  className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
                 >
                   <MIcon name="admin_panel_settings" className="text-xl text-muted-foreground" />
                   Admin Panel
@@ -158,7 +191,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
               {isAuthenticated && !demoMode && (
                 <button
                   onClick={() => { setSidebarOpen(false); logout(); }}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-left text-destructive"
+                  className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-left text-destructive"
                 >
                   <MIcon name="logout" className="text-xl" />
                   Sign out
@@ -170,7 +203,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                   to="/login"
                   state={{ from: `/${activePage}` }}
                   onClick={() => setSidebarOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
+                  className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
                 >
                   <MIcon name="login" className="text-xl text-muted-foreground" />
                   Log in
@@ -227,6 +260,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
 
       <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
       <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+      <ExportDialog sessions={exportSessions} open={showExport} onOpenChange={setShowExport} />
     </div>
   );
 }

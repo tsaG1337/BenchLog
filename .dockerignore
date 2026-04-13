@@ -14,3 +14,7 @@ data
 eng.traineddata
 AGENT_HANDOFF.md
 docker-compose*.yml
+test-results
+playwright-report
+blob-report
+e2e

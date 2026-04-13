@@ -11,7 +11,7 @@ import { format } from 'date-fns';
 import { getCategoryIds } from '@/lib/utils';
 import { jsPDF } from 'jspdf';
 import { toast } from 'sonner';
-import { fetchExpenses, fetchExpenseStats, fetchSignOffs, CURRENCIES } from '@/lib/api';
+import { fetchExpenses, fetchExpenseStats, fetchInspectionSessions, CURRENCIES } from '@/lib/api';
 
 interface ExportDialogProps {
   sessions: WorkSession[];
@@ -387,11 +387,11 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
       doc.setTextColor(0);
       y += 12;
 
-      // ── Sign-offs ──────────────────────────────────────────────────
+      // ── Inspection Sign-Offs ──────────────────────────────────────
       if (includeSignOffs) {
         try {
-          const signOffs = await fetchSignOffs();
-          if (signOffs.length > 0) {
+          const inspSessions = await fetchInspectionSessions();
+          if (inspSessions.length > 0) {
             checkPage(16);
             doc.setDrawColor(180);
             doc.line(margin, y, pageWidth - margin, y);
@@ -402,41 +402,74 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
             doc.text('Inspection Sign-Offs', margin, y);
             y += 8;
 
-            for (const s of signOffs) {
-              checkPage(30);
-              // Package label + date
-              doc.setFontSize(10);
+            const outcomeMap: Record<string, string> = {
+              ok: '✓ OK', partial: '~ Partial', rework: '✗ Rework', na: '— N/A',
+            };
+
+            for (const session of inspSessions) {
+              checkPage(20);
+              // Session name + date
+              doc.setFontSize(11);
               doc.setFont('helvetica', 'bold');
               doc.setTextColor(0);
-              doc.text(s.packageLabel, margin + 2, y);
+              doc.text(session.sessionName, margin + 2, y);
               doc.setFont('helvetica', 'normal');
               doc.setTextColor(100);
-              doc.text(format(new Date(s.date), 'dd MMM yyyy'), pageWidth - margin, y, { align: 'right' });
+              doc.text(format(new Date(session.date), 'dd MMM yyyy'), pageWidth - margin, y, { align: 'right' });
               y += 5;
 
               // Inspector
-              if (s.inspectorName) {
+              if (session.inspectorName) {
                 doc.setFontSize(9);
                 doc.setTextColor(80);
-                doc.text(`Inspector: ${s.inspectorName}`, margin + 2, y);
+                const inspLine = session.inspectorId
+                  ? `Inspector: ${session.inspectorName} (${session.inspectorId})`
+                  : `Inspector: ${session.inspectorName}`;
+                doc.text(inspLine, margin + 2, y);
                 y += 4.5;
               }
 
-              // Checklist items
-              const checks = [
-                s.inspectionCompleted ? '☑ Inspection completed' : '☐ Inspection completed',
-                s.executionSatisfactory ? '☑ Execution satisfactory' : s.reworkNeeded ? '☑ Rework needed' : '☐ Outcome',
-              ];
+              // Packages
               doc.setFontSize(9);
-              doc.setFont('helvetica', 'normal');
-              doc.setTextColor(60);
-              doc.text(checks.join('    '), margin + 2, y);
-              y += 4.5;
+              for (const pkg of session.packages) {
+                checkPage(6);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(0);
+                doc.text(`${outcomeMap[pkg.outcome] ?? '?'} ${pkg.packageLabel}`, margin + 4, y);
+                y += 4;
+                if (pkg.subItems.length > 0) {
+                  for (const si of pkg.subItems) {
+                    checkPage(4);
+                    doc.setFont('helvetica', 'normal');
+                    doc.setTextColor(80);
+                    const siText = si.notes
+                      ? `  ${outcomeMap[si.outcome] ?? '?'} ${si.label} — ${si.notes}`
+                      : `  ${outcomeMap[si.outcome] ?? '?'} ${si.label}`;
+                    doc.text(siText, margin + 6, y);
+                    y += 3.5;
+                  }
+                }
+                if (pkg.notes) {
+                  checkPage(4);
+                  doc.setFont('helvetica', 'italic');
+                  doc.setTextColor(100);
+                  const noteLines = doc.splitTextToSize(pkg.notes, contentWidth - 10);
+                  for (const line of noteLines) {
+                    checkPage(4);
+                    doc.text(line, margin + 6, y);
+                    y += 3.5;
+                  }
+                }
+                doc.setTextColor(0);
+              }
 
-              // Comments
-              if (s.comments) {
-                const commentLines = doc.splitTextToSize(`Comments: ${s.comments}`, contentWidth - 6);
-                for (const line of commentLines) {
+              // Session notes
+              if (session.notes && !session.notes.startsWith('migrated:')) {
+                checkPage(5);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(80);
+                const noteLines = doc.splitTextToSize(`Notes: ${session.notes}`, contentWidth - 6);
+                for (const line of noteLines) {
                   checkPage(4);
                   doc.text(line, margin + 2, y);
                   y += 4;
@@ -444,13 +477,19 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
               }
 
               // Signature
-              checkPage(22);
-              try {
-                const sigWidth = 60;
-                const sigHeight = 18;
-                doc.addImage(s.signaturePng, 'PNG', margin + 2, y, sigWidth, sigHeight);
-                y += sigHeight + 3;
-              } catch {}
+              if (session.signaturePng) {
+                checkPage(22);
+                try {
+                  let sigSrc = session.signaturePng;
+                  if (!sigSrc.startsWith('data:')) {
+                    sigSrc = (await loadImageAsDataUrl(sigSrc)) || '';
+                  }
+                  if (sigSrc) {
+                    doc.addImage(sigSrc, 'PNG', margin + 2, y, 60, 18);
+                    y += 21;
+                  }
+                } catch {}
+              }
 
               doc.setDrawColor(230);
               doc.setTextColor(0);

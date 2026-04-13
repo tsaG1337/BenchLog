@@ -676,6 +676,65 @@ export async function deleteSignOff(id: string): Promise<void> {
   await request(`/api/signoffs/${id}`, { method: 'DELETE' });
 }
 
+// ─── Inspection Sessions ─────────────────────────────────────────────
+export interface InspectionSubItem {
+  id: string;
+  label: string;
+  outcome: 'ok' | 'partial' | 'rework' | 'na';
+  notes: string;
+  sortOrder: number;
+}
+
+export interface InspectionPackage {
+  id: string;
+  packageId: string;
+  packageLabel: string;
+  sectionId: string;
+  outcome: 'ok' | 'partial' | 'rework' | 'na';
+  notes: string;
+  sortOrder: number;
+  subItems: InspectionSubItem[];
+}
+
+export interface InspectionSession {
+  id: string;
+  sessionName: string;
+  date: string;
+  inspectorName: string;
+  inspectorId: string;
+  notes: string;
+  signaturePng: string;
+  packages: InspectionPackage[];
+  createdAt: string;
+}
+
+export async function fetchInspectionSessions(): Promise<InspectionSession[]> {
+  return request<InspectionSession[]>('/api/inspection-sessions');
+}
+
+export async function createInspectionSession(
+  data: Omit<InspectionSession, 'id' | 'createdAt'>
+): Promise<{ id: string }> {
+  return request<{ id: string }>('/api/inspection-sessions', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateInspectionSession(
+  id: string,
+  data: Omit<InspectionSession, 'id' | 'createdAt'>
+): Promise<void> {
+  await request(`/api/inspection-sessions/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteInspectionSession(id: string): Promise<void> {
+  await request(`/api/inspection-sessions/${id}`, { method: 'DELETE' });
+}
+
 export interface FlowItem { id: string; label: string; children?: FlowItem[] }
 export type PackagesMap = Record<string, FlowItem[]>;
 

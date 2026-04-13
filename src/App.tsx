@@ -22,6 +22,7 @@ const AuthCallbackPage = lazy(() => import("./pages/AuthCallbackPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const MaintenancePage = lazy(() => import("./pages/MaintenancePage"));
 const InventoryPage = lazy(() => import("./pages/InventoryPage"));
+const InspectionsPage = lazy(() => import("./pages/InspectionsPage"));
 
 const queryClient = new QueryClient();
 
@@ -170,6 +171,7 @@ const App = () => (
                   <Route path="/tracker" element={<MaintenanceGuard><DeactivatedGuard><ProtectedRoute><Index /></ProtectedRoute></DeactivatedGuard></MaintenanceGuard>} />
                   <Route path="/expenses" element={<MaintenanceGuard><DeactivatedGuard><ProtectedRoute><ExpensesPage /></ProtectedRoute></DeactivatedGuard></MaintenanceGuard>} />
                   <Route path="/inventory" element={<MaintenanceGuard><DeactivatedGuard><ProtectedRoute><InventoryPage /></ProtectedRoute></DeactivatedGuard></MaintenanceGuard>} />
+                  <Route path="/inspections" element={<MaintenanceGuard><DeactivatedGuard><ProtectedRoute><InspectionsPage /></ProtectedRoute></DeactivatedGuard></MaintenanceGuard>} />
                   <Route path="/admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
                   <Route path="/blog" element={<MaintenanceGuard><BlogPage /></MaintenanceGuard>} />
                   <Route path="/blog/:postId" element={<MaintenanceGuard><BlogPage /></MaintenanceGuard>} />
