@@ -21,7 +21,6 @@ function toPostgres(sql) {
 const TABLE_PKS = {
   settings:          ['key', 'tenant_id'],
   active_timer:      ['tenant_id'],
-  image_annotations: ['image_url', 'tenant_id'],
   expense_budgets:   ['category', 'tenant_id'],
   pending_uploads:   ['url', 'tenant_id'],
   flowchart_status:  ['key', 'tenant_id'],
@@ -64,6 +63,16 @@ function adaptForPostgres(sql) {
   return sql;
 }
 
+/** Append RETURNING id to plain INSERT statements so Postgres returns the auto-increment ID.
+ *  Skips ON CONFLICT variants (upsert tables like settings, active_timer, etc. that lack an id column). */
+function pgRunWithReturning(sql) {
+  const trimmed = sql.trimEnd().replace(/;$/, '');
+  if (/^\s*INSERT\s+INTO\s+/i.test(trimmed) && !/RETURNING\s+/i.test(trimmed) && !/ON\s+CONFLICT/i.test(trimmed)) {
+    return trimmed + ' RETURNING id';
+  }
+  return sql;
+}
+
 // ─── SQLite implementation ─────────────────────────────────────────────
 
 let BetterSqlite;
@@ -101,7 +110,7 @@ function makeSqliteWrapper(sqlite, tenantId) {
 
     run(sql, params = []) {
       const info = sqlite.prepare(sql).run(params);
-      return Promise.resolve({ changes: info.changes });
+      return Promise.resolve({ changes: info.changes, lastID: info.lastInsertRowid });
     },
 
     /** Run fn(wrapper) synchronously inside a SQLite transaction.
@@ -214,7 +223,7 @@ async function ensureFirstTenant({ adminPassword, initSchema } = {}) {
     if (rows.length === 0) {
       tenantId = uuidv4();
       const hash = adminPassword
-        ? require('crypto').createHash('sha256').update(adminPassword).digest('hex')
+        ? await require('bcrypt').hash(adminPassword, 12)
         : '';
       await pool.query(
         'INSERT INTO tenants (id, slug, display_name, password_hash, role) VALUES ($1, $2, $3, $4, $5)',
@@ -259,22 +268,40 @@ async function ensureFirstTenant({ adminPassword, initSchema } = {}) {
 
 // ─── Tenant auth helpers (backend-agnostic) ───────────────────────────
 
-/** Returns { id, slug, password_hash, role } for the first tenant from whichever backend. */
+/** Returns { id, slug, password_hash, role, public_blog } for the first tenant from whichever backend. */
 async function getFirstTenant() {
   if (DB_BACKEND === 'postgres') {
-    const { rows } = await getPool().query('SELECT id, slug, password_hash, role FROM tenants LIMIT 1');
+    const { rows } = await getPool().query('SELECT id, slug, password_hash, role, public_blog FROM tenants LIMIT 1');
     return rows[0] || null;
   }
-  return getMasterSqlite().prepare('SELECT id, slug, password_hash, role FROM tenants LIMIT 1').get() || null;
+  return getMasterSqlite().prepare('SELECT id, slug, password_hash, role, public_blog FROM tenants LIMIT 1').get() || null;
 }
 
-/** Returns { id, slug, password_hash, role } for the tenant with the given slug. */
+/** Returns { id, slug, password_hash, role, public_blog } for the tenant with the given slug. */
 async function getTenantBySlug(slug) {
   if (DB_BACKEND === 'postgres') {
-    const { rows } = await getPool().query('SELECT id, slug, password_hash, role FROM tenants WHERE slug = $1', [slug]);
+    const { rows } = await getPool().query('SELECT id, slug, password_hash, role, public_blog FROM tenants WHERE slug = $1', [slug]);
     return rows[0] || null;
   }
-  return getMasterSqlite().prepare('SELECT id, slug, password_hash, role FROM tenants WHERE slug = ?').get(slug) || null;
+  return getMasterSqlite().prepare('SELECT id, slug, password_hash, role, public_blog FROM tenants WHERE slug = ?').get(slug) || null;
+}
+
+/** Returns full tenant profile { id, slug, display_name, email, password_hash, role, public_blog, is_active, created_at } by slug. */
+async function getTenantProfileBySlug(slug) {
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query('SELECT id, slug, display_name, email, password_hash, role, public_blog, is_active, created_at FROM tenants WHERE slug = $1', [slug]);
+    return rows[0] || null;
+  }
+  return getMasterSqlite().prepare('SELECT id, slug, display_name, email, password_hash, role, public_blog, is_active, created_at FROM tenants WHERE slug = ?').get(slug) || null;
+}
+
+/** Returns all tenants matching an email (case-insensitive). */
+async function getTenantsByEmail(email) {
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query('SELECT id, slug, display_name, email, role, is_active, created_at FROM tenants WHERE LOWER(email) = LOWER($1)', [email]);
+    return rows;
+  }
+  return getMasterSqlite().prepare('SELECT id, slug, display_name, email, role, is_active, created_at FROM tenants WHERE LOWER(email) = LOWER(?)').all(email);
 }
 
 /** Persists password_hash for a tenant in the master/tenants table. */
@@ -300,6 +327,19 @@ async function listTenants() {
   ).all();
 }
 
+async function getTenantById(id) {
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query(
+      'SELECT id, slug, display_name, email, role, is_active FROM tenants WHERE id = $1',
+      [id]
+    );
+    return rows[0] || null;
+  }
+  return getMasterSqlite().prepare(
+    'SELECT id, slug, display_name, email, role, is_active FROM tenants WHERE id = ?'
+  ).get(id) || null;
+}
+
 async function createTenantRow({ id, slug, display_name, email, role, password_hash }) {
   if (DB_BACKEND === 'postgres') {
     await getPool().query(
@@ -313,8 +353,13 @@ async function createTenantRow({ id, slug, display_name, email, role, password_h
   }
 }
 
+const TENANT_UPDATABLE_COLS = new Set([
+  'slug', 'email', 'display_name', 'password_hash', 'is_active',
+  'plan', 'role', 'project_name', 'aircraft_type', 'public_blog',
+]);
+
 async function updateTenantRow(id, fields) {
-  const entries = Object.entries(fields);
+  const entries = Object.entries(fields).filter(([k]) => TENANT_UPDATABLE_COLS.has(k));
   if (entries.length === 0) return;
   if (DB_BACKEND === 'postgres') {
     const setClauses = entries.map(([k], i) => `${k} = $${i + 2}`).join(', ');
@@ -418,7 +463,7 @@ function runMigrationIfNeeded() {
     console.warn('[migration] active_timer migration warning:', e.message);
   }
 
-  _defaultTenantId = tenantId;
+  _firstTenantId = tenantId;
   console.log(`[migration] Migrated legacy database.db → tenants/${tenantId}/`);
 }
 
@@ -451,8 +496,10 @@ function makePostgresWrapper(tenantId) {
     },
 
     async run(sql, params = []) {
-      const result = await pool.query(toPostgres(adaptForPostgres(sql)), params);
-      return { changes: result.rowCount };
+      const pgSql = toPostgres(adaptForPostgres(sql));
+      const result = await pool.query(pgRunWithReturning(pgSql), params);
+      const lastID = result.rows?.[0]?.id ?? undefined;
+      return { changes: result.rowCount, lastID };
     },
 
     async transaction(fn) {
@@ -464,7 +511,7 @@ function makePostgresWrapper(tenantId) {
           backend: 'postgres',
           get:  (s, p=[]) => client.query(toPostgres(adaptForPostgres(s)), p).then(r => r.rows[0]),
           all:  (s, p=[]) => client.query(toPostgres(adaptForPostgres(s)), p).then(r => r.rows),
-          run:  (s, p=[]) => client.query(toPostgres(adaptForPostgres(s)), p).then(r => ({ changes: r.rowCount })),
+          run:  (s, p=[]) => { const q = pgRunWithReturning(toPostgres(adaptForPostgres(s))); return client.query(q, p).then(r => ({ changes: r.rowCount, lastID: r.rows?.[0]?.id })); },
           transaction: (f) => f(clientWrapper), // nested: reuse same client
         };
         const result = await fn(clientWrapper);
@@ -498,12 +545,15 @@ module.exports = {
   ensureFirstTenant,
   getFirstTenant,
   getTenantBySlug,
+  getTenantProfileBySlug,
+  getTenantsByEmail,
   setTenantPassword,
   runMigrationIfNeeded,
   getMasterSqlite,
   openSqlite,
   tenantDbPath,
   listTenants,
+  getTenantById,
   createTenantRow,
   updateTenantRow,
   deleteTenantRow,

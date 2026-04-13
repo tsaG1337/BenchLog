@@ -1,30 +1,55 @@
+import { useState } from 'react';
 import { BlogPost } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { format } from 'date-fns';
 import { Clock, Wrench } from 'lucide-react';
-import { thumbUrl } from '@/lib/utils';
+import { thumbUrl, imageUrl } from '@/lib/utils';
 
 interface BlogPostCardProps {
   post: BlogPost;
   onClick: () => void;
 }
 
+function CardImage({ src, className }: { src: string; className: string }) {
+  const thumb = thumbUrl(src);
+  const full = imageUrl(src);
+  const [activeSrc, setActiveSrc] = useState(thumb);
+  const [failed, setFailed] = useState(false);
+
+  if (failed) return null;
+  return (
+    <img
+      src={activeSrc}
+      onError={() => {
+        if (activeSrc === thumb && thumb !== full) {
+          setActiveSrc(full); // thumb failed → try original
+        } else {
+          setFailed(true);   // original also failed → hide
+        }
+      }}
+      alt=""
+      className={className}
+    />
+  );
+}
+
 export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
   const { labels, icons } = useSections();
 
+  // imageUrls = explicitly attached images; contentImageUrls = extracted from Quill HTML server-side
   const allImages = post.imageUrls?.length
     ? post.imageUrls
-    : extractAllImages(post.content);
+    : (post.contentImageUrls ?? []);
 
   const firstImage = allImages[0];
   const extraImages = allImages.slice(1, 4);
   const isSession = post.source === 'session';
-  const textContent = stripHtml(post.content);
+  const textContent = post.excerpt ?? '';
 
   return (
     <article
       onClick={onClick}
-      className="bg-card border border-border rounded-xl overflow-hidden cursor-pointer hover:border-primary/40 transition-colors group"
+      className="bg-card rounded-lg overflow-hidden cursor-pointer hover:bg-accent/50 transition-colors group"
     >
       <div className="p-5 space-y-3">
         {/* Meta line */}
@@ -56,15 +81,14 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
           {post.title}
         </h2>
 
-        {/* Content area: image left, text right (rivetcount style) */}
+        {/* Content area: image left, text right */}
         {(firstImage || textContent) && (
           <div className="flex gap-4">
             {firstImage && (
               <div className="w-40 h-40 shrink-0 rounded-lg overflow-hidden bg-secondary">
-                <img
-                  src={thumbUrl(firstImage)}
-                  onError={(e) => { e.currentTarget.src = firstImage; }}
-                  alt=""
+                <CardImage
+                  key={firstImage}
+                  src={firstImage}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />
               </div>
@@ -84,7 +108,7 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
           <div className="flex gap-2 pt-1">
             {extraImages.map((url, i) => (
               <div key={i} className="w-16 h-16 rounded-md overflow-hidden bg-secondary shrink-0">
-                <img src={thumbUrl(url)} onError={(e) => { e.currentTarget.src = url; }} alt="" className="w-full h-full object-cover" />
+                <CardImage key={url} src={url} className="w-full h-full object-cover" />
               </div>
             ))}
             {allImages.length > 4 && (
@@ -97,22 +121,6 @@ export function BlogPostCard({ post, onClick }: BlogPostCardProps) {
       </div>
     </article>
   );
-}
-
-function stripHtml(html: string): string {
-  // Insert a space at block boundaries so paragraphs don't run together
-  // (e.g. "build.Unfortunately" → "build. Unfortunately")
-  const spaced = html
-    .replace(/<\/p>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, ' ');
-  const div = document.createElement('div');
-  div.innerHTML = spaced;
-  return (div.textContent || '').replace(/\s+/g, ' ').trim();
-}
-
-function extractAllImages(html: string): string[] {
-  const matches = [...html.matchAll(/<img[^>]+src="([^"]+)"/g)];
-  return matches.map(m => m[1]);
 }
 
 function formatDuration(minutes: number): string {

@@ -57,14 +57,14 @@ export function SignOffsList({ signOffs, onDeleted, readOnly }: SignOffsListProp
       {signOffs.map(s => {
         const expanded = expandedId === s.id;
         return (
-          <div key={s.id} className="border border-border rounded-lg bg-card overflow-hidden">
+          <div key={s.id} className="rounded-lg bg-card overflow-hidden">
             {/* Header row */}
             <button
               className="w-full flex items-start gap-3 p-4 hover:bg-secondary/50 transition-colors text-left"
               onClick={() => setExpandedId(expanded ? null : s.id)}
             >
               {/* Signature thumbnail */}
-              <img src={s.signaturePng} alt="Signature" className="w-20 h-10 object-contain border border-border rounded bg-white shrink-0" />
+              <img src={s.signaturePng?.startsWith('data:image/') ? s.signaturePng : ''} alt="Signature" className="w-20 h-10 object-contain border border-border rounded bg-white shrink-0" />
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -76,7 +76,6 @@ export function SignOffsList({ signOffs, onDeleted, readOnly }: SignOffsListProp
                 </div>
                 <div className="flex flex-wrap gap-1 mt-1.5">
                   <StatusChip label="Completed" active={s.inspectionCompleted} />
-                  <StatusChip label="No critical issues" active={s.noCriticalIssues} />
                   <StatusChip label="Satisfactory" active={s.executionSatisfactory} />
                   <StatusChip label="Rework needed" active={s.reworkNeeded} variant="warning" />
                 </div>
@@ -96,7 +95,7 @@ export function SignOffsList({ signOffs, onDeleted, readOnly }: SignOffsListProp
 
             {/* Expanded detail */}
             {expanded && (
-              <div className="border-t border-border px-4 py-3 space-y-3">
+              <div className="bg-muted/30 px-4 py-3 space-y-3">
                 {s.comments && (
                   <div>
                     <p className="text-xs text-muted-foreground mb-1">Comments</p>
@@ -108,7 +107,6 @@ export function SignOffsList({ signOffs, onDeleted, readOnly }: SignOffsListProp
                   <div className="grid grid-cols-2 gap-1 text-xs">
                     {[
                       { label: 'Inspection completed', value: s.inspectionCompleted },
-                      { label: 'No critical issues', value: s.noCriticalIssues },
                       { label: 'Execution satisfactory', value: s.executionSatisfactory },
                       { label: 'Rework needed', value: s.reworkNeeded },
                     ].map(item => (
@@ -124,7 +122,7 @@ export function SignOffsList({ signOffs, onDeleted, readOnly }: SignOffsListProp
                 <div>
                   <p className="text-xs text-muted-foreground mb-2">Signature</p>
                   <div className="border border-border rounded-md bg-white inline-block p-2">
-                    <img src={s.signaturePng} alt="Signature" className="max-w-[300px] h-auto" />
+                    <img src={s.signaturePng?.startsWith('data:image/') ? s.signaturePng : ''} alt="Signature" className="max-w-[300px] h-auto" />
                   </div>
                 </div>
               </div>

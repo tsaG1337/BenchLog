@@ -68,76 +68,68 @@ export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time',
 
   return (
     <div className="space-y-6">
-      <div className="bg-card border border-border rounded-lg p-6 text-center">
-        <p className="text-sm text-muted-foreground mb-1">Total Build Time</p>
-        <p className="font-mono text-4xl font-bold text-primary">{totalHours.toFixed(1)}</p>
-        <p className="text-sm text-muted-foreground">hours</p>
-      </div>
-
-      {/* Estimated Finish Date */}
-      <div className="bg-card border border-border rounded-lg p-5 text-center">
-        <div className="flex items-center justify-center gap-2 mb-2">
-          <CalendarCheck className="w-4 h-4 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Estimated Finish Date</p>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <HelpCircle className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
-              This estimate is calculated by dividing your total logged hours by the number of weeks since your first session to get your average hours per week. The remaining hours (target minus logged) are then divided by that weekly average to project a finish date.
-            </TooltipContent>
-          </Tooltip>
+      {/* Compact stats row */}
+      <div className="bg-card rounded-lg p-3 sm:p-4 space-y-2.5">
+        <div className="flex items-center gap-4 sm:gap-6 flex-wrap text-sm">
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">Total:</span>
+            <span className="font-mono font-bold text-primary">{totalHours.toFixed(1)}h</span>
+            <span className="text-muted-foreground/60">/ {TARGET_HOURS}h</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">Sessions:</span>
+            <span className="font-mono font-bold text-foreground">{countedSessions.length}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">Avg:</span>
+            <span className="font-mono font-bold text-foreground">
+              {countedSessions.length > 0 ? formatTime(totalMinutes / countedSessions.length) : '0m'}
+            </span>
+          </div>
         </div>
-        {estimate?.done ? (
-          <p className="font-mono text-2xl font-bold text-primary">🎉 Complete!</p>
-        ) : estimate?.date ? (
-          <>
-            <p className="font-mono text-2xl font-bold text-foreground">
-              {estimate.date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Based on {estimate.hoursPerWeek.toFixed(1)} hrs/week avg · {(TARGET_HOURS - totalHours).toFixed(0)}h remaining of {TARGET_HOURS}h
-            </p>
-          </>
-        ) : (
-          <div className="flex items-center justify-center gap-1.5">
-            <p className="text-sm text-muted-foreground/60">Need more session data to estimate</p>
+
+        <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center gap-1.5">
+            <CalendarCheck className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="text-muted-foreground">Est. finish:</span>
+            {estimate?.done ? (
+              <span className="font-mono text-sm font-bold text-primary">Complete!</span>
+            ) : estimate?.date ? (
+              <span className="font-mono font-bold text-foreground">
+                {estimate.date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+              </span>
+            ) : (
+              <span className="text-muted-foreground/60 text-xs">Need more data</span>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
-                <HelpCircle className="w-3.5 h-3.5 text-muted-foreground/40 cursor-help" />
+                <HelpCircle className="w-3 h-3 text-muted-foreground/40 cursor-help" />
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs text-xs leading-relaxed">
-                At least 2 sessions spread over 3.5 days or more are needed to calculate your average weekly pace and project a finish date.
+                Based on your average weekly pace ({estimate?.hoursPerWeek ? `${estimate.hoursPerWeek.toFixed(1)} hrs/week` : 'calculating…'}). Needs at least 2 sessions over 3.5+ days.
               </TooltipContent>
             </Tooltip>
           </div>
-        )}
-        <div className="mt-3 h-2 bg-secondary rounded-full overflow-hidden">
+          {estimate?.date && !estimate.done && (
+            <span className="text-xs text-muted-foreground hidden sm:inline">
+              {estimate.hoursPerWeek.toFixed(1)} hrs/wk · {(TARGET_HOURS - totalHours).toFixed(0)}h left
+            </span>
+          )}
+        </div>
+
+        <div className="h-1.5 bg-accent rounded-full overflow-hidden">
           <div
             className="h-full bg-primary rounded-full transition-all"
             style={{ width: `${progressPct}%` }}
           />
         </div>
-        <p className="text-xs text-muted-foreground mt-1">
+        <p className="text-xs text-muted-foreground text-right">
           {progressPct.toFixed(1)}% complete
           {progressMode === 'packages' && <span className="text-muted-foreground/60"> (packages)</span>}
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <p className="text-2xl font-bold text-foreground font-mono">{countedSessions.length}</p>
-          <p className="text-xs text-muted-foreground">Sessions</p>
-        </div>
-        <div className="bg-card border border-border rounded-lg p-4 text-center">
-          <p className="text-2xl font-bold text-foreground font-mono">
-            {countedSessions.length > 0 ? formatTime(totalMinutes / countedSessions.length) : '0m'}
-          </p>
-          <p className="text-xs text-muted-foreground">Avg Session</p>
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-lg p-5">
+      <div className="bg-card rounded-lg p-5">
         <h3 className="text-sm font-medium text-muted-foreground mb-4">Hours by Section</h3>
         <div className="space-y-3">
           {sectionEntries.length === 0 && (
@@ -151,7 +143,7 @@ export function Dashboard({ sessions, targetHours = 2500, progressMode = 'time',
                 </span>
                 <span className="font-mono text-muted-foreground">{formatTime(minutes)}</span>
               </div>
-              <div className="h-2 bg-secondary rounded-full overflow-hidden">
+              <div className="h-2 bg-accent rounded-full overflow-hidden">
                 <div
                   className="h-full bg-primary rounded-full transition-all"
                   style={{ width: `${(minutes / maxMinutes) * 100}%` }}

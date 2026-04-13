@@ -1,435 +1,560 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
-import { Wrench, PenSquare, Menu, X, Timer, LogIn, Eye, LogOut, Settings, Wallet, Info, Search, ShieldCheck } from 'lucide-react';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { AboutDialog } from '@/components/AboutDialog';
-import { BlogSidebar } from '@/components/blog/BlogSidebar';
-import { BlogPostCard } from '@/components/blog/BlogPostCard';
+import { useSearchParams } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
+import { useSections } from '@/contexts/SectionsContext';
+import {
+  fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings,
+  fetchBuildStats, fetchFlowchartPackages, trackPageView,
+  type BlogPost, type BlogArchiveEntry, type BuildStats, type PackagesMap, type FlowItem,
+} from '@/lib/api';
 import { BlogPostView } from '@/components/blog/BlogPostView';
 import { BlogEditor } from '@/components/blog/BlogEditor';
 import { SessionBlogEditor } from '@/components/blog/SessionBlogEditor';
-import { BlogStatsBar } from '@/components/blog/BlogStatsBar';
-import { BlogSearchBar } from '@/components/blog/BlogSearchBar';
-import { fetchBlogPosts, fetchBlogArchive, fetchBlogPost, fetchGeneralSettings, fetchBuildStats, trackPageView, BlogPost, BlogArchiveEntry, BuildStats } from '@/lib/api';
-import { isElectron } from '@/lib/env';
-import { useAuth } from '@/contexts/AuthContext';
-import { useSections } from '@/contexts/SectionsContext';
+import { AppShell, MIcon } from '@/components/AppShell';
+import { thumbUrl, imageUrl } from '@/lib/utils';
 import { toast } from 'sonner';
+import { format } from 'date-fns';
 
+// ─── Types ──────────────────────────────────────────────────────────
 type View = 'list' | 'post' | 'editor';
 
+interface Filters {
+  section?: string;
+  year?: string;
+  month?: string;
+  plansSection?: string;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────
+const MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function formatDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return h > 0 ? `${h}.${Math.round((m / 60) * 10)}` : `0.${Math.round((m / 60) * 10)}`;
+}
+
+function formatDurationLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// ─── Thumbnail image with fallback ──────────────────────────────────
+function FeedImage({ src, className }: { src: string; className: string }) {
+  const thumb = thumbUrl(src);
+  const full = imageUrl(src);
+  const [activeSrc, setActiveSrc] = useState(thumb);
+  const [failed, setFailed] = useState(false);
+
+  if (failed) return null;
+  return (
+    <img
+      src={activeSrc}
+      onError={() => {
+        if (activeSrc === thumb && thumb !== full) setActiveSrc(full);
+        else setFailed(true);
+      }}
+      alt=""
+      className={className}
+    />
+  );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MAIN PAGE COMPONENT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export default function BlogPage() {
-  const { postId } = useParams<{ postId?: string }>();
-  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
+  const { sections, labels, icons } = useSections();
+  const [searchParams] = useSearchParams();
+
+  // ─── State ──────────────────────────────────────────────────────
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [archive, setArchive] = useState<BlogArchiveEntry[]>([]);
+  const [stats, setStats] = useState<BuildStats | null>(null);
+  const [projectName, setProjectName] = useState('BenchLog');
+  const [showSessionStats, setShowSessionStats] = useState(true);
+  const [filters, setFilters] = useState<Filters>(() => {
+    const sec = searchParams.get('section');
+    return sec ? { plansSection: sec } : {};
+  });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [view, setView] = useState<View>('list');
   const [activePost, setActivePost] = useState<BlogPost | null>(null);
-  const [filters, setFilters] = useState<{ section?: string; year?: string; month?: string; plansSection?: string }>({});
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [projectName, setProjectName] = useState('Build Tracker');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
-  const [stats, setStats] = useState<BuildStats | null>(null);
-  const [blogShowActivity, setBlogShowActivity] = useState(true);
-  const [blogShowStats, setBlogShowStats] = useState(true);
-  const [blogShowProgress, setBlogShowProgress] = useState(true);
-  const { isAuthenticated, demoMode, logout, role } = useAuth();
-  const { labels: sectionLabels } = useSections();
+  const [packages, setPackages] = useState<PackagesMap>({});
+  const [blogPrivate, setBlogPrivate] = useState(false);
 
-  const loadPosts = useCallback(async () => {
+  // ─── Data fetching ──────────────────────────────────────────────
+  const loadPosts = useCallback(async (f: Filters, pageNum = 1, append = false) => {
     try {
-      const [postsData, archiveData] = await Promise.all([
-        fetchBlogPosts(filters),
-        fetchBlogArchive(),
-      ]);
-      setPosts(postsData);
-      setArchive(archiveData);
+      const res = await fetchBlogPosts({ ...f, page: pageNum, limit: 20 });
+      setPosts(prev => append ? [...prev, ...res.posts] : res.posts);
+      setHasMore(res.hasMore);
+      setPage(pageNum);
     } catch (err: any) {
-      toast.error('Failed to load posts');
+      if (err?.message?.toLowerCase().includes('private')) {
+        setBlogPrivate(true);
+      } else {
+        toast.error('Failed to load posts');
+      }
     }
-  }, [filters]);
-
-  useEffect(() => {
-    loadPosts();
-  }, [loadPosts]);
-
-  useEffect(() => {
-    fetchGeneralSettings().then(s => {
-      setProjectName(s.projectName);
-      setBlogShowActivity(s.blogShowActivity ?? true);
-      setBlogShowStats(s.blogShowStats ?? true);
-      setBlogShowProgress(s.blogShowProgress ?? true);
-    }).catch(() => {});
-    fetchBuildStats().then(setStats).catch(() => {});
   }, []);
 
-  // Open post from URL param on initial load
-  useEffect(() => {
-    if (!postId) return;
-    if (postId.startsWith('session-')) {
-      // Session posts are in the list — wait for posts to load then find it
-      return;
-    }
-    fetchBlogPost(postId)
-      .then(full => { setActivePost({ ...full, source: 'blog' }); setView('post'); })
-      .catch(() => { toast.error('Post not found'); navigate('/blog', { replace: true }); });
-  }, [postId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // For session posts: once posts are loaded, find and open the session post from URL
-  useEffect(() => {
-    if (!postId?.startsWith('session-') || posts.length === 0 || activePost) return;
-    const found = posts.find((p: BlogPost) => p.id === postId);
-    if (found) { setActivePost(found); setView('post'); }
-    else { toast.error('Post not found'); navigate('/blog', { replace: true }); }
-  }, [postId, posts]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadPosts(filters); }, [filters, loadPosts]);
 
   useEffect(() => {
-    if (activePost) document.title = `${activePost.title} — ${projectName}`;
-    else if (projectName) document.title = `${projectName} — Blog`;
-  }, [activePost, projectName]);
+    fetchBlogArchive().then(setArchive).catch(() => {});
+    fetchGeneralSettings().then(s => { setProjectName(s.projectName); setShowSessionStats(s.blogShowSessionStats ?? true); }).catch(() => {});
+    fetchBuildStats().then(setStats).catch(() => {});
+    fetchFlowchartPackages().then(setPackages).catch(() => {});
+    trackPageView('/blog');
+  }, []);
 
-  // Close search panel on Escape
-  useEffect(() => {
-    if (searchOpen) {
-      const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSearchOpen(false); };
-      window.addEventListener('keydown', onKey);
-      return () => window.removeEventListener('keydown', onKey);
-    }
-  }, [searchOpen]);
-
-  // Track blog list view once on initial mount (web only — Cloudflare header not present in Electron)
-  useEffect(() => { if (!isElectron) trackPageView('/blog', undefined, document.referrer); }, []);
-
-  // Track individual post views
-  useEffect(() => {
-    if (!isElectron && view === 'post' && activePost) {
-      trackPageView(`/blog/${activePost.id}`, activePost.id);
-    }
-  }, [view, activePost?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const openPost = (post: BlogPost) => {
-    setActivePost(post);
-    setView('post');
-    navigate(`/blog/${post.id}`, { replace: false });
+  const handleFilterChange = (newFilters: Filters) => {
+    setFilters(newFilters);
+    setView('list');
+    setActivePost(null);
   };
 
   const handlePostClick = async (post: BlogPost) => {
     if (post.source === 'session') {
-      openPost(post);
+      setActivePost(post);
+      setView('post');
       return;
     }
     try {
       const full = await fetchBlogPost(post.id);
-      openPost({ ...full, source: 'blog' });
+      setActivePost(full);
+      setView('post');
     } catch {
       toast.error('Failed to load post');
     }
   };
 
-  const handleBack = () => {
-    setView('list');
-    setActivePost(null);
-    navigate('/blog', { replace: false });
-  };
-
-  const handleFilterChange = (newFilters: { section?: string; year?: string; month?: string; plansSection?: string }) => {
-    setFilters(newFilters);
-    setView('list');
-    setActivePost(null);
-    navigate('/blog', { replace: false });
-    setSidebarOpen(false);
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    await loadPosts(filters, page + 1, true);
+    setLoadingMore(false);
   };
 
   const handleSaved = () => {
     setView('list');
     setActivePost(null);
-    navigate('/blog', { replace: false });
-    loadPosts();
+    loadPosts(filters);
   };
 
-  const hasActiveFilters = !!(searchQuery.trim() || filters.section || filters.plansSection || filters.year);
+  // ─── Computed ───────────────────────────────────────────────────
+  const archiveByYear: Record<string, BlogArchiveEntry[]> = {};
+  for (const entry of archive) {
+    if (!archiveByYear[entry.year]) archiveByYear[entry.year] = [];
+    archiveByYear[entry.year].push(entry);
+  }
+  const years = Object.keys(archiveByYear).sort((a, b) => b.localeCompare(a));
 
-  // Client-side text filter applied on top of server-fetched posts
-  const filteredPosts = posts.filter(post => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    // Include resolved section label so e.g. "Empennage" matches empennage posts
-    const sectionLabel = post.section ? (sectionLabels[post.section] ?? post.section) : '';
-    const text = [
-      post.title,
-      post.content?.replace(/<[^>]+>/g, ' ') ?? '',
-      post.plansReference ?? '',
-      sectionLabel,
-    ].join(' ').toLowerCase();
-    return text.includes(q);
-  });
+  const sectionHours = stats?.sectionHours ?? {};
 
-  const subdomainSlug = (() => {
-    const parts = window.location.hostname.split('.');
-    if (parts.length < 3) return null;
-    const slug = parts[0];
-    return ['www', 'account', 'demo'].includes(slug) ? null : slug;
-  })();
+  // Client-side search filter
+  const filteredPosts = searchQuery
+    ? posts.filter(p => {
+        const q = searchQuery.toLowerCase();
+        return (
+          p.title.toLowerCase().includes(q) ||
+          (p.excerpt || '').toLowerCase().includes(q) ||
+          (labels[p.section || ''] || '').toLowerCase().includes(q)
+        );
+      })
+    : posts;
 
+
+  // ─── Header actions ─────────────────────────────────────────────
+  const headerActions = isAuthenticated ? (
+    <button
+      onClick={() => { setActivePost(null); setView('editor'); }}
+      className="font-label text-[10px] font-bold py-2 px-4 rounded hover:opacity-90 transition-colors flex items-center gap-2 uppercase tracking-wider shadow-sm bg-primary text-primary-foreground"
+    >
+      <MIcon name="edit_square" className="text-sm" />
+      New Post
+    </button>
+  ) : null;
+
+  // ─── Render ─────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-background">
-      {demoMode && (
-        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-          <Eye className="w-4 h-4 shrink-0" />
-          <span>Demo mode — read only. No data can be created or changed.</span>
-        </div>
-      )}
-      {subdomainSlug && !isAuthenticated && !demoMode && (
-        <div className="border-b border-border bg-primary/5 px-4 py-4">
-          <div className="container max-w-7xl flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between">
-            <div className="space-y-0.5">
-              <p className="text-sm font-semibold text-foreground">
-                Welcome to {projectName || subdomainSlug + "'s build log"}
+    <AppShell activePage="blog" projectName={projectName} headerRight={headerActions}>
+
+          {blogPrivate && !isAuthenticated ? (
+            <div className="flex flex-col items-center justify-center py-24 px-6 text-center max-w-lg mx-auto">
+              <span className="text-6xl mb-6" role="img" aria-label="lock">🔒</span>
+              <h2 className="text-2xl font-bold text-foreground mb-3">Hangar Doors Are Closed</h2>
+              <p className="text-muted-foreground text-sm leading-relaxed mb-2">
+                This builder has set their build log to private — no peeking through the hangar windows!
+                The rivets, the wiring, the countless hours of sanding… it's all behind closed doors for now.
               </p>
-              <p className="text-xs text-muted-foreground">
-                Tracking progress on a Van's RV-10 homebuilt aircraft — powered by Benchlog.
+              <p className="text-muted-foreground text-sm leading-relaxed mb-8">
+                If this is <em>your</em> build log and you're wondering why it looks empty,
+                you'll need to log in first. And if you're just a curious visitor itching to
+                start documenting your own build, we've got a spot on the ramp for you.
               </p>
+              <a
+                href="/"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-primary text-primary-foreground text-sm font-bold hover:opacity-90 transition-opacity"
+              >
+                Create Your Own Build Log
+              </a>
             </div>
-            <a
-              href="/login"
-              className="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 px-3 py-1.5 rounded-md transition-colors"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              Owner log in
-            </a>
-          </div>
-        </div>
-      )}
-      <header className="border-b border-border bg-card/50 sticky top-0 z-30 backdrop-blur-sm">
-        {/* Main header row */}
-        <div className="container max-w-7xl py-3 flex items-center gap-3">
-          <Link to="/" className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center glow-amber shrink-0">
-            <Wrench className="w-4 h-4 text-primary" />
-          </Link>
 
-          <h1 className="flex-1 min-w-0 text-base font-bold text-foreground tracking-tight truncate">
-            {projectName} — Blog
-          </h1>
-
-          {/* Search toggle button */}
-          <button
-            onClick={() => setSearchOpen(o => !o)}
-            className={`relative inline-flex items-center justify-center w-8 h-8 rounded-md transition-colors shrink-0 ${
-              searchOpen
-                ? 'bg-primary/15 text-primary'
-                : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
-            }`}
-            aria-label="Search"
-          >
-            {searchOpen ? <X className="w-4 h-4" /> : <Search className="w-4 h-4" />}
-            {/* Active filter dot */}
-            {!searchOpen && hasActiveFilters && (
-              <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
-            )}
-          </button>
-
-          {/* Hamburger menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
-                <Menu className="w-5 h-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              {/* Sidebar toggle — mobile only */}
-              <DropdownMenuItem className="lg:hidden" onClick={() => setSidebarOpen(!sidebarOpen)}>
-                {sidebarOpen ? <><X className="w-4 h-4 mr-2" /> Close sidebar</> : <><Menu className="w-4 h-4 mr-2" /> Sections & Archive</>}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator className="lg:hidden" />
-              {/* Page-specific actions */}
-              {isAuthenticated && (
-                <DropdownMenuItem onClick={() => { setActivePost(null); setView('editor'); }}>
-                  <PenSquare className="w-4 h-4 mr-2" /> New Post
-                </DropdownMenuItem>
-              )}
-              {isAuthenticated && <DropdownMenuSeparator />}
-              {/* Navigation */}
-              <DropdownMenuItem asChild>
-                <Link to={isAuthenticated ? '/' : '/login'} state={{ from: '/blog' }} className="flex items-center w-full">
-                  {isAuthenticated
-                    ? <><Timer className="w-4 h-4 mr-2" /> Build Tracker</>
-                    : <><LogIn className="w-4 h-4 mr-2" /> Login</>}
-                </Link>
-              </DropdownMenuItem>
-              {isAuthenticated && (
-                <DropdownMenuItem asChild>
-                  <Link to="/expenses" className="flex items-center w-full">
-                    <Wallet className="w-4 h-4 mr-2" /> Expenses
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {/* Settings */}
-              {isAuthenticated && !demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link to="/tracker" state={{ openSettings: true }} className="flex items-center w-full">
-                      <Settings className="w-4 h-4 mr-2" /> Settings
-                    </Link>
-                  </DropdownMenuItem>
-                </>
-              )}
-              {/* About */}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setShowAbout(true)}>
-                <Info className="w-4 h-4 mr-2" /> About
-              </DropdownMenuItem>
-              {role === 'admin' && isAuthenticated && !demoMode && (
-                <DropdownMenuItem asChild>
-                  <Link to="/admin" className="flex items-center w-full">
-                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {/* Sign out */}
-              {isAuthenticated && !demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
-                    <LogOut className="w-4 h-4 mr-2" /> Sign out
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* Slide-down filter panel */}
-        <div className={`overflow-hidden transition-all duration-300 ease-in-out ${searchOpen ? 'max-h-64' : 'max-h-0'}`}>
-          <div className="border-t border-border/60 bg-card/80 backdrop-blur-sm">
-            <div className="container max-w-7xl px-4 py-4">
-              <BlogSearchBar
-                query={searchQuery}
-                onQueryChange={q => { setSearchQuery(q); handleFilterChange({ ...filters, plansSection: undefined }); }}
-                onPlansSectionChange={plansSection => handleFilterChange({ ...filters, plansSection })}
-                onSearch={() => setSearchOpen(false)}
-              />
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <div className="container max-w-7xl py-6">
-        <div className="flex gap-8">
-          {/* Sidebar */}
-          <div className={`
-            ${sidebarOpen ? 'fixed inset-0 z-20 bg-background/95 p-6 pt-20 overflow-auto lg:relative lg:inset-auto lg:z-auto lg:bg-transparent lg:p-0 lg:pt-0' : 'hidden'}
-            lg:block lg:w-56 lg:shrink-0
-          `}>
-            <BlogSidebar
-              archive={archive}
-              activeSection={filters.section}
-              activeYear={filters.year}
-              activeMonth={filters.month}
-              onFilterChange={handleFilterChange}
-              projectName={projectName}
-              sectionHours={stats?.sectionHours ?? {}}
-              showActivity={blogShowActivity}
+          ) : view === 'post' && activePost ? (
+            <BlogPostView
+              post={activePost}
+              onBack={() => { setView('list'); setActivePost(null); }}
+              onEdit={() => setView('editor')}
+              onDeleted={handleSaved}
             />
-          </div>
 
-          <div className="flex-1 min-w-0 space-y-4">
-            {/* Build stats bar */}
-            {blogShowStats && <BlogStatsBar stats={stats} showProgress={blogShowProgress} />}
+          /* ─── Editor (inline) ──────────────────────────────────── */
+          ) : view === 'editor' ? (
+            activePost?.source === 'session' ? (
+              <SessionBlogEditor post={activePost} onSave={handleSaved} onCancel={() => { setView(activePost ? 'post' : 'list'); }} />
+            ) : (
+              <BlogEditor post={activePost ?? undefined} onSave={handleSaved} onCancel={() => { setView(activePost ? 'post' : 'list'); }} />
+            )
 
-            {view === 'list' && (
-              <div className="space-y-4">
-                {/* Active filter chips */}
-                {hasActiveFilters && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Filtered:</span>
-                    {searchQuery && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary border border-border text-xs font-medium">
-                        "{searchQuery}"
-                        <button onClick={() => setSearchQuery('')} className="text-muted-foreground hover:text-foreground transition-colors"><X className="w-3 h-3" /></button>
-                      </span>
-                    )}
-                    {filters.section && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/15 border border-primary/30 text-xs text-primary font-medium">
-                        {filters.section}
-                        <button onClick={() => handleFilterChange({ ...filters, section: undefined })} className="hover:text-foreground transition-colors"><X className="w-3 h-3" /></button>
-                      </span>
-                    )}
-                    {filters.plansSection && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/15 border border-primary/30 text-xs text-primary font-medium">
-                        Plans §{filters.plansSection}
-                        <button onClick={() => setFilters(f => { const { plansSection, ...rest } = f; return rest; })} className="hover:text-foreground transition-colors"><X className="w-3 h-3" /></button>
-                      </span>
-                    )}
-                    {filters.year && (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary border border-border text-xs font-medium">
-                        {filters.month ? `${filters.month}/${filters.year}` : filters.year}
-                        <button onClick={() => setFilters(f => { const { year, month, ...rest } = f; return rest; })} className="text-muted-foreground hover:text-foreground transition-colors"><X className="w-3 h-3" /></button>
-                      </span>
-                    )}
+          /* ─── Feed (default list view) ─────────────────────────── */
+          ) : (
+            <>
+              {/* Quick Stats Bento */}
+              {showSessionStats && <section className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-4 mb-10">
+                <StatCard
+                  label="Total Sessions"
+                  value={String(stats?.sessionCount ?? 0)}
+                  accent="primary"
+                  sub={stats ? (
+                    <span className="font-label text-[10px] mt-1 sm:mt-2 flex items-center gap-1 text-primary">
+                      <MIcon name="trending_up" className="text-xs" /> {stats.totalHours}h logged
+                    </span>
+                  ) : null}
+                />
+                <StatCard
+                  label="Hours / Week"
+                  value={stats?.hoursPerWeek ? String(stats.hoursPerWeek) : '—'}
+                  accent="tertiary"
+                  sub={stats?.hoursPerWeek ? (
+                    <span className="font-label text-[10px] mt-1 sm:mt-2 uppercase text-amber-600 dark:text-amber-400">
+                      Avg {(stats.totalHours / Math.max(stats.sessionCount, 1)).toFixed(1)}h / session
+                    </span>
+                  ) : null}
+                />
+                <div
+                  className="p-3 sm:p-6 rounded shadow-sm col-span-2 flex flex-col justify-between bg-card"
+                >
+                  <div>
+                    <p className="font-label text-[10px] sm:text-xs uppercase tracking-wider mb-1 text-muted-foreground">
+                      Completion Velocity
+                    </p>
+                    <div className="h-1.5 sm:h-2 w-full rounded-full mt-1.5 sm:mt-2 bg-accent">
+                      <div
+                        className="h-full rounded-full transition-all bg-primary"
+                        style={{ width: `${stats?.progressPct ?? 0}%` }}
+                      />
+                    </div>
                   </div>
-                )}
+                  <div className="flex justify-between items-end mt-2 sm:mt-4">
+                    <p className="font-mono text-[10px] uppercase text-muted-foreground">
+                      {stats?.estimatedFinish
+                        ? `Est. finish: ${new Date(stats.estimatedFinish).toLocaleDateString(undefined, { year: 'numeric', month: 'short' })}`
+                        : 'Target: ' + (stats?.targetHours ?? 0) + 'h'}
+                    </p>
+                    <p className="font-label text-sm sm:text-lg font-bold text-primary">
+                      {stats?.progressPct ?? 0}%
+                    </p>
+                  </div>
+                </div>
+              </section>}
 
-                {filteredPosts.length === 0 ? (
+              {/* Search & Filters */}
+              <section className="mb-8 flex flex-col lg:flex-row gap-4 items-end">
+                <div className="w-full lg:w-1/3">
+                  <label className="font-label text-[10px] uppercase mb-2 block ml-1 text-muted-foreground">
+                    Search Build Logs
+                  </label>
+                  <div className="relative">
+                    <MIcon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Keywords: Riveting, Wiring, Torqued..."
+                      className="w-full border-none focus:ring-1 focus:ring-primary py-3 pl-10 text-sm font-body rounded-sm bg-accent text-foreground"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 w-full lg:w-2/3">
+                  <div>
+                    <label className="font-label text-[10px] uppercase mb-2 block ml-1 text-muted-foreground">
+                      Assembly Section
+                    </label>
+                    <select
+                      value={
+                        filters.plansSection ? `pkg:${filters.plansSection}` :
+                        filters.section ? `sec:${filters.section}` : ''
+                      }
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (!val) {
+                          handleFilterChange({ ...filters, section: undefined, plansSection: undefined });
+                        } else if (val.startsWith('pkg:')) {
+                          handleFilterChange({ ...filters, section: undefined, plansSection: val.slice(4) });
+                        } else if (val.startsWith('sec:')) {
+                          handleFilterChange({ ...filters, plansSection: undefined, section: val.slice(4) });
+                        }
+                      }}
+                      className="w-full border-none focus:ring-1 py-3 text-sm font-body rounded-sm bg-accent text-foreground"
+                    >
+                      <option value="">All Sections</option>
+                      {sections.map(sec => {
+                        const tree = packages[sec.id] || [];
+                        const renderItems = (items: FlowItem[], depth: number): React.ReactNode[] =>
+                          items.flatMap(item => {
+                            const prefix = '\u00A0\u00A0\u00A0\u00A0'.repeat(depth);
+                            const num = /^(\d+)/.exec(item.label.trim())?.[1];
+                            return [
+                              <option key={item.id} value={num ? `pkg:${num}` : `sec:${sec.id}`}>
+                                {prefix}{depth > 0 ? '└ ' : ''}{item.label}
+                              </option>,
+                              ...(item.children ? renderItems(item.children, depth + 1) : []),
+                            ];
+                          });
+                        return [
+                          <option key={sec.id} value={`sec:${sec.id}`} style={{ fontWeight: 'bold' }}>
+                            {sec.icon} {sec.label}
+                          </option>,
+                          ...renderItems(tree, 1),
+                        ];
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-label text-[10px] uppercase mb-2 block ml-1 text-muted-foreground">
+                      Date Range
+                    </label>
+                    <select
+                      value={filters.year ? (filters.month ? `${filters.year}-${filters.month}` : filters.year) : ''}
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (!val) handleFilterChange({ ...filters, year: undefined, month: undefined });
+                        else if (val.includes('-')) {
+                          const [y, m] = val.split('-');
+                          handleFilterChange({ ...filters, year: y, month: m });
+                        } else {
+                          handleFilterChange({ ...filters, year: val, month: undefined });
+                        }
+                      }}
+                      className="w-full border-none focus:ring-1 py-3 text-sm font-body rounded-sm bg-accent text-foreground"
+                    >
+                      <option value="">All Time</option>
+                      {years.map(y => {
+                        const months = archiveByYear[y] || [];
+                        return [
+                          <option key={y} value={y} style={{ fontWeight: 'bold' }}>
+                            {y} ({months.reduce((s, e) => s + e.count, 0)})
+                          </option>,
+                          ...months.map(entry => (
+                            <option key={`${y}-${entry.month}`} value={`${y}-${entry.month}`}>
+                              {'\u00A0\u00A0\u00A0\u00A0'}{MONTH_NAMES[parseInt(entry.month)]} ({entry.count})
+                            </option>
+                          )),
+                        ];
+                      })}
+                    </select>
+                  </div>
+                  <button
+                    onClick={() => { setFilters({}); setSearchQuery(''); }}
+                    className="font-label text-xs font-bold py-3 px-4 rounded-sm hover:opacity-80 transition-colors flex items-center justify-center gap-2 col-span-2 md:col-span-1 bg-accent text-muted-foreground"
+                  >
+                    <MIcon name="tune" className="text-sm" />
+                    CLEAR FILTERS
+                  </button>
+                </div>
+              </section>
+
+              {/* ─── Session Feed ──────────────────────────────────── */}
+              <div className="space-y-6">
+                {filteredPosts.map(post => (
+                  <SessionCard
+                    key={post.id}
+                    post={post}
+                    labels={labels}
+                    icons={icons}
+                    onClick={() => handlePostClick(post)}
+                    isAuthenticated={isAuthenticated}
+                    onEdit={() => handlePostClick(post)}
+                  />
+                ))}
+
+                {filteredPosts.length === 0 && (
                   <div className="text-center py-16 text-muted-foreground">
-                    {posts.length === 0 ? (
-                      <>
-                        <p className="text-lg">No blog posts yet</p>
-                        <p className="text-sm mt-1">Create your first build log entry!</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-lg">No posts match</p>
-                        <p className="text-sm mt-1">Try a different search term or clear the filters.</p>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-5">
-                    {filteredPosts.map(post => (
-                      <BlogPostCard key={post.id} post={post} onClick={() => handlePostClick(post)} />
-                    ))}
+                    <MIcon name="receipt_long" className="text-5xl opacity-40" />
+                    <p className="mt-3 font-label text-sm">No sessions found</p>
                   </div>
                 )}
               </div>
-            )}
 
-            {view === 'post' && activePost && (
-              <div className="bg-card border border-border rounded-xl p-6 md:p-8 overflow-hidden">
-                <BlogPostView
-                  post={activePost}
-                  onBack={handleBack}
-                  onEdit={() => setView('editor')}
-                  onDeleted={handleSaved}
-                />
-              </div>
-            )}
+              {/* Load More */}
+              {hasMore && !searchQuery && (
+                <div className="mt-12 flex justify-center">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={loadingMore}
+                    className="flex flex-col items-center gap-1 group"
+                  >
+                    <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                      {loadingMore ? 'Loading...' : 'Load More Logs'}
+                    </span>
+                    {!loadingMore && (
+                      <MIcon name="keyboard_double_arrow_down" className="group-hover:translate-y-1 transition-transform text-primary" />
+                    )}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+    </AppShell>
+  );
+}
 
-            {view === 'editor' && activePost?.source === 'session' && (
-              <div className="bg-card border border-border rounded-xl p-6 md:p-8">
-                <SessionBlogEditor
-                  post={activePost}
-                  onSave={handleSaved}
-                  onCancel={() => setView('post')}
-                />
-              </div>
-            )}
-
-            {view === 'editor' && activePost?.source !== 'session' && (
-              <div className="bg-card border border-border rounded-xl p-6 md:p-8">
-                <BlogEditor
-                  post={activePost || undefined}
-                  onSave={handleSaved}
-                  onCancel={() => { setView(activePost ? 'post' : 'list'); }}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-      <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STAT CARD
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function StatCard({ label, value, accent, sub }: { label: string; value: string; accent: 'primary' | 'tertiary'; sub: React.ReactNode }) {
+  return (
+    <div
+      className={`p-3 sm:p-6 rounded shadow-sm bg-card border-l-4 ${accent === 'primary' ? 'border-primary' : 'border-amber-500'}`}
+    >
+      <p className="font-label text-[10px] sm:text-xs uppercase tracking-wider mb-0.5 sm:mb-1 text-muted-foreground">{label}</p>
+      <p className="text-2xl sm:text-4xl font-headline font-black text-foreground">{value}</p>
+      {sub}
     </div>
   );
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SESSION / BLOG POST CARD
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function SessionCard({
+  post, labels, icons, onClick, isAuthenticated, onEdit,
+}: {
+  post: BlogPost;
+  labels: Record<string, string>;
+  icons: Record<string, string>;
+  onClick: () => void;
+  isAuthenticated: boolean;
+  onEdit: () => void;
+}) {
+  const isSession = post.source === 'session';
+  const isBlog = post.source === 'blog' || !post.source;
+  const allImages = post.imageUrls?.length ? post.imageUrls : (post.contentImageUrls ?? []);
+
+  return (
+    <article
+      className="group overflow-hidden transition-all hover:translate-x-1 shadow-sm cursor-pointer bg-card rounded-lg"
+      onClick={onClick}
+    >
+      <div className="flex flex-col md:flex-row">
+        {/* Left date column */}
+        <div
+          className="md:w-48 p-4 md:p-6 flex md:flex-col justify-between md:justify-start gap-2 shrink-0 bg-muted"
+        >
+          <div>
+            <p className="font-label text-[10px] font-bold uppercase tracking-tighter text-primary">
+              {post.publishedAt ? format(new Date(post.publishedAt), 'MMM dd, yyyy') : 'Unknown date'}
+            </p>
+            {isSession && post.durationMinutes ? (
+              <p className="text-2xl font-headline font-extrabold mt-1 text-foreground">
+                {formatDuration(post.durationMinutes)}
+                <span className="text-xs font-label ml-1">HRS</span>
+              </p>
+            ) : (
+              <div className="mt-2 flex items-center gap-2">
+                <MIcon name="newspaper" className="text-3xl text-primary" />
+              </div>
+            )}
+          </div>
+          <div className="mt-2 md:mt-4">
+            {isSession ? (
+              <span
+                className="px-2 py-1 font-label text-[9px] font-bold rounded uppercase bg-primary/10 text-primary"
+              >
+                Build Session
+              </span>
+            ) : (
+              <span
+                className="px-2 py-1 font-label text-[9px] font-bold rounded uppercase bg-primary/10 text-primary"
+              >
+                Blog Post
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Right content */}
+        <div className="flex-grow p-4 md:p-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
+            <div>
+              <h3 className="font-headline font-bold text-lg text-foreground">
+                {post.title}
+              </h3>
+              <div className="flex items-center gap-3 mt-1 flex-wrap">
+                {post.section && (
+                  <div className="flex items-center gap-1 text-muted-foreground">
+                    <MIcon name="precision_manufacturing" className="text-sm" />
+                    <span className="font-label text-xs uppercase">
+                      {labels[post.section] || post.section}
+                    </span>
+                  </div>
+                )}
+                {post.plansReference && (
+                  <div
+                    className="flex items-center gap-1 border-l pl-3 text-muted-foreground border-border"
+                  >
+                    <MIcon name="description" className="text-sm" />
+                    <span className="font-label text-xs uppercase">{post.plansReference}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {post.excerpt && (
+            <p className="text-sm font-body leading-relaxed mb-4 line-clamp-3 text-muted-foreground">
+              {post.excerpt}
+            </p>
+          )}
+
+          {/* Images */}
+          {allImages.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+              {allImages.slice(0, 4).map((url, i) => (
+                <FeedImage
+                  key={i}
+                  src={url}
+                  className="w-24 h-24 object-cover rounded hover:opacity-80 transition-opacity cursor-zoom-in shrink-0"
+                />
+              ))}
+              {allImages.length > 4 && (
+                <div
+                  className="w-24 h-24 rounded flex items-center justify-center text-xs font-label font-medium shrink-0 bg-accent text-muted-foreground"
+                >
+                  +{allImages.length - 4}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+

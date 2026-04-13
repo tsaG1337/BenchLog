@@ -8,9 +8,10 @@ import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Download, Loader2, ImagePlus, X } from 'lucide-react';
 import { format } from 'date-fns';
+import { getCategoryIds } from '@/lib/utils';
 import { jsPDF } from 'jspdf';
 import { toast } from 'sonner';
-import { fetchExpenses, fetchExpenseStats, fetchSignOffs, EXPENSE_CATEGORIES, CURRENCIES } from '@/lib/api';
+import { fetchExpenses, fetchExpenseStats, fetchSignOffs, CURRENCIES } from '@/lib/api';
 
 interface ExportDialogProps {
   sessions: WorkSession[];
@@ -21,8 +22,8 @@ interface ExportDialogProps {
 
 export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: controlledOnOpenChange, timeFormat = '24h' }: ExportDialogProps) {
   const timeFmt = timeFormat === '24h' ? 'HH:mm' : 'h:mm a';
-  const dateTimeFmt = timeFormat === '24h' ? 'MMM d, yyyy HH:mm' : dateTimeFmt;
-  const fullDateTimeFmt = timeFormat === '24h' ? 'MMMM d, yyyy HH:mm' : fullDateTimeFmt;
+  const dateTimeFmt = timeFormat === '24h' ? 'MMM d, yyyy HH:mm' : 'MMM d, yyyy h:mm a';
+  const fullDateTimeFmt = timeFormat === '24h' ? 'MMMM d, yyyy HH:mm' : 'MMMM d, yyyy h:mm a';
   const { labels, sections: sectionConfigs } = useSections();
 
   const loadPref = <T,>(key: string, fallback: T): T => {
@@ -158,26 +159,29 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
   const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('Logo must be under 5 MB'); return; }
     const reader = new FileReader();
     reader.onload = (ev) => setCustomLogoDataUrl(ev.target?.result as string);
     reader.readAsDataURL(file);
   };
 
-  const loadImageAsDataUrl = (url: string): Promise<string | null> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL('image/png'));
-      };
-      img.onerror = () => resolve(null);
-      img.src = url;
-    });
+  const loadImageAsDataUrl = async (url: string): Promise<string | null> => {
+    try {
+      // Route external (R2) URLs through the server-side proxy to avoid CORS canvas taint
+      const fetchUrl = url.startsWith('http') ? `/api/image-proxy?url=${encodeURIComponent(url)}` : url;
+      const res = await fetch(fetchUrl);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      return null;
+    }
   };
 
   const loadLogoDataUrl = (): Promise<string | null> => {
@@ -277,13 +281,13 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           doc.text('By Category', margin, y);
           y += 6;
           doc.setFontSize(10);
-          for (const cat of EXPENSE_CATEGORIES) {
-            const spent = expStats.byCategory[cat.id] ?? 0;
+          for (const sec of sectionConfigs) {
+            const spent = expStats.byCategory[sec.id] ?? 0;
             if (spent === 0) continue;
             checkPage(6);
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(60);
-            doc.text(`${cat.icon} ${cat.label}`, margin + 2, y);
+            doc.text(sec.label, margin + 2, y);
             doc.setFont('helvetica', 'bold');
             doc.setTextColor(0);
             doc.text(fmtEur(spent), pageWidth - margin, y, { align: 'right' });
@@ -310,10 +314,10 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
             y += 4.5;
             doc.setFont('helvetica', 'normal');
             doc.setTextColor(100);
-            const cat = EXPENSE_CATEGORIES.find(c => c.id === exp.category);
+            const catLabel = getCategoryIds(exp.category).map(c => labels[c] || c.replace(/-/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())).join(' + ');
             const meta = [
               format(new Date(exp.date), 'dd.MM.yyyy'),
-              cat?.label,
+              catLabel,
               exp.vendor || null,
               exp.currency !== 'EUR' ? `${cur?.symbol}${exp.amount.toFixed(2)} ${exp.currency}` : null,
               exp.isCertificationRelevant ? 'LBA/EASA' : null,
@@ -502,6 +506,7 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
           if (includeImages && s.imageUrls && s.imageUrls.length > 0) {
             const imgSize = 40;
             let imgX = margin + 2;
+            let renderedCount = 0;
             for (const imgUrl of s.imageUrls) {
               const dataUrl = await loadImageAsDataUrl(imgUrl);
               if (!dataUrl) continue;
@@ -510,10 +515,10 @@ export function ExportDialog({ sessions, open: controlledOpen, onOpenChange: con
                 y += imgSize + 3;
               }
               checkPage(imgSize + 5);
-              try { doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize); } catch {}
+              try { doc.addImage(dataUrl, 'JPEG', imgX, y, imgSize, imgSize); renderedCount++; } catch {}
               imgX += imgSize + 3;
             }
-            y += imgSize + 3;
+            if (renderedCount > 0) y += imgSize + 3;
           }
 
           checkPage(4);

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSections } from '@/contexts/SectionsContext';
+import { fetchFlowchartPackages, fetchFlowchartStatus as apiFetchFlowchartStatus, updateFlowchartStatus as apiSaveFlowchartStatus, updateFlowchartPackages as apiSaveFlowchartPackages, updateSections as apiSaveSections, fetchSectionUsage, reassignSection } from '@/lib/api';
+import { SectionConfig } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { X, Pencil, Check, Plus, ChevronDown, ChevronRight, BookOpen } from 'lucide-react';
+import { X, Pencil, Check, Plus, ChevronDown, ChevronRight, BookOpen, Trash2, Clock, Undo2 } from 'lucide-react';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import { toast } from 'sonner';
-
-const API_URL = import.meta.env.VITE_API_URL || '';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,12 @@ interface TreeCtxValue {
   onDropOnChip: (e: React.DragEvent, id: string) => void;
   onDragOverSection: (e: React.DragEvent, sectionId: string) => void;
   onDropOnSection: (e: React.DragEvent, sectionId: string) => void;
+  // Section editing
+  onSectionUpdate: (id: string, field: keyof SectionConfig, value: string | boolean) => void;
+  onSectionDelete: (id: string) => void;
+  onSectionMove: (id: string, direction: -1 | 1) => void;
+  sectionCount: number;
+  sectionIndex: (id: string) => number;
 }
 
 /** Extract the leading integer from a label like "10 Tailcone" → "10", or null if none */
@@ -146,37 +153,15 @@ function insertRelative(items: FlowItem[], targetId: string, newItem: FlowItem, 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
 async function fetchFlowchartStatus(): Promise<StatusMap> {
-  const res = await fetch(`${API_URL}/api/flowchart-status`);
-  return res.ok ? res.json() : {};
+  try { return await apiFetchFlowchartStatus() as StatusMap; } catch { return {}; }
 }
 
 async function saveFlowchartStatus(statuses: StatusMap): Promise<void> {
-  const token = localStorage.getItem('auth_token');
-  await fetch(`${API_URL}/api/flowchart-status`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(statuses),
-  });
-}
-
-async function fetchFlowchartPackages(): Promise<PackagesMap> {
-  const res = await fetch(`${API_URL}/api/flowchart-packages`);
-  return res.ok ? res.json() : {};
+  await apiSaveFlowchartStatus(statuses as Record<string, string>);
 }
 
 async function saveFlowchartPackages(packages: PackagesMap): Promise<void> {
-  const token = localStorage.getItem('auth_token');
-  await fetch(`${API_URL}/api/flowchart-packages`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(packages),
-  });
+  await apiSaveFlowchartPackages(packages);
 }
 
 // ─── Circular progress indicator ─────────────────────────────────────────────
@@ -185,16 +170,18 @@ function CircularProgress({ pct, hasItems }: { pct: number; hasItems: boolean })
   const r = 14;
   const circ = 2 * Math.PI * r;
   const filled = (pct / 100) * circ;
+  const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const track = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
   const color = !hasItems
-    ? 'rgba(255,255,255,0.08)'
-    : pct === 100 ? '#10b981'
-    : pct > 0   ? '#f59e0b'
-    : 'rgba(255,255,255,0.15)';
+    ? track
+    : pct === 100 ? (isDark ? '#6ee7b7' : '#059669')
+    : pct > 0   ? (isDark ? '#fcd34d' : '#d97706')
+    : track;
 
   return (
     <div className="relative flex items-center justify-center w-10 h-10 shrink-0">
       <svg width="40" height="40" className="-rotate-90 absolute inset-0">
-        <circle cx="20" cy="20" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="3" />
+        <circle cx="20" cy="20" r={r} fill="none" stroke={track} strokeWidth="3" />
         <circle cx="20" cy="20" r={r} fill="none" stroke={color} strokeWidth="3"
           strokeDasharray={`${filled} ${circ}`} strokeLinecap="round"
           style={{ transition: 'stroke-dasharray 0.4s ease' }} />
@@ -245,7 +232,7 @@ function AddForm() {
         </button>
       </div>
       {noLeadingNumber && (
-        <p className="text-[10px] text-amber-400/80">
+        <p className="text-[10px] text-amber-600 dark:text-amber-400/80">
           Tip: start with a section number (e.g. "10 Tailcone") to enable blog filtering
         </p>
       )}
@@ -306,7 +293,7 @@ function Chip({ item }: { item: FlowItem }) {
           style={{ width: `${Math.max(renameValue.length * 7 + 24, 80)}px` }}
         />
         {noNum && (
-          <p className="text-[10px] text-amber-400/80 whitespace-nowrap">
+          <p className="text-[10px] text-amber-600 dark:text-amber-400/80 whitespace-nowrap">
             Start with a number for blog filtering
           </p>
         )}
@@ -318,7 +305,6 @@ function Chip({ item }: { item: FlowItem }) {
     <div
       className={cn(
         'relative group',
-        editMode && "before:content-[''] before:absolute before:inset-x-0 before:-top-8 before:h-8",
         isDragging && 'opacity-40',
       )}
       draggable={editMode && isAuthenticated}
@@ -343,10 +329,10 @@ function Chip({ item }: { item: FlowItem }) {
           'px-2.5 py-1 rounded-md text-xs font-medium border transition-all select-none leading-none',
           editMode && isAuthenticated ? 'cursor-grab active:cursor-grabbing' : (!editMode && isAuthenticated ? 'cursor-pointer hover:opacity-85' : 'cursor-default'),
           status === 'done'
-            ? 'bg-emerald-600 border-emerald-500 text-white'
+            ? 'bg-emerald-600 border-emerald-500 text-white dark:bg-emerald-500/80 dark:border-emerald-400/60'
             : status === 'in-progress'
-            ? 'bg-amber-500 border-amber-400 text-white'
-            : 'bg-secondary/60 border-border/60 text-muted-foreground',
+            ? 'bg-amber-500 border-amber-400 text-white dark:bg-amber-400/80 dark:border-amber-300/60'
+            : 'bg-muted border-border text-muted-foreground',
           isDropInto && 'ring-2 ring-primary ring-offset-1',
         )}
       >
@@ -366,7 +352,7 @@ function Chip({ item }: { item: FlowItem }) {
 
       {/* Edit mode: action buttons shown on hover */}
       {editMode && isAuthenticated && (
-        <div className="absolute bottom-full left-0 mb-0.5 hidden group-hover:flex gap-px bg-card border border-border rounded px-0.5 py-0.5 shadow-md z-20">
+        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-1 hidden group-hover:flex gap-px bg-card border border-border rounded px-0.5 py-0.5 shadow-md z-20">
           {confirmDelete ? (
             <>
               <span className="text-[10px] text-destructive px-1 self-center whitespace-nowrap">Delete{hasChildren ? ' + children' : ''}?</span>
@@ -439,10 +425,10 @@ function SectionRow({
   section,
   items,
 }: {
-  section: { id: string; label: string; icon: string };
+  section: SectionConfig;
   items: FlowItem[];
 }) {
-  const { statuses, editMode, isAuthenticated, addTarget, setAddTarget, setAddLabel, sectionDropTarget, onDragOverSection, onDropOnSection } = useTreeCtx();
+  const { statuses, editMode, isAuthenticated, addTarget, setAddTarget, setAddLabel, sectionDropTarget, onDragOverSection, onDropOnSection, onSectionUpdate, onSectionDelete, onSectionMove, sectionCount, sectionIndex } = useTreeCtx();
   const [collapsed, setCollapsed] = useState(false);
 
   const allInSection = getAllItems(items);
@@ -458,40 +444,98 @@ function SectionRow({
       : '';
 
   const isSectionDrop = sectionDropTarget === section.id;
+  const idx = sectionIndex(section.id);
+  const countsTowardHours = section.countTowardsBuildHours ?? true;
 
   return (
-    <div className="border border-border/60 rounded-lg bg-secondary/20 overflow-hidden">
-      {/* Header — click anywhere to collapse/expand */}
+    <div className="rounded-lg bg-muted/40 overflow-hidden">
+      {/* Header */}
       <div
-        className="flex items-center gap-3 px-4 py-2.5 bg-secondary/40 cursor-pointer select-none"
-        onClick={() => setCollapsed(c => !c)}
+        className="flex items-center gap-3 px-4 py-2.5 bg-muted cursor-pointer select-none"
+        onClick={() => !editMode && setCollapsed(c => !c)}
       >
-        <span className="text-muted-foreground/50 shrink-0">
-          {collapsed
-            ? <ChevronRight className="w-4 h-4" />
-            : <ChevronDown className="w-4 h-4" />}
-        </span>
-        <span className="text-base shrink-0">{section.icon}</span>
-        <p className="text-sm font-semibold text-foreground flex-1 min-w-0 truncate">{section.label}</p>
-        {allInSection.length > 0 && (
-          <p className="text-[10px] text-muted-foreground/60 shrink-0 hidden sm:block">
-            {doneCount}/{allInSection.length} done
-          </p>
+        {editMode && isAuthenticated ? (
+          <>
+            {/* Reorder buttons */}
+            <div className="flex flex-col gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
+              <button onClick={() => onSectionMove(section.id, -1)} disabled={idx === 0}
+                className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none">▲</button>
+              <button onClick={() => onSectionMove(section.id, 1)} disabled={idx === sectionCount - 1}
+                className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none">▼</button>
+            </div>
+            {/* Editable icon with emoji picker */}
+            <div onClick={e => e.stopPropagation()}>
+              <EmojiPicker
+                value={section.icon}
+                onChange={emoji => onSectionUpdate(section.id, 'icon', emoji)}
+              />
+            </div>
+            {/* Editable label */}
+            <input
+              value={section.label}
+              onChange={e => onSectionUpdate(section.id, 'label', e.target.value)}
+              onClick={e => e.stopPropagation()}
+              placeholder="Section name"
+              className="flex-1 min-w-0 text-sm font-semibold bg-background/50 border border-border rounded px-2 py-1"
+            />
+            {/* Count toward build hours toggle */}
+            <button
+              onClick={e => { e.stopPropagation(); onSectionUpdate(section.id, 'countTowardsBuildHours', !countsTowardHours); }}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors shrink-0',
+                countsTowardHours
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-border bg-muted text-muted-foreground/40'
+              )}
+              title={countsTowardHours ? 'Counts toward build hours — click to exclude' : 'Excluded from build hours — click to include'}
+            >
+              <Clock className="w-3 h-3" />
+            </button>
+            {/* Add package button */}
+            <button
+              onClick={e => {
+                e.stopPropagation();
+                setAddTarget({ kind: 'section', id: section.id });
+                setAddLabel('');
+                setCollapsed(false);
+              }}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-dashed border-border text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors shrink-0"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+            {/* Delete section button */}
+            <button
+              onClick={e => { e.stopPropagation(); onSectionDelete(section.id); }}
+              className="p-1 text-muted-foreground hover:text-destructive transition-colors shrink-0"
+              title="Delete section"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="text-muted-foreground/50 shrink-0">
+              {collapsed
+                ? <ChevronRight className="w-4 h-4" />
+                : <ChevronDown className="w-4 h-4" />}
+            </span>
+            <span className="text-base shrink-0">{section.icon}</span>
+            <p className="text-sm font-semibold text-foreground flex-1 min-w-0 truncate">
+              {section.label}
+              {!countsTowardHours && (
+                <span className="ml-2 text-[10px] text-muted-foreground/40 font-normal" title="Excluded from build hours">
+                  <Clock className="w-3 h-3 inline -mt-0.5" /> excluded
+                </span>
+              )}
+            </p>
+            {allInSection.length > 0 && (
+              <p className="text-[10px] text-muted-foreground/60 shrink-0 hidden sm:block">
+                {doneCount}/{allInSection.length} done
+              </p>
+            )}
+            <CircularProgress pct={pct} hasItems={allInSection.length > 0} />
+          </>
         )}
-        {editMode && isAuthenticated && (
-          <button
-            onClick={e => {
-              e.stopPropagation();
-              setAddTarget({ kind: 'section', id: section.id });
-              setAddLabel('');
-              setCollapsed(false);
-            }}
-            className="flex items-center gap-1 px-2 py-1 rounded border border-dashed border-border text-xs text-muted-foreground hover:border-primary hover:text-primary transition-colors shrink-0"
-          >
-            <Plus className="w-3 h-3" /> Add
-          </button>
-        )}
-        <CircularProgress pct={pct} hasItems={allInSection.length > 0} />
       </div>
 
       {/* Content: one row of chips per depth level */}
@@ -541,9 +585,10 @@ function SectionRow({
 function FlowchartContent({
   sections, packages, statuses,
   onToggle, onAddTopLevel, onAddChild, onRemove, onRename, onMove, onMoveToSection,
+  onSectionUpdate, onSectionDelete, onSectionMove, onSectionAdd,
   isAuthenticated, editMode, onPlansSectionFilter,
 }: {
-  sections: { id: string; label: string; icon: string }[];
+  sections: SectionConfig[];
   packages: PackagesMap;
   statuses: StatusMap;
   onToggle: (id: string) => void;
@@ -553,6 +598,10 @@ function FlowchartContent({
   onRename: (id: string, newLabel: string) => void;
   onMove: (draggedId: string, targetId: string, pos: DropPos) => void;
   onMoveToSection: (draggedId: string, sectionId: string) => void;
+  onSectionUpdate: (id: string, field: keyof SectionConfig, value: string | boolean) => void;
+  onSectionDelete: (id: string) => void;
+  onSectionMove: (id: string, direction: -1 | 1) => void;
+  onSectionAdd: () => void;
   isAuthenticated: boolean;
   editMode: boolean;
   onPlansSectionFilter?: (plansSection: string) => void;
@@ -636,25 +685,38 @@ function FlowchartContent({
       onDragStart: handleDragStart, onDragEnd: handleDragEnd,
       onDragOverChip: handleDragOverChip, onDropOnChip: handleDropOnChip,
       onDragOverSection: handleDragOverSection, onDropOnSection: handleDropOnSection,
+      onSectionUpdate, onSectionDelete, onSectionMove,
+      sectionCount: sections.length,
+      sectionIndex: (id: string) => sections.findIndex(s => s.id === id),
     }}>
       <div className="space-y-2">
         {sections.map(section => (
           <SectionRow key={section.id} section={section} items={packages[section.id] || []} />
         ))}
 
+        {/* Add Section button (edit mode only) */}
+        {editMode && isAuthenticated && (
+          <button
+            onClick={onSectionAdd}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 border-dashed border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Add Assembly Section
+          </button>
+        )}
+
         {/* Legend */}
         <div className="flex items-center gap-5 pt-2 border-t border-border text-[11px] text-muted-foreground flex-wrap">
           <span className="font-semibold text-foreground/60 uppercase tracking-wider text-[10px]">Legend</span>
           <span className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm bg-emerald-600 border border-emerald-500 inline-block" />
+            <span className="w-3 h-3 rounded-sm bg-emerald-600 dark:bg-emerald-500/80 border border-emerald-500 dark:border-emerald-400/60 inline-block" />
             Completed — {totalDone}
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm bg-amber-500 border border-amber-400 inline-block" />
+            <span className="w-3 h-3 rounded-sm bg-amber-500 dark:bg-amber-400/80 border border-amber-400 dark:border-amber-300/60 inline-block" />
             In Progress — {totalWip}
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm bg-muted/40 border border-border inline-block" />
+            <span className="w-3 h-3 rounded-sm bg-muted border border-border inline-block" />
             Not Started — {totalNone}
           </span>
         </div>
@@ -668,7 +730,7 @@ function FlowchartContent({
 function FlowchartThumbnail({
   sections, packages, statuses,
 }: {
-  sections: { id: string; label: string; icon: string }[];
+  sections: SectionConfig[];
   packages: PackagesMap;
   statuses: StatusMap;
 }) {
@@ -703,9 +765,9 @@ function FlowchartThumbnail({
                       key={item.id}
                       className={cn(
                         'flex-1',
-                        s === 'done'          ? 'bg-emerald-600'
-                        : s === 'in-progress' ? 'bg-amber-500'
-                        : 'bg-muted/40'
+                        s === 'done'          ? 'bg-emerald-600 dark:bg-emerald-400/70'
+                        : s === 'in-progress' ? 'bg-amber-500 dark:bg-amber-400/70'
+                        : 'bg-muted'
                       )}
                     />
                   );
@@ -730,11 +792,27 @@ function FlowchartThumbnail({
 
 export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectName?: string; onPlansSectionFilter?: (plansSection: string) => void }) {
   const { isAuthenticated } = useAuth();
-  const { sections } = useSections();
+  const { sections: contextSections, reload: reloadSections } = useSections();
+  const [localSections, setLocalSections] = useState<SectionConfig[] | null>(null);
+  const sections = localSections ?? contextSections;
   const [statuses, setStatuses] = useState<StatusMap>({});
   const [packages, setPackages] = useState<PackagesMap>({});
   const [expanded, setExpanded]   = useState(false);
   const [editMode, setEditMode]   = useState(false);
+
+  // Delete confirmation state
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    section: SectionConfig;
+    sessions: number;
+    blogPosts: number;
+    expenses: number;
+  } | null>(null);
+  const [reassignTo, setReassignTo] = useState('');
+
+  // Sync local sections when context changes (and we're not in edit mode)
+  useEffect(() => {
+    if (!editMode) setLocalSections(null);
+  }, [contextSections, editMode]);
 
   useEffect(() => {
     fetchFlowchartStatus().then(setStatuses).catch(() => {});
@@ -750,7 +828,7 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
   }, []);
 
   const handleAddTopLevel = useCallback((sectionId: string, label: string) => {
-    const id = `pkg-${sectionId}-${Date.now()}`;
+    const id = `pkg-${sectionId}-${crypto.randomUUID()}`;
     setPackages(prev => {
       const next = { ...prev, [sectionId]: [...(prev[sectionId] || []), { id, label }] };
       saveFlowchartPackages(next).catch(() => toast.error('Failed to save packages'));
@@ -759,7 +837,7 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
   }, []);
 
   const handleAddChild = useCallback((parentId: string, label: string) => {
-    const id = `pkg-${parentId}-${Date.now()}`;
+    const id = `pkg-${parentId}-${crypto.randomUUID()}`;
     setPackages(prev => {
       const next = Object.fromEntries(
         Object.entries(prev).map(([sId, items]) => [sId, addChild(items, parentId, { id, label })])
@@ -841,7 +919,68 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
     });
   }, []);
 
-  const handleClose = () => { setExpanded(false); setEditMode(false); };
+  // ─── Section editing handlers ─────────────────────────────────────
+  const saveSections = useCallback(async (updated: SectionConfig[]) => {
+    setLocalSections(updated);
+    try {
+      await apiSaveSections(updated);
+      await reloadSections();
+    } catch {
+      toast.error('Failed to save sections');
+    }
+  }, [reloadSections]);
+
+  const handleSectionUpdate = useCallback((id: string, field: keyof SectionConfig, value: string | boolean) => {
+    const updated = sections.map(s => {
+      if (s.id !== id) return s;
+      const next = { ...s, [field]: value };
+      // Auto-generate id from label for new sections
+      if (field === 'label' && s.id.startsWith('section-')) {
+        next.id = (value as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || s.id;
+      }
+      return next;
+    });
+    saveSections(updated);
+  }, [sections, saveSections]);
+
+  const handleSectionDelete = useCallback(async (id: string) => {
+    const sec = sections.find(s => s.id === id);
+    if (!sec) return;
+    // New unsaved sections — delete immediately
+    if (sec.id.startsWith('section-')) {
+      saveSections(sections.filter(s => s.id !== id));
+      return;
+    }
+    try {
+      const usage = await fetchSectionUsage(sec.id);
+      if (usage.sessions === 0 && usage.blogPosts === 0 && (usage.expenses ?? 0) === 0) {
+        saveSections(sections.filter(s => s.id !== id));
+      } else {
+        const others = sections.filter(s => s.id !== id);
+        setReassignTo(others[0]?.id || '');
+        setDeleteConfirm({ section: sec, sessions: usage.sessions, blogPosts: usage.blogPosts, expenses: usage.expenses ?? 0 });
+      }
+    } catch {
+      saveSections(sections.filter(s => s.id !== id));
+    }
+  }, [sections, saveSections]);
+
+  const handleSectionMove = useCallback((id: string, direction: -1 | 1) => {
+    const idx = sections.findIndex(s => s.id === id);
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= sections.length) return;
+    const updated = [...sections];
+    [updated[idx], updated[newIdx]] = [updated[newIdx], updated[idx]];
+    saveSections(updated);
+  }, [sections, saveSections]);
+
+  const handleSectionAdd = useCallback(() => {
+    const updated = [...sections, { id: `section-${Date.now()}`, label: '', icon: '📋' }];
+    setLocalSections(updated);
+    // Don't save to server yet — wait for user to fill in the label
+  }, [sections]);
+
+  const handleClose = () => { setExpanded(false); setEditMode(false); setDeleteConfirm(null); };
 
   const handlePlansSectionFilter = onPlansSectionFilter
     ? (plansSection: string) => { handleClose(); onPlansSectionFilter(plansSection); }
@@ -851,9 +990,6 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
     <>
       {/* Sidebar thumbnail */}
       <div>
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-          Build Progress
-        </h3>
         <button
           onClick={() => setExpanded(true)}
           className="w-full p-3 rounded-lg border border-border bg-card/50 hover:bg-card transition-colors cursor-pointer text-left"
@@ -869,7 +1005,7 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
           onClick={handleClose}
         >
           <div
-            className="bg-card border border-border rounded-xl p-6 max-w-5xl w-full"
+            className="bg-card rounded-lg p-6 max-w-5xl w-full"
             onClick={e => e.stopPropagation()}
           >
             {/* Modal header */}
@@ -878,23 +1014,32 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
                 <h2 className="text-lg font-bold text-foreground">{projectName || 'Build Progress'}</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {editMode
-                    ? <span className="text-amber-400">Edit mode — drag to reorder · hover a chip for actions</span>
+                    ? <span className="text-amber-600 dark:text-amber-400">Edit mode — drag to reorder · hover a chip for actions</span>
                     : 'Click a chip to cycle status: not started → in progress → done'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {isAuthenticated && editMode && (
+                  <button
+                    onClick={() => { setEditMode(false); setLocalSections(null); reloadSections(); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border border-border text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                    Cancel
+                  </button>
+                )}
                 {isAuthenticated && (
                   <button
                     onClick={() => setEditMode(m => !m)}
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
                       editMode
-                        ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 hover:bg-amber-500/30'
-                        : 'bg-secondary border-border text-muted-foreground hover:text-foreground'
+                        ? 'bg-amber-500/20 border-amber-500/50 text-amber-600 dark:text-amber-400 hover:bg-amber-500/30'
+                        : 'bg-muted border-border text-muted-foreground hover:text-foreground'
                     )}
                   >
                     {editMode ? <Check className="w-3.5 h-3.5" /> : <Pencil className="w-3.5 h-3.5" />}
-                    {editMode ? 'Done' : 'Edit packages'}
+                    {editMode ? 'Done' : 'Edit'}
                   </button>
                 )}
                 <button onClick={handleClose} className="text-muted-foreground hover:text-foreground p-1">
@@ -914,11 +1059,91 @@ export function BuildFlowchart({ projectName, onPlansSectionFilter }: { projectN
               onRename={handleRename}
               onMove={handleMove}
               onMoveToSection={handleMoveToSection}
+              onSectionUpdate={handleSectionUpdate}
+              onSectionDelete={handleSectionDelete}
+              onSectionMove={handleSectionMove}
+              onSectionAdd={handleSectionAdd}
               isAuthenticated={isAuthenticated}
               editMode={editMode}
               onPlansSectionFilter={handlePlansSectionFilter}
             />
           </div>
+
+          {/* Delete section confirmation dialog */}
+          {deleteConfirm && (
+            <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={() => setDeleteConfirm(null)}>
+              <div className="bg-card rounded-lg p-6 max-w-md w-full space-y-4" onClick={e => e.stopPropagation()}>
+                <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-destructive" />
+                  Delete section "{deleteConfirm.section.label || deleteConfirm.section.id}"?
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  This section has{' '}
+                  {[
+                    deleteConfirm.sessions > 0 && `${deleteConfirm.sessions} session${deleteConfirm.sessions !== 1 ? 's' : ''}`,
+                    deleteConfirm.blogPosts > 0 && `${deleteConfirm.blogPosts} blog post${deleteConfirm.blogPosts !== 1 ? 's' : ''}`,
+                    deleteConfirm.expenses > 0 && `${deleteConfirm.expenses} expense${deleteConfirm.expenses !== 1 ? 's' : ''}`,
+                  ].filter(Boolean).join(', ')}.
+                  {' '}Reassign existing entries to another section, or delete and leave them as-is.
+                </p>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">Reassign entries to</label>
+                  <select
+                    value={reassignTo}
+                    onChange={e => setReassignTo(e.target.value)}
+                    className="w-full rounded-md border border-border bg-muted/50 px-3 py-2 text-sm"
+                  >
+                    <option value="">Select a section...</option>
+                    {sections
+                      .filter(s => s.id !== deleteConfirm.section.id)
+                      .map(s => <option key={s.id} value={s.id}>{s.icon} {s.label || s.id}</option>)
+                    }
+                  </select>
+                </div>
+
+                <div className="flex gap-2 justify-end flex-wrap">
+                  <button
+                    onClick={() => setDeleteConfirm(null)}
+                    className="px-3 py-1.5 rounded-md text-xs border border-border text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      saveSections(sections.filter(s => s.id !== deleteConfirm.section.id));
+                      setDeleteConfirm(null);
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs border border-border text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Leave items &amp; delete
+                  </button>
+                  <button
+                    disabled={!reassignTo}
+                    onClick={async () => {
+                      if (!reassignTo) return;
+                      try {
+                        const result = await reassignSection(deleteConfirm.section.id, reassignTo);
+                        await saveSections(sections.filter(s => s.id !== deleteConfirm.section.id));
+                        const parts = [
+                          result.sessionsUpdated > 0 && `${result.sessionsUpdated} sessions`,
+                          result.blogPostsUpdated > 0 && `${result.blogPostsUpdated} blog posts`,
+                          (result.expensesUpdated ?? 0) > 0 && `${result.expensesUpdated} expenses`,
+                        ].filter(Boolean).join(', ');
+                        toast.success(`Reassigned ${parts || 'entries'}`);
+                      } catch {
+                        toast.error('Failed to reassign entries');
+                      }
+                      setDeleteConfirm(null);
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50 transition-colors"
+                  >
+                    Reassign &amp; Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </>

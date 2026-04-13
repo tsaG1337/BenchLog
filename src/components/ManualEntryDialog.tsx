@@ -1,5 +1,4 @@
 import { useState, useRef } from 'react';
-import { useSections } from '@/contexts/SectionsContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +10,7 @@ import { Plus, CalendarIcon, ImagePlus, X, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { uploadImages, deleteImage } from '@/lib/api';
+import { WorkPackagePicker } from '@/components/WorkPackagePicker';
 import { toast } from 'sonner';
 
 interface ManualEntryDialogProps {
@@ -30,7 +30,6 @@ interface ManualEntryDialogProps {
 }
 
 export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: controlledOnOpenChange }: ManualEntryDialogProps) {
-  const { sections: sectionConfigs } = useSections();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
@@ -49,9 +48,14 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
   // Stable temp ID for uploads before the session is saved
   const tempId = useRef(`manual-${Date.now()}`);
 
+  const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    for (const f of Array.from(files)) {
+      if (f.size > MAX_FILE_SIZE) { toast.error(`"${f.name}" exceeds 25 MB limit`); return; }
+    }
     setUploading(true);
     try {
       const newUrls = await uploadImages(tempId.current, files);
@@ -70,15 +74,12 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
     setImageUrls(prev => prev.filter(u => u !== url));
   };
 
-  // Default to first section
-  const effectiveSection = section || (sectionConfigs[0]?.id ?? '');
-
   const handleSubmit = () => {
-    const h = parseInt(hours) || 0;
-    const m = parseInt(minutes) || 0;
+    const h = Math.max(0, parseInt(hours) || 0);
+    const m = Math.max(0, parseInt(minutes) || 0);
     if (h === 0 && m === 0) return;
 
-    onAdd({ section: effectiveSection, date, hours: h, minutes: m, notes, plansPage, plansSection, plansStep, imageUrls });
+    onAdd({ section: section || 'other', date, hours: h, minutes: m, notes, plansPage, plansSection, plansStep, imageUrls });
     setOpen(false);
     setHours('');
     setMinutes('');
@@ -104,25 +105,13 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
           <DialogTitle>Add Manual Entry</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 pt-2">
-          <div>
-            <Label className="text-sm text-muted-foreground mb-2 block">Section</Label>
-            <div className="grid grid-cols-2 gap-1.5">
-              {sectionConfigs.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => setSection(s.id)}
-                  className={`flex items-center gap-1.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all border ${
-                    effectiveSection === s.id
-                      ? 'bg-primary/15 border-primary text-primary'
-                      : 'bg-card border-border text-muted-foreground hover:border-muted-foreground/50'
-                  }`}
-                >
-                  <span>{s.icon}</span>
-                  <span>{s.label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          <WorkPackagePicker
+            section={section}
+            onSectionChange={setSection}
+            plansSection={plansSection}
+            onPlansSectionChange={setPlansSection}
+            compact
+          />
 
           <div>
             <Label className="text-sm text-muted-foreground mb-2 block">Date</Label>
@@ -150,36 +139,32 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
             <div className="flex gap-3">
               <div className="flex-1">
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Hours</Label>
-                <Input type="number" min="0" placeholder="0" value={hours} onChange={(e) => setHours(e.target.value)} className="bg-secondary border-border font-mono" />
+                <Input type="number" min="0" max="999" placeholder="0" value={hours} onChange={(e) => setHours(e.target.value)} className="bg-accent border-border font-mono" />
               </div>
               <div className="flex-1">
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Minutes</Label>
-                <Input type="number" min="0" max="59" placeholder="0" value={minutes} onChange={(e) => setMinutes(e.target.value)} className="bg-secondary border-border font-mono" />
+                <Input type="number" min="0" max="59" placeholder="0" value={minutes} onChange={(e) => setMinutes(e.target.value)} className="bg-accent border-border font-mono" />
               </div>
             </div>
           </div>
 
           <div>
             <Label className="text-sm text-muted-foreground mb-2 block">Plans Reference</Label>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <Label className="text-xs text-muted-foreground/70 mb-1 block">Section</Label>
-                <Input placeholder="e.g. 5" value={plansSection} onChange={(e) => setPlansSection(e.target.value)} className="bg-secondary border-border font-mono" />
-              </div>
+            <div className="grid grid-cols-2 gap-2">
               <div>
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
-                <Input placeholder="e.g. 8" value={plansPage} onChange={(e) => setPlansPage(e.target.value)} className="bg-secondary border-border font-mono" />
+                <Input placeholder="e.g. 8" value={plansPage} onChange={(e) => setPlansPage(e.target.value)} className="bg-accent border-border font-mono" />
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground/70 mb-1 block">Step</Label>
-                <Input placeholder="e.g. 3" value={plansStep} onChange={(e) => setPlansStep(e.target.value)} className="bg-secondary border-border font-mono" />
+                <Input placeholder="e.g. 3" value={plansStep} onChange={(e) => setPlansStep(e.target.value)} className="bg-accent border-border font-mono" />
               </div>
             </div>
           </div>
 
           <div>
             <Label className="text-sm text-muted-foreground mb-2 block">Notes</Label>
-            <Textarea placeholder="What did you work on?" value={notes} onChange={(e) => setNotes(e.target.value)} className="bg-secondary border-border min-h-[60px]" />
+            <Textarea placeholder="What did you work on?" value={notes} maxLength={10000} onChange={(e) => setNotes(e.target.value)} className="bg-accent border-border min-h-[60px]" />
           </div>
 
           <div>

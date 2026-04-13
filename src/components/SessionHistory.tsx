@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 import { SessionImages } from '@/components/SessionImages';
+import { toast } from 'sonner';
 
 interface SessionHistoryProps {
   sessions: WorkSession[];
@@ -15,6 +16,8 @@ interface SessionHistoryProps {
   onUpdate: (id: string, updates: Partial<WorkSession>) => void;
   readOnly?: boolean;
   timeFormat?: '24h' | '12h';
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 function parsePlansRef(ref?: string) {
@@ -39,7 +42,7 @@ function toDatetimeLocal(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFormat = '24h' }: SessionHistoryProps) {
+export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFormat = '24h', hasMore, onLoadMore }: SessionHistoryProps) {
   const timeFmt = timeFormat === '24h' ? 'HH:mm' : 'h:mm a';
   const { labels, icons, sections } = useSections();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -74,7 +77,11 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
   const saveEdit = (session: WorkSession) => {
     const newStart = new Date(editStartTime);
     const newEnd = new Date(editEndTime);
-    const newDuration = Math.max(0, (newEnd.getTime() - newStart.getTime()) / 60000);
+    if (newEnd.getTime() <= newStart.getTime()) {
+      toast.error('End time must be after start time');
+      return;
+    }
+    const newDuration = (newEnd.getTime() - newStart.getTime()) / 60000;
     onUpdate(session.id, {
       section: editSection,
       notes: editNotes,
@@ -107,7 +114,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
       {Object.entries(grouped).map(([date, daySessions]) => (
         <div key={date}>
           <h3 className="text-sm font-medium text-muted-foreground mb-3">
-            {format(new Date(date), 'EEEE, MMMM d, yyyy')}
+            {format(parseISO(date + 'T00:00:00'), 'EEEE, MMMM d, yyyy')}
           </h3>
           <div className="space-y-2">
             {daySessions.map((session) => {
@@ -116,7 +123,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
               return (
                 <div
                   key={session.id}
-                  className="bg-card border border-border rounded-lg p-4 hover:border-muted-foreground/30 transition-colors"
+                  className="bg-card rounded-lg p-4 hover:bg-accent/50 transition-colors"
                 >
                   {isEditing ? (
                     <div className="space-y-4">
@@ -131,7 +138,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all border ${
                                 editSection === s.id
                                   ? 'bg-primary/15 border-primary text-primary'
-                                  : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'
+                                  : 'bg-accent border-border text-muted-foreground hover:border-muted-foreground/50'
                               }`}
                             >
                               <span>{s.icon}</span>
@@ -151,7 +158,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                               type="datetime-local"
                               value={editStartTime}
                               onChange={(e) => setEditStartTime(e.target.value)}
-                              className="bg-secondary border-border font-mono h-8 text-xs"
+                              className="bg-accent border-border font-mono h-8 text-xs"
                             />
                           </div>
                           <div>
@@ -160,7 +167,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                               type="datetime-local"
                               value={editEndTime}
                               onChange={(e) => setEditEndTime(e.target.value)}
-                              className="bg-secondary border-border font-mono h-8 text-xs"
+                              className="bg-accent border-border font-mono h-8 text-xs"
                             />
                           </div>
                         </div>
@@ -179,15 +186,15 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                         <div className="grid grid-cols-3 gap-2">
                           <div>
                             <Label className="text-xs text-muted-foreground/70 mb-1 block">Section</Label>
-                            <Input value={editPlanSection} onChange={(e) => setEditPlanSection(e.target.value)} placeholder="e.g. 5" className="bg-secondary border-border font-mono h-8 text-xs" />
+                            <Input value={editPlanSection} onChange={(e) => setEditPlanSection(e.target.value)} placeholder="e.g. 5" className="bg-accent border-border font-mono h-8 text-xs" />
                           </div>
                           <div>
                             <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
-                            <Input value={editPage} onChange={(e) => setEditPage(e.target.value)} placeholder="e.g. 8" className="bg-secondary border-border font-mono h-8 text-xs" />
+                            <Input value={editPage} onChange={(e) => setEditPage(e.target.value)} placeholder="e.g. 8" className="bg-accent border-border font-mono h-8 text-xs" />
                           </div>
                           <div>
                             <Label className="text-xs text-muted-foreground/70 mb-1 block">Step</Label>
-                            <Input value={editStep} onChange={(e) => setEditStep(e.target.value)} placeholder="e.g. 3" className="bg-secondary border-border font-mono h-8 text-xs" />
+                            <Input value={editStep} onChange={(e) => setEditStep(e.target.value)} placeholder="e.g. 3" className="bg-accent border-border font-mono h-8 text-xs" />
                           </div>
                         </div>
                       </div>
@@ -195,7 +202,7 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                       {/* Notes */}
                       <div>
                         <Label className="text-xs text-muted-foreground mb-2 block">Notes</Label>
-                        <Textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} className="bg-secondary border-border min-h-[60px] text-sm" />
+                        <Textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} className="bg-accent border-border min-h-[60px] text-sm" />
                       </div>
 
                       {/* Photos - only in edit mode */}
@@ -239,7 +246,6 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                           imageUrls={session.imageUrls || []}
                           onImagesChange={(urls) => onUpdate(session.id, { imageUrls: urls })}
                           editable={false}
-                          annotatable={true}
                         />
                       </div>
                       {!readOnly && (
@@ -260,6 +266,16 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
           </div>
         </div>
       ))}
+      {hasMore && onLoadMore && (
+        <div className="pt-2 text-center">
+          <button
+            onClick={onLoadMore}
+            className="px-4 py-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          >
+            Load more sessions
+          </button>
+        </div>
+      )}
     </div>
   );
 }

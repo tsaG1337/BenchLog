@@ -1,17 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { Wrench, Plus, Download, Pencil, Trash2, Filter, ShieldCheck, Loader2, Menu, Timer, NotebookPen, Settings, LogOut, Paperclip, FileText, Image, Info, ExternalLink, Eye } from 'lucide-react';
+import { Plus, Download, Pencil, Trash2, ShieldCheck, Loader2, Paperclip, FileText, Image, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/contexts/AuthContext';
-import { AboutDialog } from '@/components/AboutDialog';
-import { fetchExpenses, fetchExpenseStats, createExpense, updateExpense, deleteExpense, updateExpenseBudgets, EXPENSE_CATEGORIES, CURRENCIES, Expense, ExpenseStats } from '@/lib/api';
+import { fetchExpenses, fetchExpenseStats, createExpense, updateExpense, deleteExpense, CURRENCIES, Expense, ExpenseStats } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { ExpenseForm } from '@/components/expenses/ExpenseForm';
+import { AppShell, MIcon } from '@/components/AppShell';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { jsPDF } from 'jspdf';
+import { getCategoryIds } from '@/lib/utils';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -19,32 +18,25 @@ function fmtEur(amount: number) {
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(amount);
 }
 
-function CategoryBadge({ category }: { category: string }) {
-  const cat = EXPENSE_CATEGORIES.find(c => c.id === category);
-  return <span className="inline-flex items-center gap-1 text-xs">{cat?.icon} {cat?.label ?? category}</span>;
-}
-
 export default function ExpensesPage() {
   const { sections, labels, icons } = useSections();
-  const { demoMode, logout, role } = useAuth();
+  const { demoMode } = useAuth();
   const readOnly = demoMode;
-  const [showAbout, setShowAbout] = useState(false);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [stats, setStats] = useState<ExpenseStats | null>(null);
-  const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
   const [showForm, setShowForm] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | undefined>();
   const [filters, setFilters] = useState<{ category?: string; section?: string; certification?: string }>({});
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [projectName, setProjectName] = useState('BenchLog');
+  const [waf, setWaf] = useState(100);
 
   const load = useCallback(async () => {
     try {
       const [exp, st] = await Promise.all([fetchExpenses(filters), fetchExpenseStats()]);
       setExpenses(exp);
       setStats(st);
-      const draft: Record<string, string> = {};
-      for (const cat of EXPENSE_CATEGORIES) draft[cat.id] = st.budgets[cat.id] ? String(st.budgets[cat.id]) : '';
-      setBudgetDraft(draft);
     } catch (err: any) {
       toast.error('Failed to load expenses');
     } finally {
@@ -53,6 +45,18 @@ export default function ExpensesPage() {
   }, [filters]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    import('@/lib/api').then(({ fetchGeneralSettings }) =>
+      fetchGeneralSettings().then(s => {
+        setProjectName(s.projectName);
+        setWaf(s.wafPercent ?? 100);
+      }).catch(() => {})
+    );
+  }, []);
+
+  /** Apply WAF scaling to an amount */
+  const w = (amount: number) => amount * (waf / 100);
 
   const handleSave = async (data: Omit<Expense, 'id' | 'amountHome' | 'createdAt' | 'updatedAt'>) => {
     if (editingExpense) {
@@ -68,27 +72,15 @@ export default function ExpensesPage() {
   };
 
   const handleDelete = async (id: string) => {
+    if (readOnly) { toast.error('Deleting is disabled in demo mode'); return; }
     if (!confirm('Delete this expense?')) return;
     await deleteExpense(id);
     toast.success('Expense deleted');
     load();
   };
 
-  const handleSaveBudgets = async () => {
-    const budgets: Record<string, number> = {};
-    for (const [k, v] of Object.entries(budgetDraft)) {
-      const n = parseFloat(v);
-      if (!isNaN(n) && n > 0) budgets[k] = n;
-    }
-    await updateExpenseBudgets(budgets);
-    toast.success('Budgets saved');
-    load();
-  };
-
   const openEdit = (expense: Expense) => { setEditingExpense(expense); setShowForm(true); };
   const openNew = () => { setEditingExpense(undefined); setShowForm(true); };
-
-  const totalBudget = EXPENSE_CATEGORIES.reduce((s, c) => s + (parseFloat(budgetDraft[c.id] || '0') || 0), 0);
 
   const [generatingPdf, setGeneratingPdf] = useState(false);
 
@@ -106,7 +98,6 @@ export default function ExpensesPage() {
         if (y + needed > pageHeight - margin) { doc.addPage(); y = margin; }
       };
 
-      // Title
       doc.setFontSize(20);
       doc.setFont('helvetica', 'bold');
       doc.text('Expense Report', margin, y + 7);
@@ -118,17 +109,16 @@ export default function ExpensesPage() {
       y += 10;
       doc.setTextColor(0);
 
-      // Summary
       doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
       doc.text('Summary', margin, y);
       y += 7;
 
-      const lbaTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0);
+      const partTotal = allExpenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0);
       const rows: [string, string][] = [
-        ['Total Spent', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalHome)],
+        ['Total Spent', fmtEur(w(expStats.totalHome))],
         ['Number of Entries', String(expStats.count)],
-        ['LBA/EASA Relevant', new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(lbaTotal)],
+        ['Aircraft Parts', fmtEur(w(partTotal))],
       ];
       doc.setFontSize(10);
       for (const [label, value] of rows) {
@@ -143,7 +133,6 @@ export default function ExpensesPage() {
       }
       y += 4;
 
-      // By Category
       doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(0);
@@ -151,16 +140,16 @@ export default function ExpensesPage() {
       doc.text('By Category', margin, y);
       y += 7;
       doc.setFontSize(10);
-      for (const cat of EXPENSE_CATEGORIES) {
-        const spent = expStats.byCategory[cat.id] ?? 0;
+      for (const sec of sections) {
+        const spent = expStats.byCategory[sec.id] ?? 0;
         if (spent === 0) continue;
         checkPage(6);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(60);
-        doc.text(`${cat.icon} ${cat.label}`, margin + 2, y);
+        doc.text(sec.label, margin + 2, y);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(0);
-        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(spent), pageWidth - margin, y, { align: 'right' });
+        doc.text(fmtEur(w(spent)), pageWidth - margin, y, { align: 'right' });
         y += 6;
       }
       checkPage(8);
@@ -171,10 +160,9 @@ export default function ExpensesPage() {
       doc.setFontSize(11);
       doc.setFont('helvetica', 'bold');
       doc.text('TOTAL', margin + 2, y);
-      doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(expStats.totalHome), pageWidth - margin, y, { align: 'right' });
+      doc.text(fmtEur(w(expStats.totalHome)), pageWidth - margin, y, { align: 'right' });
       y += 12;
 
-      // Itemized list
       checkPage(14);
       doc.setFontSize(13);
       doc.setFont('helvetica', 'bold');
@@ -190,19 +178,19 @@ export default function ExpensesPage() {
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(0);
         doc.text(exp.description, margin + 2, y);
-        doc.text(new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(exp.amountHome), pageWidth - margin, y, { align: 'right' });
+        doc.text(fmtEur(w(exp.amountHome)), pageWidth - margin, y, { align: 'right' });
         y += 4.5;
 
         checkPage(5);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(100);
-        const cat = EXPENSE_CATEGORIES.find(c => c.id === exp.category);
+        const catLabel = getCategoryIds(exp.category).map(c => labels[c] || c.replace(/-/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())).join(' + ');
         const meta = [
           format(new Date(exp.date), 'dd.MM.yyyy'),
-          cat?.label,
+          catLabel,
           exp.vendor || null,
           exp.currency !== 'EUR' ? `${cur?.symbol}${exp.amount.toFixed(2)} ${exp.currency}` : null,
-          exp.isCertificationRelevant ? 'LBA/EASA' : null,
+          exp.isCertificationRelevant ? 'Aircraft Part' : null,
         ].filter(Boolean).join(' · ');
         doc.text(meta, margin + 2, y);
         y += 4;
@@ -220,286 +208,265 @@ export default function ExpensesPage() {
     }
   };
 
+  const aircraftPartTotal = expenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0);
+
+  // Client-side search filtering
+  const filteredExpenses = searchQuery.trim()
+    ? expenses.filter(exp => {
+        const q = searchQuery.trim().toLowerCase();
+        return (
+          exp.description.toLowerCase().includes(q) ||
+          (exp.vendor || '').toLowerCase().includes(q) ||
+          (exp.invoiceNumber || '').toLowerCase().includes(q) ||
+          getCategoryIds(exp.category).some(c => (labels[c] || c).toLowerCase().includes(q)) ||
+          exp.amount.toFixed(2).includes(q) ||
+          exp.date.includes(q)
+        );
+      })
+    : expenses;
+
+  const headerActions = (
+    <button
+      onClick={openNew}
+      className="font-label text-[10px] font-bold py-2 px-4 rounded hover:opacity-90 transition-colors flex items-center gap-2 uppercase tracking-wider shadow-sm bg-primary text-primary-foreground"
+    >
+      <Plus className="w-4 h-4" />
+      <span className="hidden sm:inline">Add Expense</span>
+    </button>
+  );
+
   return (
-    <div className="min-h-screen bg-background">
-      {readOnly && (
-        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-          <Eye className="w-4 h-4 shrink-0" />
-          <span>Demo mode — read only. No data can be created or changed.</span>
-        </div>
-      )}
-      <header className="border-b border-border bg-card/50 sticky top-0 z-30">
-        <div className="container max-w-7xl py-4 flex items-center gap-3">
-          <Link to="/" className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
-            <Wrench className="w-5 h-5 text-primary" />
-          </Link>
-          <div className="flex-1">
-            <h1 className="text-lg font-bold text-foreground tracking-tight">Expense Tracker</h1>
+    <AppShell activePage="expenses" projectName={projectName} headerRight={headerActions}>
+      <div className="space-y-8">
+        {/* ── Top Metrics ─────────────────────────────────────── */}
+        <div className="flex justify-end gap-4">
+          <div className="bg-card p-5 rounded-lg border-b-2 border-primary min-w-[180px] shadow-sm">
+            <p className="font-label text-[10px] uppercase tracking-widest text-muted-foreground">Total Spend</p>
+            <p className="font-headline font-black text-2xl text-foreground mt-1">{fmtEur(w(stats?.totalHome ?? 0))}</p>
           </div>
-          {!readOnly && (
-            <Button size="sm" onClick={openNew} className="gap-1.5">
-              <Plus className="w-4 h-4" /> Add Expense
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={generatingPdf} className="gap-1.5">
-            {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-            PDF
-          </Button>
-          <Button variant="outline" size="sm" asChild>
-            <a href={`${API_URL}/api/expenses/export/csv`} download="expenses.csv" className="gap-1.5 flex items-center">
-              <Download className="w-4 h-4" /> CSV
-            </a>
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
-                <Menu className="w-5 h-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              {/* Navigation */}
-              <DropdownMenuItem asChild>
-                <Link to="/" className="flex items-center w-full">
-                  <Timer className="w-4 h-4 mr-2" /> Build Tracker
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <Link to="/blog" className="flex items-center w-full">
-                  <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
-                </Link>
-              </DropdownMenuItem>
-              {/* Settings */}
-              {!demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link to="/tracker" state={{ openSettings: true }} className="flex items-center w-full">
-                      <Settings className="w-4 h-4 mr-2" /> Settings
-                    </Link>
-                  </DropdownMenuItem>
-                </>
-              )}
-              {/* About */}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setShowAbout(true)}>
-                <Info className="w-4 h-4 mr-2" /> About
-              </DropdownMenuItem>
-              {role === 'admin' && !demoMode && (
-                <DropdownMenuItem asChild>
-                  <Link to="/admin" className="flex items-center w-full">
-                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {/* Sign out */}
-              {!demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
-                    <LogOut className="w-4 h-4 mr-2" /> Sign out
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="bg-card p-5 rounded-lg border-b-2 border-amber-500 min-w-[180px] shadow-sm">
+            <p className="font-label text-[10px] uppercase tracking-widest text-muted-foreground">Aircraft Parts</p>
+            <p className="font-headline font-black text-2xl text-amber-600 mt-1">{fmtEur(w(aircraftPartTotal))}</p>
+          </div>
         </div>
-      </header>
 
-      <div className="container max-w-7xl py-6">
-        <Tabs defaultValue="overview">
-          <TabsList className="mb-6">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="expenses">All Expenses</TabsTrigger>
-            <TabsTrigger value="budgets">Budgets</TabsTrigger>
-          </TabsList>
-
-          {/* ── Overview ───────────────────────────────────────────── */}
-          <TabsContent value="overview" className="space-y-6">
-            {/* Summary cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-card border border-border rounded-xl p-4">
-                <p className="text-xs text-muted-foreground mb-1">Total Spent</p>
-                <p className="text-2xl font-bold text-foreground">{fmtEur(stats?.totalHome ?? 0)}</p>
-                <p className="text-xs text-muted-foreground mt-1">{stats?.count ?? 0} entries</p>
+        {/* ── Toolbar & Filters ───────────────────────────────── */}
+        <div>
+          <div className="bg-muted/50 p-4 rounded-t-lg flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Search */}
+              <div className="bg-card px-3 py-2 rounded flex items-center gap-2 border border-border/30">
+                <MIcon name="search" className="text-sm text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Search expenses..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="bg-transparent border-none text-xs font-medium focus:ring-0 focus:outline-none p-0 w-32 sm:w-44 placeholder:text-muted-foreground/50"
+                />
+                {searchQuery && (
+                  <button onClick={() => setSearchQuery('')} className="text-muted-foreground hover:text-foreground">
+                    <MIcon name="close" className="text-sm" />
+                  </button>
+                )}
               </div>
-              <div className="bg-card border border-border rounded-xl p-4">
-                <p className="text-xs text-muted-foreground mb-1">Total Budget</p>
-                <p className="text-2xl font-bold text-foreground">{fmtEur(totalBudget)}</p>
-                <p className="text-xs text-muted-foreground mt-1">across all categories</p>
+              {/* Category filter */}
+              <div className="bg-card px-3 py-2 rounded flex items-center gap-2 border border-border/30">
+                <span className="font-label text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Filter:</span>
+                <select
+                  value={filters.category ?? ''}
+                  onChange={e => setFilters(f => ({ ...f, category: e.target.value || undefined }))}
+                  className="bg-transparent border-none text-xs font-medium focus:ring-0 p-0 pr-6 cursor-pointer"
+                >
+                  <option value="">All Categories</option>
+                  {sections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
               </div>
-              <div className="bg-card border border-border rounded-xl p-4">
-                <p className="text-xs text-muted-foreground mb-1">Remaining</p>
-                <p className={`text-2xl font-bold ${totalBudget > 0 && (stats?.totalHome ?? 0) > totalBudget ? 'text-destructive' : 'text-foreground'}`}>
-                  {fmtEur(Math.max(0, totalBudget - (stats?.totalHome ?? 0)))}
-                </p>
-                {totalBudget > 0 && <p className="text-xs text-muted-foreground mt-1">{Math.round(((stats?.totalHome ?? 0) / totalBudget) * 100)}% used</p>}
+              {/* Aircraft Parts toggle */}
+              <div className="flex items-center gap-2 ml-2">
+                <span className="font-label text-[10px] uppercase tracking-tight text-muted-foreground">Aircraft Parts Only</span>
+                <button
+                  onClick={() => setFilters(f => ({ ...f, certification: f.certification ? undefined : '1' }))}
+                  className={`w-10 h-5 rounded-full relative transition-colors ${filters.certification ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+                >
+                  <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${filters.certification ? 'left-6' : 'left-1'}`} />
+                </button>
               </div>
-              <div className="bg-card border border-border rounded-xl p-4">
-                <p className="text-xs text-muted-foreground mb-1">LBA Relevant</p>
-                <p className="text-2xl font-bold text-foreground">
-                  {fmtEur(expenses.filter(e => e.isCertificationRelevant).reduce((s, e) => s + e.amountHome, 0))}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">{expenses.filter(e => e.isCertificationRelevant).length} entries</p>
-              </div>
+              {(filters.category || filters.certification) && (
+                <button onClick={() => setFilters({})} className="text-xs text-muted-foreground hover:text-foreground ml-2">Clear</button>
+              )}
             </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportPdf}
+                disabled={generatingPdf}
+                className="flex items-center gap-2 px-4 py-2 bg-card text-foreground font-label text-[10px] font-bold rounded border border-border/30 hover:bg-muted transition-colors uppercase tracking-wider"
+              >
+                {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <MIcon name="picture_as_pdf" className="text-sm" />}
+                Export PDF
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem('auth_token');
+                    const res = await fetch(`${API_URL}/api/expenses/export/csv`, {
+                      headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    });
+                    if (!res.ok) throw new Error('CSV export failed');
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a'); a.href = url; a.download = 'expenses.csv'; a.click();
+                    URL.revokeObjectURL(url);
+                  } catch (err: any) {
+                    toast.error(err.message || 'CSV export failed');
+                  }
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-card text-foreground font-label text-[10px] font-bold rounded border border-border/30 hover:bg-muted transition-colors uppercase tracking-wider"
+              >
+                <MIcon name="csv" className="text-sm" />
+                Export CSV
+              </button>
+            </div>
+          </div>
 
-            {/* By Category */}
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h2 className="text-sm font-semibold mb-4">By Category</h2>
-              <div className="space-y-3">
-                {EXPENSE_CATEGORIES.map(cat => {
-                  const spent = stats?.byCategory[cat.id] ?? 0;
-                  const budget = stats?.budgets[cat.id] ?? 0;
-                  const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
-                  const overBudget = budget > 0 && spent > budget;
-                  if (spent === 0 && budget === 0) return null;
+          {/* ── Table ──────────────────────────────────────────── */}
+          {loading ? (
+            <div className="bg-card rounded-b-lg text-center py-16 text-muted-foreground text-sm">Loading...</div>
+          ) : filteredExpenses.length === 0 ? (
+            <div className="bg-card rounded-b-lg text-center py-16 text-muted-foreground">
+              {searchQuery ? (
+                <>
+                  <p className="text-lg">No results found</p>
+                  <p className="text-sm mt-1">No expenses match "{searchQuery}"</p>
+                  <button onClick={() => setSearchQuery('')} className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-muted text-foreground font-label text-xs font-bold rounded">
+                    Clear Search
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-lg">No expenses yet</p>
+                  <p className="text-sm mt-1">Add your first expense to start tracking build costs.</p>
+                  <button onClick={openNew} className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground font-label text-xs font-bold rounded">
+                    <Plus className="w-4 h-4" /> Add Expense
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Mobile card layout */}
+              <div className="space-y-3 md:hidden">
+                {filteredExpenses.map(exp => {
+                  const cur = CURRENCIES.find(c => c.code === exp.currency);
                   return (
-                    <div key={cat.id}>
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="flex items-center gap-1.5">{cat.icon} {cat.label}</span>
-                        <span className="text-muted-foreground">
-                          {fmtEur(spent)}{budget > 0 && <span className={overBudget ? 'text-destructive' : ''}> / {fmtEur(budget)}</span>}
-                        </span>
-                      </div>
-                      {budget > 0 && (
-                        <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full transition-all ${overBudget ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
+                    <div key={exp.id} className="bg-card rounded-lg p-4">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="min-w-0 flex-1">
+                          <span className="block font-medium text-sm line-clamp-2 break-words" title={exp.description}>{exp.description}</span>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                            <span>{format(new Date(exp.date), 'dd.MM.yyyy')}</span>
+                            <span>·</span>
+                            <span className="uppercase text-[10px] font-bold tracking-wider">{getCategoryIds(exp.category).map(c => labels[c] || c).join(' + ')}</span>
+                          </div>
+                          {exp.vendor && <div className="text-xs text-muted-foreground mt-0.5">{exp.vendor}</div>}
                         </div>
-                      )}
+                        <div className="text-right shrink-0">
+                          <div className="font-bold text-sm">{fmtEur(w(exp.amountHome))}</div>
+                          {exp.currency !== 'EUR' && <div className="text-xs text-muted-foreground">{cur?.symbol}{exp.amount.toFixed(2)}</div>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 pt-2">
+                        {exp.isCertificationRelevant ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-primary mr-auto"><ShieldCheck className="w-3 h-3" />Aircraft Part</span>
+                        ) : <span className="mr-auto" />}
+                        {exp.link && /^https?:\/\//i.test(exp.link) && (
+                          <a href={exp.link} target="_blank" rel="noreferrer" className="p-1.5 text-muted-foreground hover:text-foreground transition-colors">
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                        {exp.receiptUrls.length > 0 && (
+                          <ReceiptDropdown exp={exp} />
+                        )}
+                        {<>
+                          <button onClick={() => openEdit(exp)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => handleDelete(exp.id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                        </>}
+                      </div>
                     </div>
                   );
                 })}
               </div>
-            </div>
 
-            {/* Monthly trend */}
-            {(stats?.monthly?.length ?? 0) > 0 && (
-              <div className="bg-card border border-border rounded-xl p-5">
-                <h2 className="text-sm font-semibold mb-4">Monthly Spend</h2>
-                <div className="space-y-2">
-                  {[...(stats?.monthly ?? [])].reverse().map(m => {
-                    const maxMonth = Math.max(...(stats?.monthly ?? []).map(x => x.total));
-                    const pct = maxMonth > 0 ? (m.total / maxMonth) * 100 : 0;
-                    return (
-                      <div key={m.month} className="flex items-center gap-3">
-                        <span className="text-xs text-muted-foreground w-16 shrink-0">{m.month}</span>
-                        <div className="flex-1 h-5 bg-secondary rounded overflow-hidden">
-                          <div className="h-full bg-primary/60 rounded transition-all" style={{ width: `${pct}%` }} />
-                        </div>
-                        <span className="text-xs text-muted-foreground w-20 text-right shrink-0">{fmtEur(m.total)}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </TabsContent>
-
-          {/* ── All Expenses ───────────────────────────────────────── */}
-          <TabsContent value="expenses" className="space-y-4">
-            {/* Filters */}
-            <div className="flex flex-wrap gap-2 items-center">
-              <Filter className="w-4 h-4 text-muted-foreground" />
-              <select value={filters.category ?? ''} onChange={e => setFilters(f => ({ ...f, category: e.target.value || undefined }))}
-                className="h-8 rounded-md border border-border bg-secondary px-2 text-xs">
-                <option value="">All categories</option>
-                {EXPENSE_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
-              </select>
-              <select value={filters.section ?? ''} onChange={e => setFilters(f => ({ ...f, section: e.target.value || undefined }))}
-                className="h-8 rounded-md border border-border bg-secondary px-2 text-xs">
-                <option value="">All sections</option>
-                {sections.map(s => <option key={s.id} value={s.id}>{s.icon} {s.label}</option>)}
-              </select>
-              <button onClick={() => setFilters(f => ({ ...f, certification: f.certification ? undefined : '1' }))}
-                className={`flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-xs transition-all ${filters.certification ? 'bg-primary/15 border-primary text-primary' : 'border-border bg-secondary text-muted-foreground hover:border-muted-foreground/50'}`}>
-                <ShieldCheck className="w-3.5 h-3.5" /> LBA only
-              </button>
-              {(filters.category || filters.section || filters.certification) && (
-                <button onClick={() => setFilters({})} className="text-xs text-muted-foreground hover:text-foreground">Clear filters</button>
-              )}
-            </div>
-
-            {/* Table */}
-            {loading ? (
-              <div className="text-center py-12 text-muted-foreground text-sm">Loading…</div>
-            ) : expenses.length === 0 ? (
-              <div className="text-center py-16 text-muted-foreground">
-                <p className="text-lg">No expenses yet</p>
-                <p className="text-sm mt-1">Add your first expense to start tracking build costs.</p>
-                {!readOnly && <Button className="mt-4" onClick={openNew}><Plus className="w-4 h-4 mr-2" /> Add Expense</Button>}
-              </div>
-            ) : (
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <table className="w-full text-sm">
+              {/* Desktop table */}
+              <div className="bg-card shadow-sm rounded-b-lg overflow-hidden hidden md:block">
+                <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="border-b border-border bg-secondary/50">
-                      <th className="text-left px-4 py-2.5 text-xs text-muted-foreground font-medium">Date</th>
-                      <th className="text-left px-4 py-2.5 text-xs text-muted-foreground font-medium">Description</th>
-                      <th className="text-left px-4 py-2.5 text-xs text-muted-foreground font-medium">Category</th>
-                      <th className="text-left px-4 py-2.5 text-xs text-muted-foreground font-medium">Section</th>
-                      <th className="text-right px-4 py-2.5 text-xs text-muted-foreground font-medium">Amount</th>
-                      <th className="text-right px-4 py-2.5 text-xs text-muted-foreground font-medium">EUR</th>
-                      <th className="px-4 py-2.5" />
+                    <tr className="bg-muted/40">
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold">Date</th>
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold">Description</th>
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold">Category</th>
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold text-right">Amount</th>
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold">Status</th>
+                      <th className="px-6 py-4 font-label text-[10px] uppercase tracking-[0.15em] text-muted-foreground font-bold text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody>
-                    {expenses.map(exp => {
+                  <tbody className="text-sm divide-y divide-border/50">
+                    {filteredExpenses.map(exp => {
                       const cur = CURRENCIES.find(c => c.code === exp.currency);
+                      const catLabel = getCategoryIds(exp.category).map(c => (labels[c] || c.replace(/-/g, ' '))).join(' + ').toUpperCase();
                       return (
-                        <tr key={exp.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                          <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{format(new Date(exp.date), 'dd.MM.yyyy')}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium">{exp.description}</div>
-                            {exp.vendor && <div className="text-xs text-muted-foreground">{exp.vendor}</div>}
-                            {exp.isCertificationRelevant && <span className="inline-flex items-center gap-1 text-xs text-primary mt-0.5"><ShieldCheck className="w-3 h-3" />LBA</span>}
+                        <tr key={exp.id} className="hover:bg-muted/30 transition-colors group">
+                          <td className="px-6 py-5 font-label text-muted-foreground whitespace-nowrap">
+                            {format(new Date(exp.date), 'yyyy-MM-dd')}
                           </td>
-                          <td className="px-4 py-3"><CategoryBadge category={exp.category} /></td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{exp.assemblySection ? `${icons[exp.assemblySection] || ''} ${labels[exp.assemblySection] || exp.assemblySection}` : '—'}</td>
-                          <td className="px-4 py-3 text-right whitespace-nowrap">{cur?.symbol}{exp.amount.toFixed(2)} {exp.currency !== 'EUR' && <span className="text-xs text-muted-foreground">{exp.currency}</span>}</td>
-                          <td className="px-4 py-3 text-right font-medium whitespace-nowrap">{fmtEur(exp.amountHome)}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1 justify-end">
-                              {exp.link && (
-                                <a href={exp.link} target="_blank" rel="noreferrer" className="p-1 text-muted-foreground hover:text-foreground transition-colors" title={exp.link}>
-                                  <ExternalLink className="w-3.5 h-3.5" />
+                          <td className="px-6 py-5">
+                            <div className="flex flex-col">
+                              <span className="font-bold text-foreground">{exp.description}</span>
+                              {exp.vendor && (
+                                <span className="text-[10px] text-muted-foreground font-label uppercase mt-0.5">{exp.vendor}</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5">
+                            <span className="px-2.5 py-1 bg-muted text-muted-foreground text-[10px] font-bold rounded uppercase tracking-wider">
+                              {catLabel}
+                            </span>
+                          </td>
+                          <td className="px-6 py-5 text-right font-bold">
+                            <div className="flex flex-col">
+                              <span>{fmtEur(w(exp.amountHome))}</span>
+                              {exp.currency !== 'EUR' && (
+                                <span className="text-[10px] text-muted-foreground font-label font-normal mt-0.5">
+                                  {cur?.symbol}{exp.amount.toFixed(2)} {exp.currency}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-6 py-5">
+                            <div className="flex items-center gap-2">
+                              <span className={`w-2 h-2 rounded-full ${exp.isCertificationRelevant ? 'bg-primary' : 'bg-muted-foreground/40'}`} />
+                              <span className={`text-xs font-label uppercase font-bold ${exp.isCertificationRelevant ? 'text-primary' : 'text-muted-foreground'}`}>
+                                {exp.isCertificationRelevant ? 'Aircraft Part' : 'Internal Only'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-5 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {exp.link && /^https?:\/\//i.test(exp.link) && (
+                                <a href={exp.link} target="_blank" rel="noreferrer" className="p-1.5 hover:bg-muted rounded text-muted-foreground" title="Open link">
+                                  <ExternalLink className="w-[18px] h-[18px]" />
                                 </a>
                               )}
                               {exp.receiptUrls.length > 0 && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <button className="p-1 text-muted-foreground hover:text-foreground transition-colors relative">
-                                      <Paperclip className="w-3.5 h-3.5" />
-                                      <span className="absolute -top-1 -right-1 text-[9px] leading-none bg-primary text-primary-foreground rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
-                                        {exp.receiptUrls.length}
-                                      </span>
-                                    </button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end" className="w-56">
-                                    {exp.receiptUrls.map(url => {
-                                      const isPdf = url.toLowerCase().endsWith('.pdf');
-                                      const rawName = url.split('/').pop() ?? '';
-                                      const stripped = rawName.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, '');
-                                      const name = decodeURIComponent(stripped || rawName);
-                                      return (
-                                        <DropdownMenuItem key={url} asChild={!isPdf} onClick={isPdf ? async () => {
-                                          const token = localStorage.getItem('auth_token');
-                                          const res = await fetch(`${API_URL}${url}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-                                          if (!res.ok) { toast.error('Could not open file'); return; }
-                                          window.open(URL.createObjectURL(await res.blob()), '_blank');
-                                        } : undefined}>
-                                          {isPdf
-                                            ? <span className="flex items-center gap-2 w-full"><FileText className="w-3.5 h-3.5 shrink-0" /><span className="truncate text-xs">{name}</span></span>
-                                            : <a href={`${API_URL}${url}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 w-full"><Image className="w-3.5 h-3.5 shrink-0" /><span className="truncate text-xs">{name}</span></a>
-                                          }
-                                        </DropdownMenuItem>
-                                      );
-                                    })}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
+                                <ReceiptDropdown exp={exp} />
                               )}
-                              {!readOnly && <>
-                                <button onClick={() => openEdit(exp)} className="p-1 text-muted-foreground hover:text-foreground transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
-                                <button onClick={() => handleDelete(exp.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                              {<>
+                                <button onClick={() => openEdit(exp)} className="p-1.5 hover:bg-muted rounded text-muted-foreground" title="Edit">
+                                  <MIcon name="edit" className="text-[18px]" />
+                                </button>
+                                <button onClick={() => handleDelete(exp.id)} className="p-1.5 hover:bg-destructive/10 hover:text-destructive rounded text-muted-foreground" title="Delete">
+                                  <MIcon name="delete" className="text-[18px]" />
+                                </button>
                               </>}
                             </div>
                           </td>
@@ -507,64 +474,142 @@ export default function ExpensesPage() {
                       );
                     })}
                   </tbody>
-                  <tfoot>
-                    <tr className="bg-secondary/50">
-                      <td colSpan={5} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">Total</td>
-                      <td className="px-4 py-2.5 text-right font-bold">{fmtEur(expenses.reduce((s, e) => s + e.amountHome, 0))}</td>
-                      <td />
-                    </tr>
-                  </tfoot>
                 </table>
+                {/* Footer */}
+                <div className="px-6 py-4 bg-muted/30 border-t border-border/50 flex items-center justify-between">
+                  <p className="font-label text-xs text-muted-foreground">
+                    Showing {filteredExpenses.length} transaction{filteredExpenses.length !== 1 ? 's' : ''}{searchQuery && ` of ${expenses.length}`} &middot; Total: <span className="font-bold text-foreground">{fmtEur(w(filteredExpenses.reduce((s, e) => s + e.amountHome, 0)))}</span>
+                  </p>
+                </div>
               </div>
-            )}
-          </TabsContent>
+            </>
+          )}
+        </div>
 
-          {/* ── Budgets ────────────────────────────────────────────── */}
-          <TabsContent value="budgets" className="space-y-4">
-            <p className="text-sm text-muted-foreground">Set a target budget per category. Leave blank for no budget.</p>
-            <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-              {EXPENSE_CATEGORIES.map(cat => {
-                const spent = stats?.byCategory[cat.id] ?? 0;
-                const budget = parseFloat(budgetDraft[cat.id] || '0') || 0;
-                const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
-                const overBudget = budget > 0 && spent > budget;
-                return (
-                  <div key={cat.id} className="grid grid-cols-[1fr_180px] gap-4 items-center">
-                    <div>
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="flex items-center gap-1.5">{cat.icon} {cat.label}</span>
-                        <span className={`text-xs ${overBudget ? 'text-destructive' : 'text-muted-foreground'}`}>
-                          {fmtEur(spent)}{budget > 0 && ` / ${fmtEur(budget)}`}
-                        </span>
-                      </div>
-                      <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full transition-all ${overBudget ? 'bg-destructive' : 'bg-primary'}`} style={{ width: `${pct}%` }} />
+        {/* ── Spend by Category ────────────────────────────────── */}
+        {stats && Object.values(stats.byCategory).some(v => v > 0) && (() => {
+          const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1'];
+          const catData = sections
+            .filter(sec => (stats.byCategory[sec.id] ?? 0) > 0)
+            .sort((a, b) => (stats.byCategory[b.id] ?? 0) - (stats.byCategory[a.id] ?? 0))
+            .map((sec, i) => ({ id: sec.id, label: sec.label, spent: stats.byCategory[sec.id] ?? 0, color: PIE_COLORS[i % PIE_COLORS.length] }));
+          const totalSpent = catData.reduce((s, c) => s + c.spent, 0);
+          // Build SVG pie slices
+          let cumAngle = -Math.PI / 2;
+          const slices = catData.map(c => {
+            const angle = totalSpent > 0 ? (c.spent / totalSpent) * 2 * Math.PI : 0;
+            const startAngle = cumAngle;
+            cumAngle += angle;
+            const endAngle = cumAngle;
+            const largeArc = angle > Math.PI ? 1 : 0;
+            const x1 = 50 + 40 * Math.cos(startAngle), y1 = 50 + 40 * Math.sin(startAngle);
+            const x2 = 50 + 40 * Math.cos(endAngle), y2 = 50 + 40 * Math.sin(endAngle);
+            const path = catData.length === 1
+              ? `M 50 10 A 40 40 0 1 1 49.99 10 Z`
+              : `M 50 50 L ${x1} ${y1} A 40 40 0 ${largeArc} 1 ${x2} ${y2} Z`;
+            return { ...c, path, pct: totalSpent > 0 ? (c.spent / totalSpent) * 100 : 0 };
+          });
+          return (
+            <div className="bg-card p-8 rounded-lg shadow-sm">
+              <p className="font-label text-[10px] uppercase tracking-widest text-muted-foreground mb-6 font-bold">Spend by Category</p>
+              <div className="flex flex-col md:flex-row items-center gap-8">
+                <svg viewBox="0 0 100 100" className="w-48 h-48 shrink-0">
+                  {slices.map(s => (
+                    <path key={s.id} d={s.path} fill={s.color} stroke="hsl(var(--card))" strokeWidth="0.5" />
+                  ))}
+                </svg>
+                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+                  {slices.map(s => (
+                    <div key={s.id} className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: s.color }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between font-label text-[10px] uppercase font-bold text-foreground">
+                          <span className="truncate">{s.label}</span>
+                          <span className="ml-2 shrink-0">{fmtEur(w(s.spent))}</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">{s.pct.toFixed(1)}%</p>
                       </div>
                     </div>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
-                      <input type="number" min="0" step="100" value={budgetDraft[cat.id] ?? ''}
-                        onChange={e => !readOnly && setBudgetDraft(d => ({ ...d, [cat.id]: e.target.value }))}
-                        readOnly={readOnly}
-                        className={`w-full h-9 rounded-md border border-border bg-secondary pl-6 pr-3 text-sm ${readOnly ? 'opacity-60 cursor-not-allowed' : ''}`}
-                        placeholder="No budget" />
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Monthly Spend ───────────────────────────────────── */}
+        {(stats?.monthly?.length ?? 0) > 0 && (
+          <div className="bg-card p-8 rounded-lg shadow-sm">
+            <p className="font-label text-[10px] uppercase tracking-widest text-muted-foreground mb-6 font-bold">Monthly Spend</p>
+            <div className="space-y-3">
+              {[...(stats?.monthly ?? [])].reverse().map(m => {
+                const maxMonth = Math.max(...(stats?.monthly ?? []).map(x => x.total));
+                const pct = maxMonth > 0 ? (m.total / maxMonth) * 100 : 0;
+                return (
+                  <div key={m.month}>
+                    <div className="flex justify-between font-label text-[10px] uppercase font-bold text-foreground mb-1">
+                      <span>{m.month}</span>
+                      <span>{fmtEur(w(m.total))}</span>
+                    </div>
+                    <div className="h-2 w-full bg-muted rounded-full overflow-hidden">
+                      <div className="h-full bg-primary/60 rounded-full transition-all" style={{ width: `${pct}%` }} />
                     </div>
                   </div>
                 );
               })}
-              <div className="flex items-center justify-between pt-2 border-t border-border">
-                <span className="text-sm font-medium">Total budget: {fmtEur(totalBudget)}</span>
-                {!readOnly && <Button onClick={handleSaveBudgets}>Save Budgets</Button>}
-              </div>
             </div>
-          </TabsContent>
-        </Tabs>
+          </div>
+        )}
       </div>
 
       {showForm && (
-        <ExpenseForm expense={editingExpense} onSave={handleSave} onClose={() => { setShowForm(false); setEditingExpense(undefined); }} />
+        <ExpenseForm expense={editingExpense} onSave={handleSave} onClose={() => { setShowForm(false); setEditingExpense(undefined); }} readOnly={readOnly} />
       )}
-      <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
-    </div>
+    </AppShell>
+  );
+}
+
+/* ── Receipt dropdown (shared between mobile + desktop) ── */
+function ReceiptDropdown({ exp }: { exp: Expense }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="p-1.5 text-muted-foreground hover:text-foreground transition-colors relative hover:bg-muted rounded" title="View receipts">
+          <Paperclip className="w-[18px] h-[18px]" />
+          <span className="absolute -top-0.5 -right-0.5 text-[9px] leading-none bg-primary text-primary-foreground rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+            {exp.receiptUrls.length}
+          </span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        {exp.receiptUrls.map(url => {
+          const isPdf = url.toLowerCase().endsWith('.pdf');
+          const rawName = url.split('/').pop() ?? '';
+          const stripped = rawName.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/, '');
+          const name = decodeURIComponent(stripped || rawName);
+          const isSafeUrl = /^https?:\/\//i.test(url) || url.startsWith('/');
+          const fileUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
+          return (
+            <DropdownMenuItem key={url} onSelect={() => {
+              if (!isSafeUrl) return;
+              if (isPdf && !url.startsWith('http')) {
+                const token = localStorage.getItem('auth_token');
+                fetch(fileUrl, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+                  .then(r => r.ok ? r.blob() : Promise.reject('Could not open file'))
+                  .then(blob => { const blobUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = blobUrl; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.click(); setTimeout(() => URL.revokeObjectURL(blobUrl), 60000); })
+                  .catch(e => toast.error(String(e)));
+              } else {
+                const a = document.createElement('a'); a.href = fileUrl; a.target = '_blank'; a.rel = 'noreferrer'; a.click();
+              }
+            }}>
+              <span className="flex items-center gap-2 w-full">
+                {isPdf ? <FileText className="w-3.5 h-3.5 shrink-0" /> : <Image className="w-3.5 h-3.5 shrink-0" />}
+                <span className="truncate text-xs">{name}</span>
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

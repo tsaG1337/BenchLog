@@ -184,12 +184,12 @@ export function SignOffDialog({ open, onOpenChange, onSaved, preselect }: SignOf
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs text-muted-foreground mb-1 block">Date</Label>
-              <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="bg-secondary border-border" />
+              <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="bg-accent border-border" />
             </div>
             <div>
               <Label className="text-xs text-muted-foreground mb-1 block">Inspector Name *</Label>
               <Input value={inspectorName} onChange={e => setInspectorName(e.target.value)}
-                placeholder="Full name" className="bg-secondary border-border" />
+                placeholder="Full name" className="bg-accent border-border" />
             </div>
           </div>
 
@@ -247,7 +247,7 @@ export function SignOffDialog({ open, onOpenChange, onSaved, preselect }: SignOf
           <div>
             <Label className="text-xs text-muted-foreground mb-1 block">Comments</Label>
             <Textarea value={comments} onChange={e => setComments(e.target.value)}
-              placeholder="Additional notes or observations…" className="bg-secondary border-border min-h-[70px]" />
+              placeholder="Additional notes or observations…" className="bg-accent border-border min-h-[70px]" />
           </div>
 
           <Separator />

@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { BlogPost, updateSessionApi } from '@/lib/api';
-import { useSections } from '@/contexts/SectionsContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -8,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { ArrowLeft, Save, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { SessionImages } from '@/components/SessionImages';
+import { WorkPackagePicker } from '@/components/WorkPackagePicker';
 
 interface SessionBlogEditorProps {
   post: BlogPost; // source === 'session'
@@ -37,8 +37,6 @@ function buildPlansRef(page: string, section: string, step: string): string | un
 }
 
 export function SessionBlogEditor({ post, onSave, onCancel }: SessionBlogEditorProps) {
-  const { sections } = useSections();
-
   // Real session ID: strip the 'session-' prefix added by the server
   const sessionId = post.id.replace(/^session-/, '');
 
@@ -108,26 +106,14 @@ export function SessionBlogEditor({ post, onSave, onCancel }: SessionBlogEditorP
         </Button>
       </div>
 
-      {/* Section */}
-      <div>
-        <Label className="text-xs text-muted-foreground mb-2 block">Section</Label>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-          {sections.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setEditSection(s.id)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all border ${
-                editSection === s.id
-                  ? 'bg-primary/15 border-primary text-primary'
-                  : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'
-              }`}
-            >
-              <span>{s.icon}</span>
-              <span>{s.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Section & Work Package */}
+      <WorkPackagePicker
+        compact
+        section={editSection}
+        onSectionChange={setEditSection}
+        plansSection={editPlanSection}
+        onPlansSectionChange={setEditPlanSection}
+      />
 
       {/* Timing */}
       <div>
@@ -161,11 +147,7 @@ export function SessionBlogEditor({ post, onSave, onCancel }: SessionBlogEditorP
       {/* Plans reference */}
       <div>
         <Label className="text-xs text-muted-foreground mb-2 block">Plans Reference</Label>
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <Label className="text-xs text-muted-foreground/70 mb-1 block">Section</Label>
-            <Input value={editPlanSection} onChange={(e) => setEditPlanSection(e.target.value)} placeholder="e.g. 5" className="bg-secondary border-border font-mono h-8 text-xs" />
-          </div>
+        <div className="grid grid-cols-2 gap-2">
           <div>
             <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
             <Input value={editPage} onChange={(e) => setEditPage(e.target.value)} placeholder="e.g. 8" className="bg-secondary border-border font-mono h-8 text-xs" />

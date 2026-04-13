@@ -13,10 +13,13 @@ services:
 
     environment:
       PORT: 3001
+      DATA_DIR: /data
       DB_PATH: /data/database.db
       DB_BACKEND: ${DB_BACKEND:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
       # JWT_SECRET: optional — auto-generated and persisted to /data/.jwt_secret on first run
+      # ADMIN_PASSWORD: optional — pre-sets the password on first startup; ignored after first run
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # DEMO_MODE: "true"  # uncomment to enable read-only demo mode (no login required)
 
       # ─── Internal service API ────────────────────────────────────────
@@ -35,14 +38,41 @@ services:
       R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
       R2_ENDPOINT: ${R2_ENDPOINT:-}
 
+      # ─── OCR (optional) ─────────────────────────────────────────────
+      # Enable label scanning in inventory. Requires the OCR service:
+      #   docker compose --profile ocr up -d
+      OCR_URL: ${OCR_URL:-}
+
     volumes:
       - ./data:/data
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/api/auth/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
     logging:
       driver: json-file
       options:
         max-size: "10m"   # rotate each log file at 10 MB
         max-file: "3"     # keep at most 3 rotated files (30 MB total cap)
+
+  # ─── OCR Service (optional) ──────────────────────────────────────────
+  # Enables label scanning in inventory. To disable, remove OCR_URL from .env
+  # and remove/comment out this service block.
+  # Uses RapidOCR (PaddleOCR models via ONNX runtime) — lightweight, CPU-only.
+  ocr:
+    build: ./ocr
+    container_name: benchlog-ocr
+    restart: unless-stopped
+    networks:
+      - benchlog_network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ─── PostgreSQL (optional) ───────────────────────────────────────────
   # Only starts when you activate the profile:

@@ -16,7 +16,11 @@ export default defineConfig(() => ({
         changeOrigin: true,
       },
       '/files': {
-        target: 'http://localhost:9000',
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/receipts': {
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
     },

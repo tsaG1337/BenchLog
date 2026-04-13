@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BlogPost, deleteBlogPost, deleteSessionApi, fetchAnnotations, ImageAnnotation } from '@/lib/api';
+import { useMemo, useState } from 'react';
+import DOMPurify from 'dompurify';
+import { BlogPost, deleteBlogPost, deleteSessionApi } from '@/lib/api';
 import { useSections } from '@/contexts/SectionsContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { format } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Pencil, Trash2, Clock, Wrench, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { ImageAnnotationViewer } from '@/components/ImageAnnotationViewer';
+import { BlockRenderer, parseTipTapContent, extractImagesFromJson } from './editor/BlockRenderer';
 
 interface BlogPostViewProps {
   post: BlogPost;
@@ -15,11 +16,11 @@ interface BlogPostViewProps {
   onDeleted: () => void;
 }
 
-// ── Split HTML content at <img> tags so each image can be wrapped with
-//    ImageAnnotationViewer while text segments keep dangerouslySetInnerHTML.
+// ── Split HTML content at <img> tags so each image can be rendered separately.
 type Segment = { type: 'html'; content: string } | { type: 'image'; src: string; style: string };
 
-function parseSegments(html: string): Segment[] {
+function parseSegments(html: string | undefined): Segment[] {
+  if (!html) return [];
   const segments: Segment[] = [];
   const imgRe = /<img([^>]*)>/gi;
   let last = 0;
@@ -29,7 +30,7 @@ function parseSegments(html: string): Segment[] {
     const attrs = m[1];
     const src   = attrs.match(/src="([^"]+)"/)?.[1]   ?? '';
     const style = attrs.match(/style="([^"]+)"/)?.[1] ?? '';
-    if (src) segments.push({ type: 'image', src, style });
+    if (src && /^(https?:\/\/|\/)/i.test(src)) segments.push({ type: 'image', src, style });
     last = m.index + m[0].length;
   }
   if (last < html.length) segments.push({ type: 'html', content: html.slice(last) });
@@ -39,39 +40,24 @@ function parseSegments(html: string): Segment[] {
 export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewProps) {
   const { labels, icons } = useSections();
   const { isAuthenticated } = useAuth();
-  const [previewUrl,    setPreviewUrl]    = useState<string | null>(null);
-  const [annotationsMap, setAnnotationsMap] = useState<Record<string, ImageAnnotation[]>>({});
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const isSession = post.source === 'session';
 
-  // For work sessions, images come from post.imageUrls.
-  // For blog posts, images are embedded in the Quill HTML content.
-  const sessionImages  = post.imageUrls?.length ? post.imageUrls : [];
-  const contentSegments = useMemo(() => parseSegments(post.content), [post.content]);
-  const contentImages   = useMemo(
-    () => contentSegments.filter(s => s.type === 'image').map(s => (s as { type: 'image'; src: string; style: string }).src),
-    [contentSegments],
-  );
+  // Detect content format: TipTap JSON or legacy HTML
+  const tipTapContent = useMemo(() => parseTipTapContent(post.content), [post.content]);
+  const isJsonContent = tipTapContent !== null;
 
-  // All unique image URLs we need annotations for
-  const allImageUrls = useMemo(
-    () => [...new Set([...sessionImages, ...contentImages])],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [post.id],
-  );
-
-  useEffect(() => {
-    allImageUrls.forEach(url => {
-      fetchAnnotations(url).then(anns => {
-        setAnnotationsMap(prev => ({ ...prev, [url]: anns }));
-      }).catch(() => {});
-    });
-  }, [post.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // For work sessions, images come from post.imageUrls (separate from content).
+  // For blog posts, images are embedded in the content — imageUrls is only for server tracking.
+  const isSafeImageUrl = (url: string) => /^(https?:\/\/|\/)/i.test(url);
+  const sessionImages  = isSession && post.imageUrls?.length ? post.imageUrls.filter(isSafeImageUrl) : [];
+  const contentSegments = useMemo(() => isJsonContent ? [] : parseSegments(post.content), [post.content, isJsonContent]);
 
   const handleDelete = async () => {
     if (isSession) {
       const confirmed = confirm(
-        '⚠️ This is a work session, not just a blog post.\n\n' +
+        '\u26a0\ufe0f This is a work session, not just a blog post.\n\n' +
         'Deleting it will permanently remove the session and subtract its hours from your build progress.\n\n' +
         'Are you sure you want to delete this session?'
       );
@@ -96,29 +82,50 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
     }
   };
 
-  const previewAnnotations = previewUrl ? (annotationsMap[previewUrl] ?? []) : [];
+  // ── Render blog post content ──────────────────────────────────────
+  const renderContent = () => {
+    // TipTap JSON content → use BlockRenderer
+    if (isJsonContent && tipTapContent) {
+      return (
+        <BlockRenderer
+          content={tipTapContent}
+          onImageClick={(src) => setPreviewUrl(src)}
+        />
+      );
+    }
 
-  // ── Render blog post content, replacing <img> with annotated viewers ──
-  const renderContent = () => (
-    <div className="prose prose-invert max-w-none blog-content">
-      {contentSegments.map((seg, i) =>
-        seg.type === 'html' ? (
-          <div key={i} dangerouslySetInnerHTML={{ __html: seg.content.replace(/&nbsp;/g, ' ') }} />
-        ) : (
-          <div key={i} className="my-4 clear-both">
-            <ImageAnnotationViewer
-              src={seg.src}
-              annotations={annotationsMap[seg.src] ?? []}
-              imgClassName="rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
-              containerClassName="inline-block max-w-full"
-              style={seg.style}
-              onClick={() => setPreviewUrl(seg.src)}
-            />
-          </div>
-        )
-      )}
-    </div>
-  );
+    // Legacy HTML content → segment-based rendering
+    return (
+      <div className="prose prose-invert max-w-none blog-content">
+        {contentSegments.map((seg, i) =>
+          seg.type === 'html' ? (
+            <div key={i} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(seg.content.replace(/&nbsp;/g, ' '), { FORBID_TAGS: ['style', 'form'], FORBID_ATTR: ['style'] }) }} />
+          ) : (
+            <div key={i} className="my-4 clear-both">
+              <div className="inline-block max-w-full" ref={el => {
+                if (el && seg.style) {
+                  // Only allow safe CSS properties — block url(), position, etc.
+                  const safe = seg.style.split(';').filter(s => {
+                    const prop = s.split(':')[0]?.trim().toLowerCase() || '';
+                    return /^(width|max-width|height|float|margin|margin-left|margin-right|display|text-align)$/.test(prop)
+                      && !/url\s*\(/i.test(s);
+                  }).join(';');
+                  if (safe) el.style.cssText = safe;
+                }
+              }}>
+                <img
+                  src={seg.src}
+                  alt=""
+                  className="rounded-lg cursor-pointer hover:opacity-90 transition-opacity w-full h-auto"
+                  onClick={() => setPreviewUrl(seg.src)}
+                />
+              </div>
+            </div>
+          )
+        )}
+      </div>
+    );
+  };
 
   // ── Work-session layout: first image alongside content, grid for rest ──
   const firstImage  = sessionImages[0];
@@ -150,7 +157,7 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
             <>
               <span>·</span>
               <span className="flex items-center gap-1">
-                <span>{icons[post.section] || '📋'}</span>
+                <span>{icons[post.section] || '\ud83d\udccb'}</span>
                 {labels[post.section] || post.section}
               </span>
             </>
@@ -177,17 +184,16 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
       {firstImage ? (
         <div className="flex flex-col md:flex-row gap-6">
           <div className="md:w-1/2 shrink-0">
-            <ImageAnnotationViewer
+            <img
               src={firstImage}
-              annotations={annotationsMap[firstImage] ?? []}
-              imgClassName="w-full rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
-              containerClassName="w-full"
+              alt=""
+              className="w-full rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
               onClick={() => setPreviewUrl(firstImage)}
             />
           </div>
           <div className="flex-1 min-w-0">
             <div className="prose prose-invert max-w-none blog-content"
-                 dangerouslySetInnerHTML={{ __html: post.content }} />
+                 dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(post.content, { FORBID_TAGS: ['style', 'form'], FORBID_ATTR: ['style'] }) }} />
           </div>
         </div>
       ) : (
@@ -199,11 +205,10 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {extraImages.map((url, i) => (
             <div key={i}>
-              <ImageAnnotationViewer
+              <img
                 src={url}
-                annotations={annotationsMap[url] ?? []}
-                imgClassName="w-full aspect-video rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                containerClassName="w-full"
+                alt=""
+                className="w-full aspect-video rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => setPreviewUrl(url)}
               />
             </div>
@@ -217,11 +222,10 @@ export function BlogPostView({ post, onBack, onEdit, onDeleted }: BlogPostViewPr
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
           onClick={() => setPreviewUrl(null)}
         >
-          <ImageAnnotationViewer
+          <img
             src={previewUrl}
-            annotations={previewAnnotations}
-            imgClassName="max-w-full max-h-[90vh] rounded-lg object-contain block"
-            containerClassName="max-w-full"
+            alt=""
+            className="max-w-full max-h-[90vh] rounded-lg object-contain block"
           />
           <div className="absolute top-4 right-4">
             <button

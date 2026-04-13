@@ -37,3 +37,18 @@ data/
 .env
 deploy.bat
 deploy.sh
+upload-env.bat
+upload-env-demo.bat
+deploy-demo.bat
+deploy-demo.sh
+
+
+# Playwright
+/.playwright-mcp/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/e2e/.auth/
+/e2e/
+/load-tests

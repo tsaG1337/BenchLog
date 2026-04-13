@@ -13,7 +13,7 @@ function countryToFlag(code: string): string {
 function Bar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   return (
-    <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+    <div className="flex-1 h-1.5 bg-accent rounded-full overflow-hidden">
       <div className="h-full bg-primary/60 rounded-full" style={{ width: `${pct}%` }} />
     </div>
   );
@@ -65,7 +65,7 @@ export function VisitorStatsPanel() {
         <div className="flex gap-1">
           {PERIODS.map(d => (
             <button key={d} onClick={() => setDays(d)}
-              className={`px-2.5 py-1 rounded text-xs border transition-colors ${days === d ? 'bg-primary/15 border-primary text-primary' : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
+              className={`px-2.5 py-1 rounded text-xs border transition-colors ${days === d ? 'bg-primary/15 border-primary text-primary' : 'bg-muted/50 border-border text-muted-foreground hover:border-muted-foreground/50'}`}>
               {d}d
             </button>
           ))}
@@ -83,11 +83,11 @@ export function VisitorStatsPanel() {
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3">
-        <div className="bg-secondary rounded-lg p-3 text-center">
+        <div className="bg-muted/50 border border-border rounded-lg p-3 text-center">
           <p className="text-2xl font-bold text-foreground">{stats?.totalPeriod ?? '—'}</p>
           <p className="text-xs text-muted-foreground mt-0.5">Visitors (last {days}d)</p>
         </div>
-        <div className="bg-secondary rounded-lg p-3 text-center">
+        <div className="bg-muted/50 border border-border rounded-lg p-3 text-center">
           <p className="text-2xl font-bold text-foreground">{stats?.total ?? '—'}</p>
           <p className="text-xs text-muted-foreground mt-0.5">Total (all time)</p>
         </div>

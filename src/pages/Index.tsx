@@ -1,33 +1,34 @@
-import { useState, useCallback, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { generateId } from '@/lib/utils';
 import { Timer } from '@/components/Timer';
-import { SessionForm } from '@/components/SessionForm';
-import { Dashboard } from '@/components/Dashboard';
 import { SessionHistory } from '@/components/SessionHistory';
+import { SessionImages } from '@/components/SessionImages';
 import { WorkSession } from '@/lib/types';
-import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, fetchBuildStats, startTimer, stopTimer, getTimerStatus, fetchSignOffs, SignOff } from '@/lib/api';
-import { ActivityHeatmap } from '@/components/blog/ActivityHeatmap';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Wrench, BarChart3, Clock, LogOut, Menu, Settings, Plus, Download, NotebookPen, Eye, Info, Wallet, ClipboardCheck, ShieldCheck } from 'lucide-react';
+import { fetchSessions, createSession, deleteSessionApi, updateSessionApi, fetchGeneralSettings, startTimer, stopTimer, getTimerStatus } from '@/lib/api';
+
+const SESSIONS_PAGE_SIZE = 50;
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Plus } from 'lucide-react';
 import { ExportDialog } from '@/components/ExportDialog';
 import { ManualEntryDialog } from '@/components/ManualEntryDialog';
-import { SettingsDialog } from '@/components/SettingsDialog';
-import { AboutDialog } from '@/components/AboutDialog';
-import { SignOffDialog } from '@/components/SignOffDialog';
-import { SignOffsList } from '@/components/SignOffsList';
+import { WorkPackagePicker } from '@/components/WorkPackagePicker';
 import { useAuth } from '@/contexts/AuthContext';
+import { AppShell, MIcon } from '@/components/AppShell';
 import { toast } from 'sonner';
 
+// ─── Speech Recognition ────────────────────────────────────────────
+const SpeechRecognitionAPI =
+  typeof window !== 'undefined'
+    ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    : null;
+
 const Index = () => {
-  const { logout, demoMode, role } = useAuth();
-  const location = useLocation();
-  const [openDialog, setOpenDialog] = useState<'settings' | 'manual' | 'export' | 'about' | null>(
-    (location.state as any)?.openSettings ? 'settings' : null
-  );
+  const { demoMode } = useAuth();
+  const [openDialog, setOpenDialog] = useState<'manual' | 'export' | null>(null);
   const [sessions, setSessions] = useState<WorkSession[]>([]);
+  const [sessionsHasMore, setSessionsHasMore] = useState(false);
+  const [sessionsOffset, setSessionsOffset] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [section, setSection] = useState('fuselage');
   const [plansPage, setPlansPage] = useState('');
@@ -36,30 +37,79 @@ const Index = () => {
   const [notes, setNotes] = useState('');
   const [projectName, setProjectName] = useState('Build Tracker');
   const [targetHours, setTargetHours] = useState(2500);
-  const [progressMode, setProgressMode] = useState<'time' | 'packages'>('time');
-  const [packageProgressPct, setPackageProgressPct] = useState(0);
   const [timeFormat, setTimeFormat] = useState<'24h' | '12h'>('24h');
   const [serverStartedAt, setServerStartedAt] = useState<string | null>(null);
   const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
-  const [signOffs, setSignOffs] = useState<SignOff[]>([]);
-  const [showSignOff, setShowSignOff] = useState(false);
 
-  const loadSignOffs = useCallback(async () => {
-    try { setSignOffs(await fetchSignOffs()); } catch { /* not critical */ }
-  }, []);
-
-  const loadSessions = useCallback(async () => {
-    try {
-      const data = await fetchSessions();
-      setSessions(data);
-    } catch (err: any) {
-      console.error('Failed to load sessions:', err);
-      toast.error('Failed to load sessions. Is the backend running?');
-    }
-  }, []);
+  // Dictation state
+  const [isListening, setIsListening] = useState(false);
+  const [interimText, setInterimText] = useState('');
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    if (projectName) document.title = projectName;
+    return () => { recognitionRef.current?.stop(); };
+  }, []);
+
+  const toggleListening = () => {
+    if (!SpeechRecognitionAPI) {
+      toast.error('Speech recognition is not supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+    if (isListening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const recognition = new SpeechRecognitionAPI();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) final += transcript;
+        else interim += transcript;
+      }
+      if (final) {
+        setNotes(prev => (prev ? prev + ' ' : '') + final.trim());
+        setInterimText('');
+      } else {
+        setInterimText(interim);
+      }
+    };
+    recognition.onend = () => { setIsListening(false); setInterimText(''); };
+    recognition.onerror = (e: any) => {
+      if (e.error !== 'aborted') toast.error('Microphone error: ' + e.error);
+      setIsListening(false);
+      setInterimText('');
+    };
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  };
+
+  // ─── Data loading ────────────────────────────────────────────────
+  const loadSessions = useCallback(async () => {
+    try {
+      const page = await fetchSessions({ limit: SESSIONS_PAGE_SIZE, offset: 0 });
+      setSessions(page.sessions);
+      setSessionsHasMore(page.hasMore);
+      setSessionsOffset(SESSIONS_PAGE_SIZE);
+    } catch { toast.error('Failed to load sessions. Is the backend running?'); }
+  }, []);
+
+  const loadMoreSessions = useCallback(async () => {
+    try {
+      const page = await fetchSessions({ limit: SESSIONS_PAGE_SIZE, offset: sessionsOffset });
+      setSessions(prev => [...prev, ...page.sessions]);
+      setSessionsHasMore(page.hasMore);
+      setSessionsOffset(prev => prev + SESSIONS_PAGE_SIZE);
+    } catch { toast.error('Failed to load more sessions.'); }
+  }, [sessionsOffset]);
+
+  useEffect(() => {
+    if (projectName) document.title = `${projectName} — Tracker`;
   }, [projectName]);
 
   useEffect(() => {
@@ -69,94 +119,55 @@ const Index = () => {
       setTargetHours(s.targetHours || 2500);
       setTimeFormat(s.timeFormat || '24h');
     }).catch(() => {});
-    fetchBuildStats().then(s => {
-      setProgressMode(s.progressMode || 'time');
-      setPackageProgressPct(s.progressPct);
-    }).catch(() => {});
-    
-    loadSignOffs();
-
-    // Check for active timer on mount
     getTimerStatus().then(status => {
       if (status.running && status.section) {
         setIsRunning(true);
         setSection(status.section);
-        if (status.imageUrls && status.imageUrls.length > 0) {
-          setPendingImageUrls(status.imageUrls);
-        }
+        if (status.imageUrls?.length) setPendingImageUrls(status.imageUrls);
       }
     }).catch(() => {});
   }, [loadSessions]);
 
+  // ─── Timer handlers ──────────────────────────────────────────────
   const handleStart = async () => {
-    if (demoMode) {
-      setServerStartedAt(new Date().toISOString());
-      setIsRunning(true);
-      return;
-    }
+    if (demoMode) { setServerStartedAt(new Date().toISOString()); setIsRunning(true); return; }
     try {
       const result = await startTimer(section);
       setServerStartedAt(result.startedAt);
       setIsRunning(true);
-    } catch (err: any) {
-      toast.error('Failed to start timer: ' + err.message);
-    }
+    } catch (err: any) { toast.error('Failed to start timer: ' + err.message); }
   };
 
-  const handlePause = () => {
-    // Pause is client-side only - just stops the UI from updating
-  };
+  const handlePause = () => {};
 
   const handleStop = useCallback(async (durationMinutes: number, startTime: Date, endTime: Date) => {
     if (demoMode) {
-      setIsRunning(false);
-      setServerStartedAt(null);
-      setPlansPage('');
-      setPlansSection('');
-      setPlansStep('');
-      setNotes('');
+      setIsRunning(false); setServerStartedAt(null);
+      setPlansPage(''); setPlansSection(''); setPlansStep(''); setNotes('');
       toast.info('Demo mode — session not saved.');
       return;
     }
-
     const p = plansPage.trim().replace(/,+$/, '');
     const s = plansSection.trim().replace(/,+$/, '');
     const st = plansStep.trim().replace(/,+$/, '');
-    const plansRef = [p && `Page ${p}`, s && `Section ${s}`, st && `Step ${st}`]
-      .filter(Boolean)
-      .join(', ');
-
+    const plansRef = [p && `Page ${p}`, s && `Section ${s}`, st && `Step ${st}`].filter(Boolean).join(', ');
     try {
       await stopTimer(notes, plansRef || undefined, pendingImageUrls);
       await loadSessions();
-    } catch (err: any) {
-      toast.error('Failed to save session: ' + err.message);
-    }
-
+    } catch (err: any) { toast.error('Failed to save session: ' + err.message); }
     setIsRunning(false);
-    setPlansPage('');
-    setPlansSection('');
-    setPlansStep('');
-    setNotes('');
+    setPlansPage(''); setPlansSection(''); setPlansStep(''); setNotes('');
     setPendingImageUrls([]);
   }, [demoMode, plansPage, plansSection, plansStep, notes, pendingImageUrls, loadSessions]);
 
   const handleDelete = async (id: string) => {
-    try {
-      await deleteSessionApi(id);
-      await loadSessions();
-    } catch (err: any) {
-      toast.error('Failed to delete session: ' + err.message);
-    }
+    try { await deleteSessionApi(id); await loadSessions(); }
+    catch (err: any) { toast.error('Failed to delete session: ' + err.message); }
   };
 
   const handleUpdate = async (id: string, updates: Partial<WorkSession>) => {
-    try {
-      await updateSessionApi(id, updates);
-      await loadSessions();
-    } catch (err: any) {
-      toast.error('Failed to update session: ' + err.message);
-    }
+    try { await updateSessionApi(id, updates); await loadSessions(); }
+    catch (err: any) { toast.error('Failed to update session: ' + err.message); }
   };
 
   const handleManualAdd = async (entry: { section: string; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string; imageUrls: string[] }) => {
@@ -165,212 +176,167 @@ const Index = () => {
     startTime.setHours(12, 0, 0, 0);
     const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
     const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
-
     const session: WorkSession = {
-      id: generateId(),
-      section: entry.section,
-      startTime: startTime.toISOString(),
-      endTime: endTime.toISOString(),
-      durationMinutes,
-      notes: entry.notes,
+      id: generateId(), section: entry.section,
+      startTime: startTime.toISOString(), endTime: endTime.toISOString(),
+      durationMinutes, notes: entry.notes,
       plansReference: plansRef || undefined,
       imageUrls: entry.imageUrls.length > 0 ? entry.imageUrls : undefined,
     };
-
-    try {
-      await createSession(session);
-      await loadSessions();
-    } catch (err: any) {
-      toast.error('Failed to save session: ' + err.message);
-    }
+    try { await createSession(session); await loadSessions(); }
+    catch (err: any) { toast.error('Failed to save session: ' + err.message); }
   };
 
-  return (
-    <div className="min-h-screen bg-background">
-      {demoMode && (
-        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-          <Eye className="w-4 h-4 shrink-0" />
-          <span>Demo mode — the timer and form are fully interactive, but sessions are not saved.</span>
-        </div>
+  // ─── Header actions ──────────────────────────────────────────────
+  const headerActions = (
+    <>
+      {!demoMode && (
+        <button
+          onClick={() => setOpenDialog('manual')}
+          className="font-label text-[10px] font-bold py-2 px-4 rounded hover:opacity-90 transition-colors flex items-center gap-2 uppercase tracking-wider shadow-sm bg-primary text-primary-foreground"
+        >
+          <Plus className="w-4 h-4" />
+          <span className="hidden sm:inline">Add Entry</span>
+        </button>
       )}
-      <header className="border-b border-border bg-card/50">
-        <div className="container max-w-4xl px-4 py-3 flex items-center gap-3">
-          <div className="w-9 h-9 shrink-0 rounded-lg bg-primary/15 flex items-center justify-center glow-amber">
-            <Wrench className="w-4 h-4 text-primary" />
-          </div>
-          <h1 className="text-base sm:text-lg font-bold text-foreground tracking-tight truncate flex-1">
-            {projectName}
-          </h1>
+    </>
+  );
 
-          {/* Dropdown menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="inline-flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors shrink-0">
-                <Menu className="w-5 h-5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              {/* Page-specific actions */}
-              {!demoMode && (
-                <DropdownMenuItem onClick={() => setOpenDialog('manual')}>
-                  <Plus className="w-4 h-4 mr-2" /> Add Entry
-                </DropdownMenuItem>
-              )}
-              {!demoMode && (
-                <DropdownMenuItem onClick={() => setShowSignOff(true)}>
-                  <ClipboardCheck className="w-4 h-4 mr-2" /> Sign Off
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onClick={() => setOpenDialog('export')}>
-                <Download className="w-4 h-4 mr-2" /> Build Report
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {/* Navigation */}
-              <DropdownMenuItem asChild>
-                <Link to="/blog" className="flex items-center w-full">
-                  <NotebookPen className="w-4 h-4 mr-2" /> Build Blog
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <Link to="/expenses" className="flex items-center w-full">
-                  <Wallet className="w-4 h-4 mr-2" /> Expenses
-                </Link>
-              </DropdownMenuItem>
-              {/* Settings */}
-              {!demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setOpenDialog('settings')}>
-                    <Settings className="w-4 h-4 mr-2" /> Settings
-                  </DropdownMenuItem>
-                </>
-              )}
-              {role === 'admin' && !demoMode && (
-                <DropdownMenuItem asChild>
-                  <Link to="/admin" className="flex items-center w-full">
-                    <ShieldCheck className="w-4 h-4 mr-2" /> Admin Panel
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {/* About / Sign out */}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setOpenDialog('about')}>
-                <Info className="w-4 h-4 mr-2" /> About
-              </DropdownMenuItem>
-              {!demoMode && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
-                    <LogOut className="w-4 h-4 mr-2" /> Sign out
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
+  return (
+    <AppShell activePage="tracker" projectName={projectName} headerRight={headerActions}>
+      {/* Dialogs */}
+      <ManualEntryDialog open={openDialog === 'manual'} onOpenChange={o => setOpenDialog(o ? 'manual' : null)} onAdd={handleManualAdd} />
+      <ExportDialog sessions={sessions} open={openDialog === 'export'} onOpenChange={o => setOpenDialog(o ? 'export' : null)} timeFormat={timeFormat} />
 
-      {/* Dialogs driven by dropdown */}
-      <SettingsDialog
-        open={openDialog === 'settings'}
-        onOpenChange={o => setOpenDialog(o ? 'settings' : null)}
-        onProjectNameChange={setProjectName}
-        onTargetHoursChange={setTargetHours}
-        onSettingsSaved={() => {
-          fetchBuildStats().then(s => {
-            setProgressMode(s.progressMode || 'time');
-            setPackageProgressPct(s.progressPct);
-          }).catch(() => {});
-          fetchGeneralSettings().then(s => setTimeFormat(s.timeFormat || '24h')).catch(() => {});
-        }}
-      />
-      <ManualEntryDialog
-        open={openDialog === 'manual'}
-        onOpenChange={o => setOpenDialog(o ? 'manual' : null)}
-        onAdd={handleManualAdd}
-      />
-      <ExportDialog
-        sessions={sessions}
-        open={openDialog === 'export'}
-        onOpenChange={o => setOpenDialog(o ? 'export' : null)}
-        timeFormat={timeFormat}
-      />
-      <AboutDialog
-        open={openDialog === 'about'}
-        onOpenChange={o => setOpenDialog(o ? 'about' : null)}
-      />
-      <SignOffDialog
-        open={showSignOff}
-        onOpenChange={setShowSignOff}
-        onSaved={loadSignOffs}
-      />
+      <div className="space-y-6">
+        {/* ━━━ Bento Grid ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-      <main className="container max-w-4xl py-6 space-y-6">
-        <div className="bg-card border border-border rounded-xl p-8">
-          <Timer
-            isRunning={isRunning}
-            onStart={handleStart}
-            onPause={handlePause}
-            onStop={handleStop}
-            serverStartedAt={serverStartedAt}
-            demoMode={demoMode}
-          />
-        </div>
+          {/* ── Left Column (8/12): Timer, Sections, Notes ──────── */}
+          <div className="lg:col-span-8 space-y-6">
 
-        <div className="bg-card border border-border rounded-xl p-6">
-          <SessionForm
-            section={section}
-            onSectionChange={setSection}
-            plansPage={plansPage}
-            onPlansPageChange={setPlansPage}
-            plansSection={plansSection}
-            onPlansSectionChange={setPlansSection}
-            plansStep={plansStep}
-            onPlansStepChange={setPlansStep}
-            notes={notes}
-            onNotesChange={setNotes}
-            pendingImageUrls={pendingImageUrls}
-            onPendingImageUrlsChange={setPendingImageUrls}
-            demoMode={demoMode}
-          />
-        </div>
+            {/* Timer Card */}
+            <div className="bg-card rounded-lg p-6 sm:p-8">
+              <Timer
+                isRunning={isRunning}
+                onStart={handleStart}
+                onPause={handlePause}
+                onStop={handleStop}
+                serverStartedAt={serverStartedAt}
+                demoMode={demoMode}
+              />
+            </div>
 
-        <ActivityHeatmap />
+            {/* Assembly Section & Work Package Picker */}
+            <div className="bg-muted/40 rounded-lg p-4">
+              <WorkPackagePicker
+                section={section}
+                onSectionChange={setSection}
+                plansSection={plansSection}
+                onPlansSectionChange={setPlansSection}
+              />
+            </div>
 
-        <Tabs defaultValue="dashboard" className="w-full">
-          <TabsList className="w-full bg-card border border-border">
-            <TabsTrigger value="dashboard" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
-              <BarChart3 className="w-4 h-4" /> Dashboard
-            </TabsTrigger>
-            <TabsTrigger value="history" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
-              <Clock className="w-4 h-4" /> History
-            </TabsTrigger>
-            <TabsTrigger value="signoffs" className="flex-1 gap-2 data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
-              <ClipboardCheck className="w-4 h-4" /> Sign-offs
-              {signOffs.length > 0 && (
-                <span className="ml-1 text-xs bg-primary/20 text-primary rounded-full px-1.5 py-0.5 leading-none">{signOffs.length}</span>
-              )}
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="dashboard" className="mt-4">
-            <Dashboard sessions={sessions} targetHours={targetHours} progressMode={progressMode} packageProgressPct={packageProgressPct} />
-          </TabsContent>
-          <TabsContent value="history" className="mt-4">
-            <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} timeFormat={timeFormat} />
-          </TabsContent>
-          <TabsContent value="signoffs" className="mt-4">
-            {!demoMode && (
-              <div className="flex justify-end mb-3">
-                <Button size="sm" onClick={() => setShowSignOff(true)} className="gap-1.5">
-                  <ClipboardCheck className="w-4 h-4" /> New Sign-Off
-                </Button>
+            {/* Build Notes */}
+            <div className="bg-card rounded-lg p-6 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">Build Notes & Observations</h3>
+                {SpeechRecognitionAPI && (
+                  <button
+                    type="button"
+                    onClick={toggleListening}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all font-label text-[10px] font-bold uppercase ${
+                      isListening
+                        ? 'bg-destructive/10 text-destructive border border-destructive/30'
+                        : 'text-primary hover:bg-primary/10'
+                    }`}
+                  >
+                    {isListening ? (
+                      <>
+                        <span className="flex items-end gap-[3px] h-4">
+                          {[0.4, 0.7, 1, 0.7, 0.4].map((scale, i) => (
+                            <span
+                              key={i}
+                              className="w-[3px] rounded-full bg-destructive animate-bounce"
+                              style={{ height: `${scale * 100}%`, animationDelay: `${i * 0.1}s`, animationDuration: `${0.5 + i * 0.1}s` }}
+                            />
+                          ))}
+                        </span>
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        <MIcon name="mic" className="text-sm" />
+                        Dictate Note
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
-            )}
-            <SignOffsList signOffs={signOffs} onDeleted={loadSignOffs} readOnly={demoMode} />
-          </TabsContent>
-        </Tabs>
-      </main>
-    </div>
+              <Textarea
+                placeholder="Document specific riveting techniques, torque values, or observations..."
+                value={notes}
+                maxLength={10000}
+                onChange={(e) => setNotes(e.target.value)}
+                className={`bg-muted/50 border-none min-h-[160px] text-sm font-body placeholder:font-label placeholder:uppercase placeholder:text-[10px] placeholder:tracking-[0.15em] placeholder:text-muted-foreground/40 ${
+                  isListening ? 'ring-1 ring-destructive/50' : ''
+                }`}
+              />
+              {interimText && (
+                <p className="text-xs text-muted-foreground italic px-1">{interimText}...</p>
+              )}
+            </div>
+          </div>
+
+          {/* ── Right Column (4/12): Plans Reference, Images ────── */}
+          <div className="lg:col-span-4 space-y-6">
+
+            {/* Technical Reference */}
+            <div className="bg-card rounded-lg p-6 space-y-5">
+              <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em] border-b border-border pb-3">Plans Reference</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="font-label text-[10px] font-bold uppercase text-muted-foreground">Page</label>
+                  <Input
+                    placeholder="e.g. 8"
+                    value={plansPage}
+                    onChange={(e) => setPlansPage(e.target.value)}
+                    className="bg-muted/50 border-none font-mono font-bold text-primary"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="font-label text-[10px] font-bold uppercase text-muted-foreground">Step</label>
+                  <Input
+                    placeholder="e.g. C-02"
+                    value={plansStep}
+                    onChange={(e) => setPlansStep(e.target.value)}
+                    className="bg-muted/50 border-none font-mono font-bold text-primary"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Session Images */}
+            <div className="bg-card rounded-lg p-6 space-y-3">
+              <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">Session Visuals</h3>
+              <SessionImages
+                sessionId="pending"
+                imageUrls={pendingImageUrls}
+                onImagesChange={setPendingImageUrls}
+                editable
+                demoMode={demoMode}
+              />
+            </div>
+
+            {/* Session History */}
+            <div className="bg-card rounded-lg p-6 space-y-3">
+              <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">Recent Sessions</h3>
+              <SessionHistory sessions={sessions} onDelete={handleDelete} onUpdate={handleUpdate} readOnly={demoMode} timeFormat={timeFormat} hasMore={sessionsHasMore} onLoadMore={loadMoreSessions} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </AppShell>
   );
 };
 

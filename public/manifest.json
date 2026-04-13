@@ -1,0 +1,23 @@
+{
+  "name": "BenchLog",
+  "short_name": "BenchLog",
+  "description": "Track your aircraft build project",
+  "start_url": "/tracker",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b1326",
+  "theme_color": "#0b1326",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/report-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

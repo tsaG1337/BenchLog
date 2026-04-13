@@ -29,10 +29,19 @@ export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
             href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 w-full px-3 py-2 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm text-foreground transition-colors"
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-md border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
           >
             <ExternalLink className="w-4 h-4 text-muted-foreground" />
             View on GitHub
+          </a>
+          <a
+            href="https://benchlog.build/impressum"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-md border border-border bg-muted/50 hover:bg-muted text-sm text-foreground transition-colors"
+          >
+            <ExternalLink className="w-4 h-4 text-muted-foreground" />
+            Impressum
           </a>
         </div>
       </DialogContent>

@@ -74,10 +74,11 @@ function initTenantSchema(tenantSqlite, tenantId) {
       tenant_id    TEXT NOT NULL DEFAULT '',
       title        TEXT NOT NULL,
       content      TEXT NOT NULL DEFAULT '',
-      section      TEXT,
-      image_urls   TEXT DEFAULT '[]',
-      published_at TEXT DEFAULT (datetime('now')),
-      updated_at   TEXT DEFAULT (datetime('now')),
+      section        TEXT,
+      plans_section  TEXT DEFAULT '',
+      image_urls     TEXT DEFAULT '[]',
+      published_at   TEXT DEFAULT (datetime('now')),
+      updated_at     TEXT DEFAULT (datetime('now')),
       PRIMARY KEY (id, tenant_id)
     )
   `);
@@ -151,14 +152,99 @@ function initTenantSchema(tenantSqlite, tenantId) {
   `);
 
   tenantSqlite.exec(`
-    CREATE TABLE IF NOT EXISTS image_annotations (
-      image_url        TEXT NOT NULL,
-      tenant_id        TEXT NOT NULL DEFAULT '',
-      annotations_json TEXT NOT NULL DEFAULT '[]',
-      updated_at       TEXT DEFAULT (datetime('now')),
-      PRIMARY KEY (image_url, tenant_id)
+    CREATE TABLE IF NOT EXISTS pending_uploads (
+      url         TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL DEFAULT '',
+      uploaded_at BIGINT NOT NULL,
+      PRIMARY KEY (url, tenant_id)
     )
   `);
+
+  // ─── Inventory ───────────────────────────────────────────────────
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_locations (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id   TEXT NOT NULL DEFAULT '',
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      parent_id   INTEGER,
+      sort_order  INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_parts (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      part_number  TEXT NOT NULL,
+      name         TEXT NOT NULL,
+      manufacturer TEXT DEFAULT '',
+      kit          TEXT DEFAULT '',
+      sub_kit      TEXT DEFAULT '',
+      category     TEXT DEFAULT 'other',
+      mfg_date     TEXT DEFAULT '',
+      bag          TEXT DEFAULT '',
+      notes        TEXT DEFAULT '',
+      created_at   TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_inv_parts_pn ON inventory_parts (tenant_id, part_number)`);
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_stock (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id   TEXT NOT NULL DEFAULT '',
+      part_id     INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      quantity    REAL DEFAULT 0,
+      unit        TEXT DEFAULT 'pcs',
+      status      TEXT DEFAULT 'in_stock',
+      condition   TEXT DEFAULT 'new',
+      batch       TEXT DEFAULT '',
+      source_kit  TEXT DEFAULT '',
+      notes       TEXT DEFAULT '',
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_inv_stock_part ON inventory_stock (tenant_id, part_id)`);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_inv_stock_loc  ON inventory_stock (tenant_id, location_id)`);
+
+  // Inventory check sessions (kit verification)
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_check_sessions (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      aircraft_type  TEXT NOT NULL,
+      kit_id         TEXT NOT NULL,
+      kit_label      TEXT NOT NULL DEFAULT '',
+      status         TEXT NOT NULL DEFAULT 'active',
+      total_items    INTEGER DEFAULT 0,
+      verified_items INTEGER DEFAULT 0,
+      missing_items  INTEGER DEFAULT 0,
+      created_at     TEXT DEFAULT (datetime('now')),
+      updated_at     TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS inventory_check_items (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id     INTEGER NOT NULL,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      part_number    TEXT NOT NULL,
+      nomenclature   TEXT DEFAULT '',
+      sub_kit        TEXT DEFAULT '',
+      bag            TEXT DEFAULT '',
+      qty_expected   REAL DEFAULT 1,
+      qty_found      REAL DEFAULT 0,
+      unit           TEXT DEFAULT 'pcs',
+      status         TEXT NOT NULL DEFAULT 'pending',
+      notes          TEXT DEFAULT '',
+      scanned_at     TEXT,
+      FOREIGN KEY (session_id) REFERENCES inventory_check_sessions(id)
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_check_items_session ON inventory_check_items (session_id, tenant_id)`);
 }
 
 /**
@@ -214,10 +300,11 @@ async function initPostgresSchema(pool) {
       tenant_id    TEXT NOT NULL DEFAULT '',
       title        TEXT NOT NULL,
       content      TEXT NOT NULL DEFAULT '',
-      section      TEXT,
-      image_urls   TEXT DEFAULT '[]',
-      published_at TEXT DEFAULT (${NOW_TEXT}),
-      updated_at   TEXT DEFAULT (${NOW_TEXT}),
+      section        TEXT,
+      plans_section  TEXT DEFAULT '',
+      image_urls     TEXT DEFAULT '[]',
+      published_at   TEXT DEFAULT (${NOW_TEXT}),
+      updated_at     TEXT DEFAULT (${NOW_TEXT}),
       PRIMARY KEY (id, tenant_id)
     )`,
     `CREATE TABLE IF NOT EXISTS expenses (
@@ -276,13 +363,6 @@ async function initPostgresSchema(pool) {
       created_at             TEXT DEFAULT (${NOW_TEXT}),
       PRIMARY KEY (id, tenant_id)
     )`,
-    `CREATE TABLE IF NOT EXISTS image_annotations (
-      image_url        TEXT NOT NULL,
-      tenant_id        TEXT NOT NULL DEFAULT '',
-      annotations_json TEXT NOT NULL DEFAULT '[]',
-      updated_at       TEXT DEFAULT (${NOW_TEXT}),
-      PRIMARY KEY (image_url, tenant_id)
-    )`,
     `CREATE TABLE IF NOT EXISTS pending_uploads (
       url         TEXT NOT NULL,
       tenant_id   TEXT NOT NULL DEFAULT '',
@@ -290,11 +370,105 @@ async function initPostgresSchema(pool) {
       PRIMARY KEY (url, tenant_id)
     )`,
     `ALTER TABLE tenants ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`,
+
+    // ─── Inventory ───────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS inventory_locations (
+      id          BIGSERIAL PRIMARY KEY,
+      tenant_id   TEXT NOT NULL DEFAULT '',
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      parent_id   INTEGER,
+      sort_order  INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE TABLE IF NOT EXISTS inventory_parts (
+      id           BIGSERIAL PRIMARY KEY,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      part_number  TEXT NOT NULL,
+      name         TEXT NOT NULL,
+      manufacturer TEXT DEFAULT '',
+      kit          TEXT DEFAULT '',
+      category     TEXT DEFAULT 'other',
+      mfg_date     TEXT DEFAULT '',
+      bag          TEXT DEFAULT '',
+      notes        TEXT DEFAULT '',
+      created_at   TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_inv_parts_pn    ON inventory_parts (tenant_id, part_number)`,
+    `CREATE TABLE IF NOT EXISTS inventory_stock (
+      id          BIGSERIAL PRIMARY KEY,
+      tenant_id   TEXT NOT NULL DEFAULT '',
+      part_id     INTEGER NOT NULL,
+      location_id INTEGER NOT NULL,
+      quantity    REAL DEFAULT 0,
+      unit        TEXT DEFAULT 'pcs',
+      status      TEXT DEFAULT 'in_stock',
+      condition   TEXT DEFAULT 'new',
+      batch       TEXT DEFAULT '',
+      source_kit  TEXT DEFAULT '',
+      notes       TEXT DEFAULT '',
+      updated_at  TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_inv_stock_part ON inventory_stock (tenant_id, part_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_inv_stock_loc  ON inventory_stock (tenant_id, location_id)`,
+    `CREATE TABLE IF NOT EXISTS inventory_check_sessions (
+      id             BIGSERIAL PRIMARY KEY,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      aircraft_type  TEXT NOT NULL,
+      kit_id         TEXT NOT NULL,
+      kit_label      TEXT NOT NULL DEFAULT '',
+      status         TEXT NOT NULL DEFAULT 'active',
+      total_items    INTEGER DEFAULT 0,
+      verified_items INTEGER DEFAULT 0,
+      missing_items  INTEGER DEFAULT 0,
+      created_at     TEXT DEFAULT (${NOW_TEXT}),
+      updated_at     TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE TABLE IF NOT EXISTS inventory_check_items (
+      id             BIGSERIAL PRIMARY KEY,
+      session_id     INTEGER NOT NULL,
+      tenant_id      TEXT NOT NULL DEFAULT '',
+      part_number    TEXT NOT NULL,
+      nomenclature   TEXT DEFAULT '',
+      sub_kit        TEXT DEFAULT '',
+      bag            TEXT DEFAULT '',
+      qty_expected   REAL DEFAULT 1,
+      qty_found      REAL DEFAULT 0,
+      unit           TEXT DEFAULT 'pcs',
+      status         TEXT NOT NULL DEFAULT 'pending',
+      notes          TEXT DEFAULT '',
+      scanned_at     TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_check_items_session ON inventory_check_items (session_id, tenant_id)`,
   ];
 
   for (const sql of statements) {
     await pool.query(sql);
   }
+
+  // Migrations for existing PG tables
+  try {
+    const { rows } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'inventory_parts' AND table_schema = current_schema()`);
+    const cols = rows.map(r => r.column_name);
+    if (cols.length > 0 && !cols.includes('sub_kit')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN sub_kit TEXT DEFAULT ''`);
+    if (cols.length > 0 && !cols.includes('mfg_date')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN mfg_date TEXT DEFAULT ''`);
+    if (cols.length > 0 && !cols.includes('bag')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN bag TEXT DEFAULT ''`);
+  } catch (e) { /* table may not exist yet — fine */ }
+
+  // Migrate blog_posts: add plans_section column
+  try {
+    const { rows: blogCols } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'blog_posts' AND table_schema = current_schema()`);
+    const bc = blogCols.map(r => r.column_name);
+    if (bc.length > 0 && !bc.includes('plans_section')) await pool.query(`ALTER TABLE blog_posts ADD COLUMN plans_section TEXT DEFAULT ''`);
+  } catch (e) { /* table may not exist yet — fine */ }
+
+  // Migrate inventory_stock: add source_kit column
+  try {
+    const { rows: stockCols } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'inventory_stock' AND table_schema = current_schema()`);
+    const sc = stockCols.map(r => r.column_name);
+    if (sc.length > 0 && !sc.includes('source_kit')) await pool.query(`ALTER TABLE inventory_stock ADD COLUMN source_kit TEXT DEFAULT ''`);
+  } catch (e) { /* table may not exist yet — fine */ }
+
   console.log('[init] PostgreSQL schema ready');
 }
 

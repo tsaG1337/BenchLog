@@ -58,13 +58,13 @@ let logIdCounter = 0;
 
 const levelColor: Record<LogLevel, string> = {
   log:   'text-foreground/70',
-  info:  'text-blue-500',
+  info:  'text-primary',
   warn:  'text-amber-500',
   error: 'text-destructive',
 };
 const levelBadge: Record<LogLevel, string> = {
   log:   'bg-secondary text-muted-foreground',
-  info:  'bg-blue-500/15 text-blue-500',
+  info:  'bg-primary/15 text-primary',
   warn:  'bg-amber-500/15 text-amber-500',
   error: 'bg-destructive/15 text-destructive',
 };

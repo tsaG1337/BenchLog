@@ -1,25 +1,25 @@
 import { useState, useEffect, useRef } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, Send, Type, Layers, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload, AlertTriangle } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload, AlertTriangle, ExternalLink, Package } from 'lucide-react';
 import { toast } from 'sonner';
-import { SectionConfig } from '@/lib/types';
 import { ImportExportSection } from '@/components/ImportExportSection';
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { VisitorStatsPanel } from '@/components/VisitorStatsPanel';
+import { OCR_VENDORS } from '@/lib/ocrVendors';
+import { AIRCRAFT_MANIFESTS } from '@/lib/kitManifest';
 import { isElectron } from '@/lib/env';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import {
   fetchMqttSettings, updateMqttSettings, testMqttPublish, MqttSettings,
   fetchGeneralSettings, updateGeneralSettings, GeneralSettings,
-  fetchSections, updateSections, fetchSectionUsage, reassignSection, CURRENCIES,
+  CURRENCIES,
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
   fetchWpTemplates, fetchWpTemplate, WpTemplate,
@@ -34,21 +34,21 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type Tab = 'general' | 'appearance' | 'expenses' | 'sections' | 'data' | 'integrations' | 'stats' | 'debug';
+type Tab = 'general' | 'appearance' | 'expenses' | 'inventory' | 'data' | 'integrations' | 'stats' | 'debug';
 
-const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
+const ALL_TABS: { id: Tab; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
   { id: 'general',      label: 'General',      icon: Type },
   { id: 'appearance',   label: 'Appearance',   icon: Sun },
   { id: 'expenses',     label: 'Expenses',     icon: Wallet },
-  { id: 'sections',     label: 'Sections',     icon: Layers },
+  { id: 'inventory',    label: 'Inventory',    icon: Package },
   { id: 'data',         label: 'Data',         icon: Database },
   { id: 'integrations', label: 'Integrations', icon: Smartphone },
-  { id: 'stats',        label: 'Stats',        icon: BarChart3 },
-  { id: 'debug',        label: 'Debug',        icon: Bug },
+  { id: 'stats',        label: 'Visitors',     icon: BarChart3 },
+  { id: 'debug',        label: 'Debug',        icon: Bug,         adminOnly: true },
 ];
 
 export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSettingsSaved, open: controlledOpen, onOpenChange: controlledOnOpenChange }: SettingsDialogProps) {
-  const { sections: contextSections, reload: reloadSections } = useSections();
+  const { reload: reloadSections } = useSections();
   const { theme, setTheme } = useTheme();
   const { role, multiTenant } = useAuth();
   const isAdmin = !multiTenant || role === 'admin';
@@ -56,14 +56,11 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [activeTab, setActiveTab] = useState<Tab>('general');
-  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, landingPage: 'tracker', homeCurrency: 'EUR', blogShowActivity: true, blogShowStats: true, blogShowProgress: true });
+  const [general, setGeneral] = useState<GeneralSettings>({ projectName: 'Build Tracker', targetHours: 2500, progressMode: 'time', imageResizing: true, imageMaxWidth: 1920, landingPage: 'tracker', homeCurrency: 'EUR', blogShowSessionStats: true });
   const [mqtt, setMqtt] = useState<MqttSettings>({
     enabled: false, brokerUrl: 'mqtt://localhost:1883', username: '', password: '',
     topicPrefix: 'mybuild/stats', haDiscovery: false, haDiscoveryPrefix: 'homeassistant',
   });
-  const [sections, setSections] = useState<SectionConfig[]>([]);
-  const [deleteConfirm, setDeleteConfirm] = useState<{ index: number; section: SectionConfig; sessions: number; blogPosts: number } | null>(null);
-  const [reassignTo, setReassignTo] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [webhookKey, setWebhookKey] = useState('');
@@ -82,10 +79,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     if (open) {
       fetchGeneralSettings().then(s => { setGeneral(s); if (s.theme) setTheme(s.theme); }).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
-      fetchSections().then(setSections).catch(() => setSections([...contextSections]));
       fetchWpTemplates().then(setWpTemplates).catch(() => {});
     }
-  }, [open, contextSections]);
+  }, [open]);
 
   useEffect(() => {
     if (open && activeTab === 'integrations' && !webhookKey) {
@@ -115,12 +111,12 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const handleSave = async () => {
     setSaving(true);
     try {
-      await Promise.all([updateGeneralSettings(general), updateMqttSettings(mqtt), updateSections(sections)]);
+      await Promise.all([updateGeneralSettings(general), updateMqttSettings(mqtt)]);
       onProjectNameChange?.(general.projectName);
       onTargetHoursChange?.(general.targetHours);
-      await reloadSections();
       onSettingsSaved?.();
       toast.success('Settings saved');
+      setOpen(false);
     } catch (err: any) {
       toast.error('Failed to save: ' + err.message);
     }
@@ -136,52 +132,6 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
       toast.error('MQTT publish failed: ' + err.message);
     }
     setTesting(false);
-  };
-
-  const addSection = () => setSections([...sections, { id: `section-${Date.now()}`, label: '', icon: '📋' }]);
-
-  const toggleSectionCounts = (index: number) => {
-    const updated = [...sections];
-    updated[index] = { ...updated[index], countTowardsBuildHours: !(updated[index].countTowardsBuildHours ?? true) };
-    setSections(updated);
-  };
-
-  const updateSection = (index: number, field: keyof SectionConfig, value: string) => {
-    const updated = [...sections];
-    updated[index] = { ...updated[index], [field]: value };
-    if (field === 'label' && updated[index].id.startsWith('section-')) {
-      updated[index].id = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || updated[index].id;
-    }
-    setSections(updated);
-  };
-
-  const removeSection = async (index: number) => {
-    const sec = sections[index];
-    // Unsaved new sections have no data — delete immediately
-    if (sec.id.startsWith('section-')) {
-      setSections(sections.filter((_, i) => i !== index));
-      return;
-    }
-    try {
-      const usage = await fetchSectionUsage(sec.id);
-      if (usage.sessions === 0 && usage.blogPosts === 0) {
-        setSections(sections.filter((_, i) => i !== index));
-      } else {
-        const others = sections.filter((_, i) => i !== index);
-        setReassignTo(others[0]?.id || '');
-        setDeleteConfirm({ index, section: sec, sessions: usage.sessions, blogPosts: usage.blogPosts });
-      }
-    } catch {
-      setSections(sections.filter((_, i) => i !== index));
-    }
-  };
-
-  const moveSection = (index: number, direction: -1 | 1) => {
-    const newIndex = index + direction;
-    if (newIndex < 0 || newIndex >= sections.length) return;
-    const updated = [...sections];
-    [updated[index], updated[newIndex]] = [updated[newIndex], updated[index]];
-    setSections(updated);
   };
 
   const handleWpExport = async () => {
@@ -208,6 +158,29 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
     setWpSelectedFile(e.target.files?.[0] ?? null);
   };
 
+  const validatePackagesMap = (data: unknown): data is PackagesMap => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const validateItem = (item: unknown): boolean => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.id !== 'string' || typeof obj.label !== 'string') return false;
+      if (obj.id.length > 200 || obj.label.length > 500) return false;
+      // Reject HTML/script content in labels
+      if (/<script|javascript:|on\w+\s*=/i.test(obj.label)) return false;
+      if (obj.children !== undefined) {
+        if (!Array.isArray(obj.children)) return false;
+        if (!obj.children.every(validateItem)) return false;
+      }
+      return true;
+    };
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (typeof key !== 'string' || key.length > 200) return false;
+      if (!Array.isArray(value)) return false;
+      if (!value.every(validateItem)) return false;
+    }
+    return true;
+  };
+
   const handleWpImport = async () => {
     if (!wpSelectedFile && !wpSelectedTemplate) return;
     setWpImporting(true);
@@ -217,7 +190,11 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
         data = await fetchWpTemplate(wpSelectedTemplate);
       } else {
         const text = await wpSelectedFile!.text();
-        data = JSON.parse(text);
+        if (text.length > 10 * 1024 * 1024) throw new Error('File too large (max 10 MB)');
+        let parsed: unknown;
+        try { parsed = JSON.parse(text); } catch { throw new Error('Invalid JSON file'); }
+        if (!validatePackagesMap(parsed)) throw new Error('Invalid work package format. Expected { "Package Name": [{ id, label, children? }] }');
+        data = parsed;
       }
       await updateFlowchartPackages(data);
       toast.success('Work packages loaded');
@@ -249,7 +226,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar */}
           <nav className="w-40 shrink-0 border-r border-border bg-secondary/30 p-2 flex flex-col gap-0.5">
-            {TABS.filter(t => !(isElectron && t.id === 'stats')).map(({ id, label, icon: Icon }) => (
+            {ALL_TABS.filter(t => !(isElectron && t.id === 'stats') && (!t.adminOnly || isAdmin)).map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
@@ -263,6 +240,25 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 {label}
               </button>
             ))}
+            {multiTenant && (
+              <>
+                <div className="flex-1" />
+                <a
+                  href={(() => {
+                    const parts = window.location.hostname.split('.');
+                    return parts.length > 2
+                      ? `https://${parts.slice(1).join('.')}/account`
+                      : `${window.location.origin}/account`;
+                  })()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left w-full text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  <ExternalLink className="w-4 h-4 shrink-0" />
+                  Account
+                </a>
+              </>
+            )}
           </nav>
 
           {/* Content */}
@@ -276,7 +272,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   placeholder="Build Tracker"
                   value={general.projectName}
                   onChange={e => setGeneral({ ...general, projectName: e.target.value })}
-                  className="bg-secondary border-border text-sm"
+                  className="bg-muted/50 border-border text-sm"
                 />
               </div>
               <div>
@@ -286,7 +282,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   placeholder="2500"
                   value={general.targetHours}
                   onChange={e => setGeneral({ ...general, targetHours: Number(e.target.value) || 0 })}
-                  className="bg-secondary border-border text-sm"
+                  className="bg-muted/50 border-border text-sm"
                 />
                 <p className="text-xs text-muted-foreground/60 mt-1">Manufacturer-specified hours to complete the build (default: 2500)</p>
               </div>
@@ -301,7 +297,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                       className={`flex-1 text-left px-3 py-2 rounded-md border text-xs transition-colors ${
                         (general.progressMode || 'time') === value
                           ? 'bg-primary/15 border-primary text-primary'
-                          : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'
+                          : 'bg-muted/50 border-border text-muted-foreground hover:border-muted-foreground/50'
                       }`}>
                       <p className="font-medium">{label}</p>
                       <p className="text-[10px] opacity-70 mt-0.5">{desc}</p>
@@ -328,7 +324,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                     type="number" placeholder="1920"
                     value={general.imageMaxWidth ?? 1920}
                     onChange={e => setGeneral({ ...general, imageMaxWidth: Number(e.target.value) || 1920 })}
-                    className="bg-secondary border-border text-sm"
+                    className="bg-muted/50 border-border text-sm"
                   />
                   <p className="text-xs text-muted-foreground/60 mt-1">Images wider than this are scaled down. Thumbnails (400 px) are always generated.</p>
                 </div>
@@ -380,7 +376,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                       className={`flex-1 text-left px-3 py-2 rounded-md border text-xs transition-colors ${
                         (general.landingPage || 'tracker') === value
                           ? 'bg-primary/15 border-primary text-primary'
-                          : 'bg-secondary border-border text-muted-foreground hover:border-muted-foreground/50'
+                          : 'bg-muted/50 border-border text-muted-foreground hover:border-muted-foreground/50'
                       }`}>
                       <p className="font-medium">{label}</p>
                       <p className="text-[10px] opacity-70 mt-0.5">{desc}</p>
@@ -391,28 +387,35 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
               </div>
               <Separator />
               <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">Blog Access</Label>
+                <div className="flex gap-2">
+                  {([
+                    { value: true, label: 'Public', desc: 'Anyone can view your blog' },
+                    { value: false, label: 'Private', desc: 'Only you can view the blog' },
+                  ] as const).map(({ value, label, desc }) => (
+                    <button key={String(value)} onClick={() => setGeneral({ ...general, publicBlog: value })}
+                      className={`flex-1 text-left px-3 py-2 rounded-md border text-xs transition-colors ${
+                        (general.publicBlog ?? true) === value
+                          ? 'bg-primary/15 border-primary text-primary'
+                          : 'bg-muted/50 border-border text-muted-foreground hover:border-muted-foreground/50'
+                      }`}>
+                      <p className="font-medium">{label}</p>
+                      <p className="text-[10px] opacity-70 mt-0.5">{desc}</p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground/60 mt-1">When private, visitors must log in to see blog posts.</p>
+              </div>
+              <Separator />
+              <div>
                 <Label className="text-xs text-muted-foreground mb-3 block">Blog Visibility</Label>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <Label className="text-xs text-muted-foreground block">Build Activity</Label>
-                      <p className="text-xs text-muted-foreground/60">Show the session heatmap in the blog sidebar</p>
+                      <Label className="text-xs text-muted-foreground block">Build Session Statistics</Label>
+                      <p className="text-xs text-muted-foreground/60">Show session count, hours/week, and completion velocity on the blog page</p>
                     </div>
-                    <Switch checked={general.blogShowActivity ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowActivity: checked })} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label className="text-xs text-muted-foreground block">Build Stats</Label>
-                      <p className="text-xs text-muted-foreground/60">Show total hours, estimated finish, and pace</p>
-                    </div>
-                    <Switch checked={general.blogShowStats ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowStats: checked })} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label className="text-xs text-muted-foreground block">Progress Bar</Label>
-                      <p className="text-xs text-muted-foreground/60">Show the overall build progress bar (only when Build Stats is on)</p>
-                    </div>
-                    <Switch checked={general.blogShowProgress ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowProgress: checked })} />
+                    <Switch checked={general.blogShowSessionStats ?? true} onCheckedChange={checked => setGeneral({ ...general, blogShowSessionStats: checked })} />
                   </div>
                 </div>
               </div>
@@ -425,7 +428,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 <select
                   value={general.homeCurrency || 'EUR'}
                   onChange={e => setGeneral({ ...general, homeCurrency: e.target.value })}
-                  className="h-9 rounded-md border border-border bg-secondary px-3 text-sm w-full"
+                  className="h-9 rounded-md border border-border bg-muted/50 px-3 text-sm w-full"
                 >
                   {CURRENCIES.map(c => (
                     <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>
@@ -436,99 +439,55 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   Changing this does not retroactively recalculate existing entries.
                 </p>
               </div>
+              <Separator />
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">WAF — Wife Acceptance Factor</Label>
+                <div className="flex items-center gap-4">
+                  <input
+                    type="range"
+                    min={1}
+                    max={100}
+                    value={general.wafPercent ?? 100}
+                    onChange={e => setGeneral({ ...general, wafPercent: parseInt(e.target.value) })}
+                    className="flex-1 h-2 accent-primary cursor-pointer"
+                  />
+                  <span className="text-sm font-bold w-12 text-right">{general.wafPercent ?? 100}%</span>
+                </div>
+                <p className="text-xs text-muted-foreground/60 mt-1.5">
+                  Scales all displayed expense amounts by this percentage. At 100% amounts are shown as-is. At 50% all displayed amounts are halved. Useful for... diplomatic purposes. Caution: incorrect calibration may affect long-term diplomatic relations with allied household members.
+                </p>
+              </div>
+
             </>}
 
-            {/* ── Sections ────────────────────────────────────── */}
-            {activeTab === 'sections' && <>
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">Define the assembly sections shown in the tracker and session form.</p>
-                <Button variant="outline" size="sm" onClick={addSection} className="gap-1 h-7 text-xs shrink-0">
-                  <Plus className="w-3 h-3" /> Add
-                </Button>
+            {/* ── Inventory ──────────────────────────────────── */}
+            {activeTab === 'inventory' && <>
+              <div>
+                <Label className="text-xs text-muted-foreground mb-1 block">Aircraft Type</Label>
+                <select
+                  value={general.aircraftType || 'vans-rv10'}
+                  onChange={e => setGeneral({ ...general, aircraftType: e.target.value })}
+                  className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                  {AIRCRAFT_MANIFESTS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground/60 mt-1">
+                  Determines which kit structure and parts manifest are used for inventory management and mass ingestion.
+                </p>
               </div>
-              <div className="space-y-2">
-                {sections.map((sec, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className="flex flex-col gap-0.5">
-                      <button onClick={() => moveSection(i, -1)} disabled={i === 0}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none">▲</button>
-                      <button onClick={() => moveSection(i, 1)} disabled={i === sections.length - 1}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-20 text-xs leading-none">▼</button>
-                    </div>
-                    <Input value={sec.icon} onChange={e => updateSection(i, 'icon', e.target.value)}
-                      className="w-12 bg-secondary border-border text-center text-sm px-1" maxLength={4} />
-                    <Input value={sec.label} onChange={e => updateSection(i, 'label', e.target.value)}
-                      placeholder="Section name" className="flex-1 bg-secondary border-border text-sm" />
-                    <div className="flex items-center gap-1" title="Count towards build hours">
-                      <Clock className={`w-3 h-3 ${(sec.countTowardsBuildHours ?? true) ? 'text-primary' : 'text-muted-foreground/40'}`} />
-                      <Switch checked={sec.countTowardsBuildHours ?? true} onCheckedChange={() => toggleSectionCounts(i)} className="scale-75 origin-left" />
-                    </div>
-                    <Button variant="ghost" size="sm" onClick={() => removeSection(i)}
-                      className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                ))}
-                {sections.length === 0 && <p className="text-xs text-muted-foreground/60 py-2">No sections defined. Click "Add" to create one.</p>}
-                {sections.length > 0 && (
-                  <p className="text-xs text-muted-foreground/50 mt-1 flex items-center gap-1">
-                    <Clock className="w-3 h-3" /> toggle controls whether section counts toward build hours
+              {general.ocrEnabled && (
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1 block">Label Scanner — Recognition Scheme</Label>
+                  <select
+                    value={general.ocrVendor || 'vans'}
+                    onChange={e => setGeneral({ ...general, ocrVendor: e.target.value })}
+                    className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                    {OCR_VENDORS.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+                  </select>
+                  <p className="text-xs text-muted-foreground/60 mt-1">
+                    Selects which part-number patterns the label scanner uses. Each vendor defines its own part-number formats and sub-kit categories.
                   </p>
-                )}
-              </div>
-
-              {/* ── Delete confirmation dialog ─────────────────── */}
-              <Dialog open={deleteConfirm !== null} onOpenChange={o => { if (!o) setDeleteConfirm(null); }}>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle className="flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-destructive" /> Delete section "{deleteConfirm?.section.label || deleteConfirm?.section.id}"?
-                    </DialogTitle>
-                    <DialogDescription>
-                      This section has{' '}
-                      {deleteConfirm && [
-                        deleteConfirm.sessions > 0 && `${deleteConfirm.sessions} work session${deleteConfirm.sessions !== 1 ? 's' : ''}`,
-                        deleteConfirm.blogPosts > 0 && `${deleteConfirm.blogPosts} blog post${deleteConfirm.blogPosts !== 1 ? 's' : ''}`,
-                      ].filter(Boolean).join(' and ')}.
-                      {' '}Reassign existing entries to another section, or delete the section and leave them as-is.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-2 py-1">
-                    <Label className="text-xs text-muted-foreground">Reassign entries to</Label>
-                    <Select value={reassignTo} onValueChange={setReassignTo}>
-                      <SelectTrigger className="bg-secondary border-border">
-                        <SelectValue placeholder="Select a section…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {sections
-                          .filter(s => s.id !== deleteConfirm?.section.id)
-                          .map(s => <SelectItem key={s.id} value={s.id}>{s.icon} {s.label || s.id}</SelectItem>)
-                        }
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <DialogFooter className="gap-2 sm:gap-0">
-                    <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
-                    <Button variant="outline" onClick={() => {
-                      setSections(sections.filter((_, i) => i !== deleteConfirm!.index));
-                      setDeleteConfirm(null);
-                    }}>Delete without reassigning</Button>
-                    <Button variant="destructive" disabled={!reassignTo} onClick={async () => {
-                      if (!reassignTo || !deleteConfirm) return;
-                      try {
-                        const result = await reassignSection(deleteConfirm.section.id, reassignTo);
-                        const updated = sections.filter((_, i) => i !== deleteConfirm.index);
-                        setSections(updated);
-                        await updateSections(updated);
-                        toast.success(`Reassigned ${result.sessionsUpdated} sessions and ${result.blogPostsUpdated} blog posts`);
-                      } catch {
-                        toast.error('Failed to reassign entries');
-                      }
-                      setDeleteConfirm(null);
-                    }}>Reassign &amp; Delete</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+                </div>
+              )}
             </>}
 
             {/* ── Integrations ────────────────────────────────── */}
@@ -554,7 +513,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                     <div className="space-y-3">
                       <div>
                         <Label className="text-xs text-muted-foreground mb-1 block">API Key</Label>
-                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                        <div className="flex items-center gap-1 bg-accent border border-border rounded-md px-2 py-1.5">
                           <code className="flex-1 text-xs font-mono break-all text-foreground">
                             {webhookKeyLoading ? 'Loading…' : (webhookKey || '—')}
                           </code>
@@ -573,7 +532,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
                       <div>
                         <Label className="text-xs text-muted-foreground mb-1 block">Start Timer URL</Label>
-                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                        <div className="flex items-center gap-1 bg-accent border border-border rounded-md px-2 py-1.5">
                           <code className="flex-1 text-xs font-mono break-all text-foreground">{webhookKey ? startUrl : '—'}</code>
                           {webhookKey && <CopyBtn text={startUrl} field="start" />}
                         </div>
@@ -581,7 +540,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
                       <div>
                         <Label className="text-xs text-muted-foreground mb-1 block">Stop Timer URL</Label>
-                        <div className="flex items-center gap-1 bg-secondary border border-border rounded-md px-2 py-1.5">
+                        <div className="flex items-center gap-1 bg-accent border border-border rounded-md px-2 py-1.5">
                           <code className="flex-1 text-xs font-mono break-all text-foreground">{webhookKey ? stopUrl : '—'}</code>
                           {webhookKey && <CopyBtn text={stopUrl} field="stop" />}
                         </div>
@@ -622,27 +581,27 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                           <Label className="text-xs text-muted-foreground mb-1 block">Broker URL</Label>
                           <Input placeholder="mqtt://192.168.1.2:1883" value={mqtt.brokerUrl}
                             onChange={e => setMqtt({ ...mqtt, brokerUrl: e.target.value })}
-                            className="bg-secondary border-border font-mono text-sm" />
+                            className="bg-muted/50 border-border font-mono text-sm" />
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <Label className="text-xs text-muted-foreground mb-1 block">Username</Label>
                             <Input placeholder="(optional)" value={mqtt.username}
                               onChange={e => setMqtt({ ...mqtt, username: e.target.value })}
-                              className="bg-secondary border-border text-sm" />
+                              className="bg-muted/50 border-border text-sm" />
                           </div>
                           <div>
                             <Label className="text-xs text-muted-foreground mb-1 block">Password</Label>
                             <Input type="password" placeholder="(optional)" value={mqtt.password}
                               onChange={e => setMqtt({ ...mqtt, password: e.target.value })}
-                              className="bg-secondary border-border text-sm" />
+                              className="bg-muted/50 border-border text-sm" />
                           </div>
                         </div>
                         <div>
                           <Label className="text-xs text-muted-foreground mb-1 block">Topic Prefix</Label>
                           <Input placeholder="mybuild/stats" value={mqtt.topicPrefix}
                             onChange={e => setMqtt({ ...mqtt, topicPrefix: e.target.value })}
-                            className="bg-secondary border-border font-mono text-sm" />
+                            className="bg-muted/50 border-border font-mono text-sm" />
                           <p className="text-xs text-muted-foreground/60 mt-1">
                             Topics: {mqtt.topicPrefix || 'mybuild/stats'}/total_hours, …/fuselage, …/wings, etc.
                           </p>
@@ -659,7 +618,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                             <Label className="text-xs text-muted-foreground mb-1 block">Discovery Prefix</Label>
                             <Input placeholder="homeassistant" value={mqtt.haDiscoveryPrefix}
                               onChange={e => setMqtt({ ...mqtt, haDiscoveryPrefix: e.target.value })}
-                              className="bg-secondary border-border font-mono text-sm" />
+                              className="bg-muted/50 border-border font-mono text-sm" />
                             <p className="text-xs text-muted-foreground/60 mt-1">Default is "homeassistant". Only change if you customized HA's discovery prefix.</p>
                           </div>
                         )}
@@ -703,7 +662,6 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 <ImportExportSection onImportComplete={() => {
                   fetchGeneralSettings().then(s => { setGeneral(s); if (s.theme) setTheme(s.theme); }).catch(() => {});
                   fetchMqttSettings().then(setMqtt).catch(() => {});
-                  fetchSections().then(setSections).catch(() => {});
                   reloadSections();
                 }} />
                 <Separator />

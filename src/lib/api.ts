@@ -7,31 +7,68 @@ function getAuthHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** Handle 401 responses consistently — clear token and redirect to login */
+function handle401(res: Response) {
+  if (res.status === 401 && localStorage.getItem('auth_token')) {
+    localStorage.removeItem('auth_token');
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.replace('/login');
+    }
+  }
+}
+
+/** Handle 403 "Account deactivated" — notify AuthContext without wiping the token */
+function handle403Deactivated(res: Response, body: string) {
+  if (res.status === 403) {
+    try {
+      const msg = JSON.parse(body).error || '';
+      if (msg.toLowerCase().includes('deactivated')) {
+        window.dispatchEvent(new CustomEvent('accountDeactivated'));
+      }
+    } catch { /* not JSON */ }
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    ...getAuthHeaders(),
+    ...options?.headers as Record<string, string>,
+  };
+  // Only set Content-Type for requests with a string body (not FormData)
+  if (options?.body && typeof options.body === 'string') {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+  }
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...getAuthHeaders(),
-      ...options?.headers,
-    },
+    headers,
   });
   const text = await res.text();
   if (!res.ok) {
+    handle401(res);
+    handle403Deactivated(res, text);
     let message = res.statusText;
-    try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
-    throw new Error(message);
+    try { const parsed = JSON.parse(text).error; if (parsed) message = parsed; } catch { /* not JSON */ }
+    throw new Error(message || `Request failed (${res.status})`);
   }
   try {
     return JSON.parse(text);
   } catch {
-    const preview = text.slice(0, 120).replace(/\n/g, ' ');
-    throw new Error(`Server returned non-JSON (${res.status}): ${preview}`);
+    throw new Error(`Unexpected server response (${res.status})`);
   }
 }
 
-export async function fetchSessions(): Promise<WorkSession[]> {
-  return request<WorkSession[]>('/api/sessions');
+export interface SessionsPage {
+  sessions: WorkSession[];
+  total: number;
+  hasMore: boolean;
+}
+
+export async function fetchSessions(opts?: { limit?: number; offset?: number }): Promise<SessionsPage> {
+  const params = new URLSearchParams();
+  if (opts?.limit  !== undefined) params.set('limit',  String(opts.limit));
+  if (opts?.offset !== undefined) params.set('offset', String(opts.offset));
+  const qs = params.size ? `?${params}` : '';
+  return request<SessionsPage>(`/api/sessions${qs}`);
 }
 
 export async function createSession(session: WorkSession): Promise<void> {
@@ -68,6 +105,7 @@ export async function uploadImages(sessionId: string, files: FileList): Promise<
   });
 
   if (!res.ok) {
+    handle401(res);
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
@@ -83,6 +121,45 @@ export async function deleteImage(url: string): Promise<void> {
   });
 }
 
+// ─── OCR ────────────────────────────────────────────────────────────
+
+export interface OcrLine {
+  text: string;
+  confidence: number;
+  bbox: number[][];
+}
+
+export interface OcrBarcode {
+  data: string;
+  type: string;
+  bbox: number[];  // [left, top, width, height]
+}
+
+export interface OcrResult {
+  lines: OcrLine[];
+  barcodes: OcrBarcode[];
+  full_text: string;
+}
+
+export async function runOcr(imageFile: File): Promise<OcrResult> {
+  const formData = new FormData();
+  formData.append('image', imageFile);
+
+  const res = await fetch(`${API_URL}/api/ocr`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders() },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    handle401(res);
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+
+  return res.json();
+}
+
 // ─── General Settings ───────────────────────────────────────────────
 export interface GeneralSettings {
   projectName: string;
@@ -93,22 +170,32 @@ export interface GeneralSettings {
   timeFormat?: '24h' | '12h';
   landingPage?: 'tracker' | 'blog';
   homeCurrency?: string;
-  blogShowActivity?: boolean;
-  blogShowStats?: boolean;
-  blogShowProgress?: boolean;
+  blogShowSessionStats?: boolean;
   theme?: 'light' | 'dark' | 'system';
   inspectorName?: string;
+  publicBlog?: boolean;
+  wafPercent?: number;
+  maintenanceMode?: boolean;
+  ocrEnabled?: boolean;
+  ocrVendor?: string;
+  aircraftType?: string;
 }
 
-export async function fetchGeneralSettings(): Promise<GeneralSettings> {
-  return request<GeneralSettings>('/api/settings/general');
+let _generalSettingsPromise: Promise<GeneralSettings> | null = null;
+export function fetchGeneralSettings(): Promise<GeneralSettings> {
+  if (!_generalSettingsPromise) {
+    _generalSettingsPromise = request<GeneralSettings>('/api/settings/general')
+      .finally(() => { setTimeout(() => { _generalSettingsPromise = null; }, 2000); });
+  }
+  return _generalSettingsPromise;
 }
 
-export async function updateGeneralSettings(settings: GeneralSettings): Promise<void> {
+export async function updateGeneralSettings(settings: Partial<GeneralSettings>): Promise<void> {
   await request('/api/settings/general', {
     method: 'PUT',
     body: JSON.stringify(settings),
   });
+  _generalSettingsPromise = null;
 }
 
 // ─── MQTT Settings ──────────────────────────────────────────────────
@@ -154,11 +241,11 @@ export async function updateSections(sections: SectionConfig[]): Promise<void> {
   });
 }
 
-export async function fetchSectionUsage(sectionId: string): Promise<{ sessions: number; blogPosts: number }> {
+export async function fetchSectionUsage(sectionId: string): Promise<{ sessions: number; blogPosts: number; expenses?: number }> {
   return request(`/api/sections/${encodeURIComponent(sectionId)}/usage`);
 }
 
-export async function reassignSection(fromId: string, toId: string): Promise<{ sessionsUpdated: number; blogPostsUpdated: number }> {
+export async function reassignSection(fromId: string, toId: string): Promise<{ sessionsUpdated: number; blogPostsUpdated: number; expensesUpdated?: number }> {
   return request('/api/sections/reassign', {
     method: 'POST',
     body: JSON.stringify({ fromId, toId }),
@@ -198,28 +285,93 @@ export interface ExportOptions {
   expenses?: boolean;
   blog?: boolean;
   workPackages?: boolean;
+  workPackageStatus?: boolean;
   signOffs?: boolean;
+  inventory?: boolean;
+}
+
+export interface ExportProgressEvent {
+  type: 'start' | 'progress' | 'done' | 'error';
+  stage?: string;
+  label?: string;
+  current?: number;
+  total?: number;
+  token?: string;
+  filename?: string;
+  message?: string;
+}
+
+function buildExportParams(options: ExportOptions): string {
+  const params = new URLSearchParams();
+  if (options.settings          === false) params.set('settings',          '0');
+  if (options.sessions          === false) params.set('sessions',          '0');
+  if (options.expenses          === false) params.set('expenses',          '0');
+  if (options.blog              === false) params.set('blog',              '0');
+  if (options.workPackages      === false) params.set('workPackages',      '0');
+  if (options.workPackageStatus === false) params.set('workPackageStatus', '0');
+  if (options.signOffs          === false) params.set('signOffs',          '0');
+  if (options.inventory         === false) params.set('inventory',         '0');
+  return params.toString();
 }
 
 export async function exportData(options: ExportOptions): Promise<Blob> {
-  const params = new URLSearchParams();
-  if (options.settings     === false) params.set('settings',     '0');
-  if (options.sessions     === false) params.set('sessions',     '0');
-  if (options.expenses     === false) params.set('expenses',     '0');
-  if (options.blog         === false) params.set('blog',         '0');
-  if (options.workPackages === false) params.set('workPackages', '0');
-  if (options.signOffs     === false) params.set('signOffs',     '0');
-  const qs = params.toString();
+  const qs = buildExportParams(options);
   const res = await fetch(`${API_URL}/api/export${qs ? `?${qs}` : ''}`, {
     headers: { ...getAuthHeaders() },
   });
   if (!res.ok) {
+    handle401(res);
     const text = await res.text();
     let message = res.statusText;
     try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
     throw new Error(message);
   }
   return res.blob();
+}
+
+export async function exportDataStream(
+  options: ExportOptions,
+  onEvent: (ev: ExportProgressEvent) => void,
+): Promise<void> {
+  const qs = buildExportParams(options);
+  const res = await fetch(`${API_URL}/api/export/stream${qs ? `?${qs}` : ''}`, {
+    headers: { ...getAuthHeaders() },
+  });
+  if (!res.ok || !res.body) {
+    handle401(res);
+    throw new Error(`Export stream failed (${res.status})`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try { onEvent(JSON.parse(line.slice(6))); } catch { /* ignore malformed */ }
+      }
+    }
+  }
+}
+
+export async function downloadExport(token: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/export/download?token=${encodeURIComponent(token)}`, {
+    headers: { ...getAuthHeaders() },
+  });
+  if (!res.ok) { handle401(res); throw new Error(`Download failed (${res.status})`); }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 export interface ImportResult {
@@ -233,29 +385,50 @@ export interface ImportResult {
   signOffsImported: number;
 }
 
-export async function importData(file: File): Promise<ImportResult> {
+export async function importData(
+  file: File,
+  onUploadProgress?: (pct: number) => void,
+): Promise<ImportResult> {
   const form = new FormData();
   form.append('backup', file);
-  const res = await fetch(`${API_URL}/api/import`, {
-    method: 'POST',
-    headers: { ...getAuthHeaders() },
-    body: form,
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/api/import`);
+    const token = localStorage.getItem('auth_token');
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    if (onUploadProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) onUploadProgress(Math.round((e.loaded / e.total) * 100));
+      });
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error('Invalid response from server')); }
+      } else {
+        if (xhr.status === 401 && localStorage.getItem('auth_token')) {
+          localStorage.removeItem('auth_token');
+          if (!window.location.pathname.startsWith('/login')) window.location.replace('/login');
+        }
+        let message = xhr.statusText || `Request failed (${xhr.status})`;
+        try { message = JSON.parse(xhr.responseText).error || message; } catch { /* not JSON */ }
+        reject(new Error(message));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during import'));
+    xhr.send(form);
   });
-  const text = await res.text();
-  if (!res.ok) {
-    let message = res.statusText;
-    try { message = JSON.parse(text).error || message; } catch { /* not JSON */ }
-    throw new Error(message);
-  }
-  return JSON.parse(text);
 }
 
 // ─── Blog Posts ─────────────────────────────────────────────────────
 export interface BlogPost {
   id: string;
   title: string;
-  content: string;
+  content?: string;        // only present when fetching a single post
+  excerpt?: string;        // plain-text summary, present in list responses
+  contentImageUrls?: string[]; // image URLs extracted from content, present in list responses
   section?: string;
+  plansSection?: string;
   imageUrls?: string[];
   publishedAt: string;
   updatedAt: string;
@@ -270,14 +443,22 @@ export interface BlogArchiveEntry {
   count: number;
 }
 
-export async function fetchBlogPosts(filters?: { section?: string; year?: string; month?: string; plansSection?: string }): Promise<BlogPost[]> {
+export interface BlogPageResponse {
+  posts: BlogPost[];
+  hasMore: boolean;
+  total: number;
+}
+
+export async function fetchBlogPosts(filters?: { section?: string; year?: string; month?: string; plansSection?: string; page?: number; limit?: number }): Promise<BlogPageResponse> {
   const params = new URLSearchParams();
   if (filters?.section) params.set('section', filters.section);
   if (filters?.year) params.set('year', filters.year);
   if (filters?.month) params.set('month', filters.month);
   if (filters?.plansSection) params.set('plansSection', filters.plansSection);
+  if (filters?.page) params.set('page', String(filters.page));
+  if (filters?.limit) params.set('limit', String(filters.limit));
   const qs = params.toString();
-  return request<BlogPost[]>(`/api/blog${qs ? `?${qs}` : ''}`);
+  return request<BlogPageResponse>(`/api/blog${qs ? `?${qs}` : ''}`);
 }
 
 export async function fetchBlogPost(id: string): Promise<BlogPost> {
@@ -319,18 +500,6 @@ export async function fetchBuildStats(): Promise<BuildStats> {
 
 // ─── Expenses ────────────────────────────────────────────────────────
 
-export const EXPENSE_CATEGORIES = [
-  { id: 'airframe',      label: 'Airframe',      icon: '✈️' },
-  { id: 'engine',        label: 'Engine',         icon: '⚙️' },
-  { id: 'avionics',      label: 'Avionics',       icon: '📡' },
-  { id: 'landing-gear',  label: 'Landing Gear',   icon: '🛞' },
-  { id: 'paint',         label: 'Paint & Finish',  icon: '🎨' },
-  { id: 'tools',         label: 'Tools',           icon: '🔧' },
-  { id: 'certification', label: 'Certification',   icon: '📋' },
-  { id: 'insurance',     label: 'Insurance',       icon: '🛡️' },
-  { id: 'hangar',        label: 'Hangar',          icon: '🏠' },
-  { id: 'other',         label: 'Other',           icon: '📦' },
-] as const;
 
 export const CURRENCIES = [
   { code: 'EUR', symbol: '€', name: 'Euro' },
@@ -410,7 +579,7 @@ export async function uploadReceipts(files: FileList): Promise<string[]> {
   const formData = new FormData();
   for (const file of Array.from(files)) formData.append('files', file);
   const res = await fetch(`${API_URL}/api/expenses/upload`, { method: 'POST', headers: { ...getAuthHeaders() }, body: formData });
-  if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || res.statusText); }
+  if (!res.ok) { handle401(res); const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || res.statusText); }
   return (await res.json()).urls;
 }
 
@@ -510,14 +679,32 @@ export async function deleteSignOff(id: string): Promise<void> {
 export interface FlowItem { id: string; label: string; children?: FlowItem[] }
 export type PackagesMap = Record<string, FlowItem[]>;
 
-export async function fetchFlowchartPackages(): Promise<PackagesMap> {
-  return request<PackagesMap>('/api/flowchart-packages');
+let _flowchartPackagesPromise: Promise<PackagesMap> | null = null;
+export function fetchFlowchartPackages(): Promise<PackagesMap> {
+  if (!_flowchartPackagesPromise) {
+    _flowchartPackagesPromise = request<PackagesMap>('/api/flowchart-packages')
+      .finally(() => { setTimeout(() => { _flowchartPackagesPromise = null; }, 2000); });
+  }
+  return _flowchartPackagesPromise;
 }
 
 export async function updateFlowchartPackages(packages: PackagesMap): Promise<void> {
   await request('/api/flowchart-packages', {
     method: 'PUT',
     body: JSON.stringify(packages),
+  });
+}
+
+export type StatusMap = Record<string, string>;
+
+export async function fetchFlowchartStatus(): Promise<StatusMap> {
+  return request<StatusMap>('/api/flowchart-status');
+}
+
+export async function updateFlowchartStatus(statuses: StatusMap): Promise<void> {
+  await request('/api/flowchart-status', {
+    method: 'PUT',
+    body: JSON.stringify(statuses),
   });
 }
 
@@ -550,37 +737,8 @@ export async function clearVisitorStats(): Promise<void> {
   await request('/api/stats/visitors', { method: 'DELETE' });
 }
 
-// ─── Image Annotations ───────────────────────────────────────────────
-export interface ImageAnnotation {
-  id: string;
-  x: number;   // 0–1 relative to image width
-  y: number;   // 0–1 relative to image height
-  title: string;
-}
-
-const _annotationCache = new Map<string, ImageAnnotation[]>();
-
-export async function fetchAnnotations(imageUrl: string): Promise<ImageAnnotation[]> {
-  if (_annotationCache.has(imageUrl)) return _annotationCache.get(imageUrl)!;
-  const data = await request<{ annotations: ImageAnnotation[] }>(`/api/annotations?url=${encodeURIComponent(imageUrl)}`);
-  _annotationCache.set(imageUrl, data.annotations);
-  return data.annotations;
-}
-
-export async function saveAnnotations(imageUrl: string, annotations: ImageAnnotation[]): Promise<void> {
-  await request(`/api/annotations?url=${encodeURIComponent(imageUrl)}`, {
-    method: 'PUT',
-    body: JSON.stringify({ annotations }),
-  });
-  _annotationCache.set(imageUrl, annotations);
-}
-
-export function invalidateAnnotationCache(imageUrl: string): void {
-  _annotationCache.delete(imageUrl);
-}
-
 export async function resetAllData(): Promise<void> {
-  await apiFetch('/api/reset', { method: 'POST' });
+  await request('/api/reset', { method: 'POST' });
 }
 
 export function trackPageView(pagePath: string, postId?: string, referrer?: string): void {
@@ -625,6 +783,180 @@ export async function updateAdminUser(id: string, data: { displayName?: string; 
   await request(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
-export async function deleteAdminUser(id: string): Promise<void> {
-  await request(`/api/admin/users/${id}`, { method: 'DELETE' });
+export async function purgeAdminUserData(id: string, options?: { deleteSessions?: boolean; deleteBlogPosts?: boolean; deleteSignOffs?: boolean; deleteExpenses?: boolean; deleteInventory?: boolean; deleteVisitorStats?: boolean }): Promise<void> {
+  await request(`/api/admin/users/${id}/purge`, { method: 'POST', body: JSON.stringify(options || {}) });
 }
+
+export interface AdminTableResult {
+  rows: Record<string, unknown>[];
+  total: number;
+}
+
+export async function fetchAdminTableRows(table: string, opts?: { tenantId?: string; limit?: number; offset?: number }): Promise<AdminTableResult> {
+  const params = new URLSearchParams();
+  if (opts?.tenantId) params.set('tenantId', opts.tenantId);
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts?.offset !== undefined) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return request<AdminTableResult>(`/api/admin/table/${encodeURIComponent(table)}${qs ? '?' + qs : ''}`);
+}
+
+export async function deleteAdminTableRow(table: string, pk: string, tenantId?: string): Promise<void> {
+  await request(`/api/admin/table/${encodeURIComponent(table)}`, { method: 'DELETE', body: JSON.stringify({ pk, tenantId }) });
+}
+
+export interface JobInfo {
+  key: string;
+  label: string;
+  description: string;
+  intervalMs: number;
+  lastRun: string | null;
+  lastStatus: 'ok' | 'error' | null;
+  lastResult: string | null;
+  lastError: string | null;
+  nextRun: string | null;
+}
+
+export async function fetchAdminJobs(): Promise<JobInfo[]> {
+  return request<JobInfo[]>('/api/admin/jobs');
+}
+
+export async function runAdminJob(key: string): Promise<{ ok: boolean; message: string }> {
+  return request(`/api/admin/jobs/${key}/run`, { method: 'POST' });
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  INVENTORY
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export interface InvLocation {
+  id: number;
+  name: string;
+  description: string;
+  parentId: number | null;
+  sortOrder: number;
+  createdAt: string;
+}
+
+export interface InvPart {
+  id: number;
+  partNumber: string;
+  name: string;
+  manufacturer: string;
+  kit: string;
+  subKit: string;
+  category: string;
+  mfgDate: string;
+  bag: string;
+  notes: string;
+  createdAt: string;
+}
+
+export interface InvStock {
+  id: number;
+  partId: number;
+  locationId: number;
+  quantity: number;
+  unit: string;
+  status: 'in_stock' | 'installed' | 'reserved' | 'backordered';
+  condition: 'new' | 'used' | 'damaged';
+  batch: string;
+  sourceKit: string;
+  notes: string;
+  updatedAt: string;
+  // joined
+  partNumber?: string;
+  partName?: string;
+  manufacturer?: string;
+  locationName?: string;
+  locationPath?: string;
+}
+
+export interface InvStats {
+  totalParts: number;
+  totalLocations: number;
+  totalStock: number;
+  backordered: number;
+  installed: number;
+  byCategory: { category: string; count: number }[];
+}
+
+// Locations
+export const fetchInvLocations   = ()                                    => request<InvLocation[]>('/api/inventory/locations');
+export const createInvLocation   = (data: Partial<InvLocation>)          => request<InvLocation>('/api/inventory/locations', { method: 'POST', body: JSON.stringify(data) });
+export const updateInvLocation   = (id: number, data: Partial<InvLocation>) => request<InvLocation>(`/api/inventory/locations/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteInvLocation   = (id: number, cascade = false)          => request<{ ok: boolean }>(`/api/inventory/locations/${id}${cascade ? '?cascade=true' : ''}`, { method: 'DELETE' });
+
+// Parts
+export const fetchInvParts       = (params?: Record<string, string>)     => { const q = params ? '?' + new URLSearchParams(params).toString() : ''; return request<InvPart[]>(`/api/inventory/parts${q}`); };
+export const createInvPart       = (data: Partial<InvPart>)              => request<InvPart>('/api/inventory/parts', { method: 'POST', body: JSON.stringify(data) });
+export const updateInvPart       = (id: number, data: Partial<InvPart>)  => request<InvPart>(`/api/inventory/parts/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteInvPart       = (id: number)                          => request<{ ok: boolean }>(`/api/inventory/parts/${id}`, { method: 'DELETE' });
+export const ingestInvPart       = (data: Partial<InvPart> & { quantity?: number; unit?: string; status?: string; locationId?: number }) => request<{ part: InvPart; created: boolean }>('/api/inventory/parts/ingest', { method: 'POST', body: JSON.stringify(data) });
+
+// Stock
+export const fetchInvStock       = (params?: Record<string, string>)     => { const q = params ? '?' + new URLSearchParams(params).toString() : ''; return request<InvStock[]>(`/api/inventory/stock${q}`); };
+export const createInvStock      = (data: Partial<InvStock>)             => request<InvStock>('/api/inventory/stock', { method: 'POST', body: JSON.stringify(data) });
+export const updateInvStock      = (id: number, data: Partial<InvStock>) => request<InvStock>(`/api/inventory/stock/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteInvStock      = (id: number)                          => request<{ ok: boolean }>(`/api/inventory/stock/${id}`, { method: 'DELETE' });
+
+// Stats & Lookup
+export const fetchInvStats       = ()                                    => request<InvStats>('/api/inventory/stats');
+export const lookupInvPart       = (partNumber: string)                  => request<InvStock[]>(`/api/inventory/lookup/${encodeURIComponent(partNumber)}`);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  INVENTORY CHECK SESSIONS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+export interface CheckItem {
+  id: number;
+  sessionId: number;
+  partNumber: string;
+  nomenclature: string;
+  subKit: string;
+  bag: string;
+  qtyExpected: number;
+  qtyFound: number;
+  unit: string;
+  status: 'pending' | 'verified' | 'missing';
+  notes: string;
+  scannedAt: string | null;
+}
+
+export interface CheckSession {
+  id: number;
+  aircraftType: string;
+  kitId: string;
+  kitLabel: string;
+  status: 'active' | 'paused' | 'completed';
+  totalItems: number;
+  verifiedItems: number;
+  missingItems: number;
+  createdAt: string;
+  updatedAt: string;
+  items?: CheckItem[];
+}
+
+export const fetchCheckSessions = () =>
+  request<CheckSession[]>('/api/inventory/checks');
+
+export const createCheckSession = (data: {
+  aircraftType: string; kitId: string; kitLabel?: string;
+  items: { partNumber: string; nomenclature?: string; subKit?: string; bag?: string; qtyExpected?: number; unit?: string }[];
+}) =>
+  request<CheckSession>('/api/inventory/checks', { method: 'POST', body: JSON.stringify(data) });
+
+export const fetchCheckSession = (id: number) =>
+  request<CheckSession>('/api/inventory/checks/' + id);
+
+export const updateCheckSession = (id: number, data: { status: string }) =>
+  request<CheckSession>(`/api/inventory/checks/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+
+export const deleteCheckSession = (id: number) =>
+  request<{ ok: boolean }>(`/api/inventory/checks/${id}`, { method: 'DELETE' });
+
+export const updateCheckItem = (sessionId: number, itemId: number, data: Partial<CheckItem>) =>
+  request<CheckItem>(`/api/inventory/checks/${sessionId}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(data) });
+
+export const verifyCheckBatch = (sessionId: number, items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string }[]) =>
+  request<{ matched: number }>(`/api/inventory/checks/${sessionId}/verify-batch`, { method: 'POST', body: JSON.stringify({ items }) });

@@ -7,5 +7,10 @@ data
 .claude
 .vscode
 *.log
+*.bat
+.env
+.env.*
+!.env.example
+eng.traineddata
 AGENT_HANDOFF.md
 docker-compose*.yml
