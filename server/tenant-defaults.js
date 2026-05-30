@@ -12,6 +12,10 @@ const fs   = require('fs');
 // These are written to the `settings` table (key = 'general') on tenant creation.
 const DEFAULT_GENERAL = {
   projectName:          'Build Tracker',
+  // Optional explicit byline for the public blog. When set, overrides the
+  // tenant username (subdomain slug) in the BlogPosting JSON-LD author.
+  // Blank → username is used; self-hosted with no tenant → Organization.
+  authorName:           '',
   targetHours:          2500,
   progressMode:         'time',       // 'time' or 'packages'
   imageResizing:        true,
@@ -21,6 +25,19 @@ const DEFAULT_GENERAL = {
   homeCurrency:         'EUR',
   blogShowSessionStats: true,
   wafPercent:           100,
+  // Per-tenant feature flags — admins can disable individual pages for non-admin
+  // users (e.g. hide the Wiring page while it's still in beta). Missing keys
+  // default to enabled. Admins always see every page regardless of these flags.
+  featureFlags: {
+    dashboard:   true,
+    blog:        true,
+    tracker:     true,
+    expenses:    true,
+    inventory:   true,
+    inspections: true,
+    wiring:      true,
+    plans:       true,
+  },
 };
 
 // ─── Assembly sections ───────────────────────────────────────────────

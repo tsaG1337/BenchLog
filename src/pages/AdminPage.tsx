@@ -50,6 +50,19 @@ const TABLE_COLS: Record<string, string[]> = {
 
 const PAGE_SIZE = 50;
 
+// Labels for the page-level feature flags shown in the admin "Pages" panel.
+// Keys must match the keys allowed by the server's GeneralSettings.featureFlags.
+const FEATURE_LABELS: Record<'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans', string> = {
+  dashboard:   'Dashboard',
+  blog:        'Build Blog',
+  tracker:     'Session Tracker',
+  expenses:    'Project Expenses',
+  inventory:   'Parts Inventory',
+  inspections: 'Inspections',
+  wiring:      'Wiring Diagrams',
+  plans:       'Plans Library',
+};
+
 function formatCellValue(col: string, val: unknown): string {
   if (val === null || val === undefined) return '—';
   if (col === 'ts') return new Date(Number(val)).toLocaleString();
@@ -112,6 +125,11 @@ export default function AdminPage() {
   const [maintenanceLoading, setMaintenanceLoading] = useState(true);
   const [maintenanceToggling, setMaintenanceToggling] = useState(false);
 
+  // Feature flags — controls which pages non-admin users can see
+  type FeatureKey = 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans';
+  const [featureFlags, setFeatureFlags] = useState<Partial<Record<FeatureKey, boolean>>>({});
+  const [featureToggling, setFeatureToggling] = useState<FeatureKey | null>(null);
+
   // Table browser
   const [browserTable, setBrowserTable] = useState<string | null>(null);
   const [browserData, setBrowserData] = useState<AdminTableResult | null>(null);
@@ -158,6 +176,7 @@ export default function AdminPage() {
     try {
       const s = await fetchGeneralSettings();
       setMaintenanceMode(!!s.maintenanceMode);
+      setFeatureFlags(s.featureFlags ?? {});
     } catch {} finally { setMaintenanceLoading(false); }
   }, []);
 
@@ -170,6 +189,18 @@ export default function AdminPage() {
     } catch (e: any) {
       toast.error(e.message);
     } finally { setMaintenanceToggling(false); }
+  };
+
+  const toggleFeature = async (key: FeatureKey, enabled: boolean) => {
+    setFeatureToggling(key);
+    try {
+      const next = { ...featureFlags, [key]: enabled };
+      await updateGeneralSettings({ featureFlags: next });
+      setFeatureFlags(next);
+      toast.success(`${FEATURE_LABELS[key]} ${enabled ? 'enabled' : 'hidden from non-admins'}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally { setFeatureToggling(null); }
   };
 
   useEffect(() => { loadUsers(); loadStats(); loadJobs(); loadMaintenance(); }, [loadUsers, loadStats, loadJobs, loadMaintenance]);
@@ -304,6 +335,39 @@ export default function AdminPage() {
               onCheckedChange={toggleMaintenance}
               disabled={maintenanceToggling}
             />
+          </div>
+        )}
+
+        {/* ── Pages (feature flags) ── */}
+        {!maintenanceLoading && (
+          <div className="rounded-lg border border-border bg-card p-4 mb-6">
+            <div className="flex items-start gap-3 mb-3">
+              <Eye className="w-5 h-5 shrink-0 text-muted-foreground mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Pages</p>
+                <p className="text-xs text-muted-foreground">
+                  Disable a page to hide it from the navigation for non-admin users (useful for beta features). Admins always see every page.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(Object.keys(FEATURE_LABELS) as (keyof typeof FEATURE_LABELS)[]).map(key => {
+                const enabled = featureFlags[key] !== false;
+                return (
+                  <label
+                    key={key}
+                    className="flex items-center justify-between gap-3 px-3 py-2 rounded border border-border bg-background"
+                  >
+                    <span className="text-sm text-foreground">{FEATURE_LABELS[key]}</span>
+                    <Switch
+                      checked={enabled}
+                      onCheckedChange={(v) => toggleFeature(key, v)}
+                      disabled={featureToggling === key}
+                    />
+                  </label>
+                );
+              })}
+            </div>
           </div>
         )}
 

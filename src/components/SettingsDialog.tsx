@@ -12,7 +12,7 @@ import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { VisitorStatsPanel } from '@/components/VisitorStatsPanel';
 import { OCR_VENDORS } from '@/lib/ocrVendors';
-import { AIRCRAFT_MANIFESTS } from '@/lib/kitManifest';
+import { listManufacturers, listModels, splitAircraftId, aircraftId } from '@/lib/aircraft';
 import { isElectron } from '@/lib/env';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -286,6 +286,41 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                 />
                 <p className="text-xs text-muted-foreground/60 mt-1">Manufacturer-specified hours to complete the build (default: 2500)</p>
               </div>
+              {(() => {
+                const currentSlug = general.aircraftType || 'vans-rv10';
+                const parts = splitAircraftId(currentSlug) || { manufacturerId: 'vans', modelId: 'rv10' };
+                const manufacturers = listManufacturers();
+                const models = listModels(parts.manufacturerId);
+                const onManufacturerChange = (mfgId: string) => {
+                  const firstModel = listModels(mfgId)[0];
+                  if (firstModel) setGeneral({ ...general, aircraftType: firstModel.slug });
+                };
+                const onModelChange = (modelId: string) => {
+                  setGeneral({ ...general, aircraftType: aircraftId(parts.manufacturerId, modelId) });
+                };
+                return (
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-1 block">Aircraft</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={parts.manufacturerId}
+                        onChange={e => onManufacturerChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                        {manufacturers.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                      </select>
+                      <select
+                        value={parts.modelId}
+                        onChange={e => onModelChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                        {models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                      </select>
+                    </div>
+                    <p className="text-xs text-muted-foreground/60 mt-1">
+                      Drives the kit manifest, label scanner patterns, and plans section catalog. Pick the manufacturer first, then the specific model.
+                    </p>
+                  </div>
+                );
+              })()}
               <div>
                 <Label className="text-xs text-muted-foreground mb-2 block">Progress Calculation</Label>
                 <div className="flex gap-2">
@@ -305,6 +340,17 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground/60 mt-1">Controls the progress bar on the blog and tracker pages.</p>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-xs text-muted-foreground block">Public blog</Label>
+                  <p className="text-xs text-muted-foreground/60">When off, the blog is hidden from search engines and visitors must log in to view it.</p>
+                </div>
+                <Switch
+                  checked={general.publicBlog ?? true}
+                  onCheckedChange={checked => setGeneral({ ...general, publicBlog: checked })}
+                />
               </div>
               {isAdmin && <>
               <Separator />
@@ -387,27 +433,6 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
               </div>
               <Separator />
               <div>
-                <Label className="text-xs text-muted-foreground mb-2 block">Blog Access</Label>
-                <div className="flex gap-2">
-                  {([
-                    { value: true, label: 'Public', desc: 'Anyone can view your blog' },
-                    { value: false, label: 'Private', desc: 'Only you can view the blog' },
-                  ] as const).map(({ value, label, desc }) => (
-                    <button key={String(value)} onClick={() => setGeneral({ ...general, publicBlog: value })}
-                      className={`flex-1 text-left px-3 py-2 rounded-md border text-xs transition-colors ${
-                        (general.publicBlog ?? true) === value
-                          ? 'bg-primary/15 border-primary text-primary'
-                          : 'bg-muted/50 border-border text-muted-foreground hover:border-muted-foreground/50'
-                      }`}>
-                      <p className="font-medium">{label}</p>
-                      <p className="text-[10px] opacity-70 mt-0.5">{desc}</p>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground/60 mt-1">When private, visitors must log in to see blog posts.</p>
-              </div>
-              <Separator />
-              <div>
                 <Label className="text-xs text-muted-foreground mb-3 block">Blog Visibility</Label>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -462,18 +487,9 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
 
             {/* ── Inventory ──────────────────────────────────── */}
             {activeTab === 'inventory' && <>
-              <div>
-                <Label className="text-xs text-muted-foreground mb-1 block">Aircraft Type</Label>
-                <select
-                  value={general.aircraftType || 'vans-rv10'}
-                  onChange={e => setGeneral({ ...general, aircraftType: e.target.value })}
-                  className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                  {AIRCRAFT_MANIFESTS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-                </select>
-                <p className="text-xs text-muted-foreground/60 mt-1">
-                  Determines which kit structure and parts manifest are used for inventory management and mass ingestion.
-                </p>
-              </div>
+              <p className="text-xs text-muted-foreground/60 -mt-1 mb-1">
+                The aircraft (manufacturer + model) is set under <span className="font-medium text-muted-foreground">General</span> — it drives the kit manifest used here.
+              </p>
               {general.ocrEnabled && (
                 <div>
                   <Label className="text-xs text-muted-foreground mb-1 block">Label Scanner — Recognition Scheme</Label>

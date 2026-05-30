@@ -176,7 +176,7 @@ export function DiagnosticsPanel() {
 
   const exportLogs = () => {
     const header = [
-      `Benchlog Diagnostics Export`,
+      `BenchLog Diagnostics Export`,
       `Generated: ${new Date().toISOString()}`,
       stats ? `Node: ${stats.node.version} · ${stats.node.platform}/${stats.node.arch}` : '',
       stats ? `Uptime: ${fmtUptime(stats.uptime)}` : '',

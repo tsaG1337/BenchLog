@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Eye } from 'lucide-react';
+import { Eye, Search } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AboutDialog } from '@/components/AboutDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { ExportDialog } from '@/components/ExportDialog';
-import { fetchSessions } from '@/lib/api';
+import { CommandPalette, useCommandPalette } from '@/components/CommandPalette';
+import { fetchSessions, fetchGeneralSettings } from '@/lib/api';
 import type { WorkSession } from '@/lib/types';
+import type { GeneralSettings } from '@/lib/api';
 
 // ─── Icon helper (Material Symbols via CSS) ─────────────────────────
 export function MIcon({ name, className = '', style }: { name: string; className?: string; style?: React.CSSProperties }) {
@@ -28,7 +30,14 @@ const NAV_ITEMS = [
   { id: 'expenses',    label: 'Expenses',        icon: 'account_balance_wallet', to: '/expenses' },
   { id: 'inventory',   label: 'Inventory',       icon: 'inventory_2',           to: '/inventory' },
   { id: 'inspections', label: 'Inspections',     icon: 'fact_check',            to: '/inspections' },
+  { id: 'wiring',      label: 'Wiring',          icon: 'cable',                 to: '/wiring' },
+  { id: 'plans',       label: 'Plans',           icon: 'menu_book',             to: '/plans' },
 ];
+
+// Width of the persistent icon rail on md+ viewports. Keep in sync with
+// the `md:pl-14` padding applied to <main> below — the rail is fixed-positioned
+// and would otherwise overlap content.
+const RAIL_WIDTH_PX = 56;
 
 // ─── Props ──────────────────────────────────────────────────────────
 const PAGE_TITLES: Record<string, string> = {
@@ -38,26 +47,59 @@ const PAGE_TITLES: Record<string, string> = {
   expenses:    'Project Expenses',
   inventory:   'Parts Inventory',
   inspections: 'Inspections',
+  wiring:      'Wiring Diagrams',
+  plans:       'Plans Library',
 };
 
 interface AppShellProps {
-  activePage: 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections';
+  activePage: 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans';
   projectName: string;
   pageTitle?: string;
   headerRight?: React.ReactNode;
   children: React.ReactNode;
+  /** When true, the <main> stretches to the full viewport width instead of being capped at max-w-7xl. */
+  fullWidth?: boolean;
+  /** Shrinks the top bar on mobile (h-12 vs h-16, no project-name subtitle).
+   *  Used for full-canvas viewers like the PDF reader where every vertical
+   *  pixel matters. md+ layout is unaffected. */
+  compactHeaderOnMobile?: boolean;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// APP SHELL — shared layout: sidebar, header, bottom nav
+// APP SHELL — persistent icon rail (md+) + overlay drawer (all sizes)
+// + global Cmd/Ctrl+K command palette.
+//
+// On md+ screens a thin icon-only rail is always visible on the left.
+// Clicking the rail's menu icon (or the topbar menu on mobile) opens the
+// labeled drawer, which renders as an overlay on top of the rail with a
+// dimmed backdrop — page content does not reflow on expansion.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-export function AppShell({ activePage, projectName, pageTitle, headerRight, children }: AppShellProps) {
+export function AppShell({ activePage, projectName, pageTitle, headerRight, children, fullWidth = false, compactHeaderOnMobile = false }: AppShellProps) {
   const { isAuthenticated, demoMode, logout, role } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [exportSessions, setExportSessions] = useState<WorkSession[]>([]);
+  const [featureFlags, setFeatureFlags] = useState<GeneralSettings['featureFlags']>(undefined);
+  const palette = useCommandPalette();
+
+  // Feature flags drive visibility of nav items for non-admin users. Admins
+  // see the full nav regardless. Missing flag entries default to enabled.
+  useEffect(() => {
+    fetchGeneralSettings().then(s => setFeatureFlags(s.featureFlags)).catch(() => {});
+  }, []);
+
+  const visibleNavItems = NAV_ITEMS.filter(item => {
+    // Only REAL admin sessions bypass feature flags. In demo mode the
+    // server fakes role='admin' for anonymous visitors so they can browse
+    // the app, so `role === 'admin'` alone is not a sufficient signal —
+    // require `!demoMode` as well. (For a normal deployment `demoMode` is
+    // always false, so a real admin still bypasses.)
+    if (role === 'admin' && !demoMode) return true;
+    const flag = featureFlags?.[item.id as keyof NonNullable<GeneralSettings['featureFlags']>];
+    return flag !== false;
+  });
 
   const handleExportClick = async () => {
     try {
@@ -76,6 +118,17 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
     return () => window.removeEventListener('keydown', onKey);
   }, [sidebarOpen]);
 
+  // Keep the browser tab title in sync with the active page. Previously most
+  // pages forgot to set document.title, so it inherited whatever the last
+  // page (or the SSR public blog) had left behind — e.g. "Foo — Build Journal"
+  // sticking around on /plans. Doing it once here covers every authenticated
+  // page. Pages that want a custom title (e.g. an open blog post) can pass
+  // `pageTitle` to override the activePage default.
+  useEffect(() => {
+    const label = pageTitle || PAGE_TITLES[activePage] || 'BenchLog';
+    document.title = projectName ? `${projectName} — ${label}` : `${label} — BenchLog`;
+  }, [activePage, projectName, pageTitle]);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <a
@@ -84,18 +137,62 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
       >
         Skip to main content
       </a>
-      {/* ━━━ SIDEBAR (slide-in overlay) ━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
+
+      {/* ━━━ COLLAPSED ICON RAIL (md+ only) ━━━━━━━━━━━━━━━━━━━━━━━ */}
+      <aside
+        aria-label="Primary navigation rail"
+        className="hidden md:flex fixed left-0 top-0 bottom-0 z-30 flex-col items-center bg-card border-r border-border"
+        style={{ width: RAIL_WIDTH_PX }}
+      >
+        <button
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Open navigation"
+          className="w-10 h-10 mt-3 mb-3 flex items-center justify-center rounded hover:bg-accent transition-colors text-foreground"
+        >
+          <MIcon name="menu" />
+        </button>
+        <nav className="flex flex-col gap-1 mt-2 flex-1">
+          {visibleNavItems.map(item => {
+            const isActive = item.id === activePage;
+            return (
+              <Link
+                key={item.id}
+                to={item.to}
+                aria-label={item.label}
+                title={item.label}
+                className={`w-10 h-10 flex items-center justify-center rounded transition-colors ${
+                  isActive
+                    ? 'bg-primary/[0.12] text-primary'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+                }`}
+              >
+                <MIcon name={item.icon} />
+              </Link>
+            );
+          })}
+        </nav>
+        <button
+          onClick={() => palette.setOpen(true)}
+          aria-label="Search (Ctrl+K)"
+          title="Search (Ctrl+K)"
+          className="w-10 h-10 mb-3 flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        >
+          <Search className="h-4 w-4" />
+        </button>
+      </aside>
+
+      {/* ━━━ EXPANDED OVERLAY DRAWER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
       <div
         className={`fixed inset-0 z-40 bg-black/40 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={() => setSidebarOpen(false)}
       />
       <div
-        className={`fixed left-0 top-0 h-screen w-72 z-50 overflow-y-auto transition-transform duration-300 ease-out bg-card ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed left-0 top-0 h-screen w-72 z-50 overflow-y-auto transition-transform duration-300 ease-out bg-card border-r border-border ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
         <div className="flex items-center justify-between p-4">
           <div>
             <span className="font-headline font-black text-xl tracking-tighter block leading-tight text-foreground">
-              BenchLog
+              Bench<span className="text-primary">Log</span>
             </span>
             <span className="font-label text-xs block mt-0.5 text-muted-foreground">
               {projectName}
@@ -107,12 +204,22 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
         </div>
         <div className="px-4 pb-4">
           <div className="flex flex-col gap-4">
+            {/* GLOBAL SEARCH (Ctrl+K trigger) */}
+            <button
+              onClick={() => { setSidebarOpen(false); palette.setOpen(true); }}
+              className="flex items-center gap-2 px-3 py-2 rounded border border-border bg-input/50 hover:bg-accent transition-colors text-sm text-muted-foreground w-full text-left"
+            >
+              <Search className="h-4 w-4" />
+              <span className="flex-1">Search…</span>
+              <span className="font-mono text-[10px] tracking-wider px-1.5 py-0.5 rounded border border-border">⌘K</span>
+            </button>
+
             {/* NAVIGATION */}
             <div className="flex flex-col gap-0.5">
               <div className="font-bold text-xs tracking-widest uppercase mb-1 text-muted-foreground">
                 Navigation
               </div>
-              {NAV_ITEMS.map(item => {
+              {visibleNavItems.map(item => {
                 const isActive = item.id === activePage;
                 return (
                   <Link
@@ -198,7 +305,11 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                 </button>
               )}
 
-              {!isAuthenticated && !demoMode && (
+              {/* Show Log-in entry whenever there's no real authenticated
+                  session — demo deployments fake `isAuthenticated:true`, so
+                  we also surface the link in demo mode (relabelled to
+                  "Admin login" to set expectations). */}
+              {(!isAuthenticated || demoMode) && (
                 <Link
                   to="/login"
                   state={{ from: `/${activePage}` }}
@@ -206,7 +317,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                   className="flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
                 >
                   <MIcon name="login" className="text-xl text-muted-foreground" />
-                  Log in
+                  {demoMode ? 'Admin login' : 'Log in'}
                 </Link>
               )}
             </div>
@@ -215,49 +326,62 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
       </div>
 
       {/* ━━━ MAIN AREA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */}
-      <div className="flex flex-col min-h-screen">
+      <div className="flex flex-col min-h-screen md:pl-14">
         {/* ─── Top Nav (fixed) ───────────────────────────────────── */}
-        <header className="fixed top-0 right-0 left-0 z-30 shadow-sm bg-card">
+        <header className="fixed top-0 right-0 left-0 md:left-14 z-30 shadow-sm bg-card border-b border-border">
           {demoMode && (
             <div className="px-4 py-2 flex items-center justify-center gap-2 text-sm bg-amber-500/15 text-amber-600 dark:text-amber-400">
               <Eye className="w-4 h-4 shrink-0" />
               <span>Demo mode — read only. No data can be created or changed.</span>
             </div>
           )}
-          <div className="flex justify-between items-center h-16 px-4 sm:px-6">
+          <div className={`flex justify-between items-center ${compactHeaderOnMobile ? 'h-12 md:h-16' : 'h-16'} px-4 sm:px-6`}>
             <div className="flex items-center gap-4">
+              {/* Mobile menu button — only visible below md (rail covers md+) */}
               <button
                 onClick={() => setSidebarOpen(true)}
                 aria-label="Open navigation"
-                className="p-2 -ml-2 rounded hover:opacity-70 transition-colors text-foreground"
+                className="md:hidden p-2 -ml-2 rounded hover:opacity-70 transition-colors text-foreground"
               >
                 <MIcon name="menu" />
               </button>
               <div>
-                <span className="font-headline font-black text-xl tracking-tighter block leading-tight text-foreground">
-                  BenchLog
+                <span className={`font-headline font-black tracking-tighter block leading-tight text-foreground ${compactHeaderOnMobile ? 'text-lg md:text-xl' : 'text-xl'}`}>
+                  Bench<span className="text-primary">Log</span>
                 </span>
-                <span className="font-label text-[10px] block text-muted-foreground">
+                <span className={`font-label text-[10px] text-muted-foreground ${compactHeaderOnMobile ? 'hidden md:block' : 'block'}`}>
                   {projectName}
                 </span>
               </div>
-              <span className="font-label text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground hidden sm:block">
+              <span className={`font-label text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground ${compactHeaderOnMobile ? 'hidden md:block' : 'hidden sm:block'}`}>
                 /&ensp;{pageTitle || PAGE_TITLES[activePage] || ''}
               </span>
             </div>
             <div className="flex items-center gap-3">
+              {/* Topbar search trigger — opens command palette */}
+              <button
+                onClick={() => palette.setOpen(true)}
+                aria-label="Search (Ctrl+K)"
+                title="Search (Ctrl+K)"
+                className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded border border-border bg-input/40 hover:bg-accent transition-colors text-xs text-muted-foreground"
+              >
+                <Search className="h-3.5 w-3.5" />
+                <span>Search…</span>
+                <span className="font-mono text-[10px] tracking-wider px-1.5 py-0.5 rounded border border-border">⌘K</span>
+              </button>
               {headerRight}
             </div>
           </div>
         </header>
 
         {/* ─── Page Content ──────────────────────────────────────── */}
-        <main id="main-content" className={`px-4 sm:px-6 pb-8 w-full flex-grow mx-auto max-w-7xl ${demoMode ? 'pt-28' : 'pt-20'}`}>
+        <main id="main-content" className={`${fullWidth ? 'px-0 pb-0' : 'px-4 sm:px-6 pb-8 max-w-7xl'} w-full flex-grow mx-auto ${demoMode ? (compactHeaderOnMobile ? 'pt-24 md:pt-28' : 'pt-28') : (compactHeaderOnMobile ? 'pt-16 md:pt-20' : 'pt-20')}`}>
           <h1 className="sr-only">{pageTitle || PAGE_TITLES[activePage] || 'BenchLog'}</h1>
           {children}
         </main>
       </div>
 
+      <CommandPalette open={palette.open} onOpenChange={palette.setOpen} />
       <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
       <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
       <ExportDialog sessions={exportSessions} open={showExport} onOpenChange={setShowExport} />

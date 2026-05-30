@@ -137,55 +137,55 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
     setIsPaused(false);
   };
 
+  // Cobalt timer card layout: label + giant digits on the left, action stack
+  // on the right. Replaces the centered tower layout — same behavior, same
+  // start/pause/resume/stop semantics, just compact and horizontally biased
+  // so the card hugs its contents and doesn't fight neighboring cards for
+  // vertical space.
+  const live = isRunning && !isPaused;
+  const Digit = ({ children }: { children: React.ReactNode }) => (
+    <span className={`font-headline font-bold tracking-tight tabular-nums transition-colors ${
+      live ? 'text-foreground' : elapsed > 0 ? 'text-foreground/70' : 'text-muted-foreground/40'
+    }`}>{children}</span>
+  );
+  const Sep = () => (
+    <span className={`font-headline font-bold tracking-tight ${live ? 'text-primary' : 'text-muted-foreground/30'}`}>:</span>
+  );
+
   return (
-    <div className="relative overflow-hidden">
-      {/* Gradient accent bar */}
-      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary via-primary/70 to-primary" />
-
-      <div className="flex flex-col items-center justify-center pt-8 pb-6">
-        <span className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.2em] mb-3">
-          Active Session Timer
-        </span>
-
-        {/* Clock display */}
-        <div className="flex items-baseline">
-          <span className={`text-5xl sm:text-7xl md:text-8xl font-headline font-black tracking-tighter transition-colors ${
-            isRunning && !isPaused ? 'text-foreground' : elapsed > 0 ? 'text-foreground/70' : 'text-muted-foreground/40'
-          }`}>
-            {pad(hours)}
-          </span>
-          <span className={`text-5xl sm:text-7xl md:text-8xl font-headline font-black tracking-tighter ${
-            isRunning && !isPaused ? 'text-primary animate-pulse' : 'text-muted-foreground/30'
-          }`}>:</span>
-          <span className={`text-5xl sm:text-7xl md:text-8xl font-headline font-black tracking-tighter transition-colors ${
-            isRunning && !isPaused ? 'text-foreground' : elapsed > 0 ? 'text-foreground/70' : 'text-muted-foreground/40'
-          }`}>
-            {pad(minutes)}
-          </span>
-          <span className={`text-5xl sm:text-7xl md:text-8xl font-headline font-black tracking-tighter ${
-            isRunning && !isPaused ? 'text-primary animate-pulse' : 'text-muted-foreground/30'
-          }`}>:</span>
-          <span className={`text-5xl sm:text-7xl md:text-8xl font-headline font-black tracking-tighter transition-colors ${
-            isRunning && !isPaused ? 'text-foreground' : elapsed > 0 ? 'text-foreground/70' : 'text-muted-foreground/40'
-          }`}>
-            {pad(seconds)}
-          </span>
-          <span className="font-label text-xl text-muted-foreground ml-4 font-normal tracking-wider">HRS</span>
+    <div className="relative">
+      <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-8">
+        {/* ── Left: label + digits ──────────────────────────────── */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${live ? 'bg-primary animate-pulse' : 'bg-muted-foreground/40'}`}
+              style={live ? { boxShadow: '0 0 8px hsl(var(--primary))' } : undefined}
+            />
+            <span className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.18em]">
+              Active session timer{isPaused ? ' · paused' : ''}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-1 leading-none text-5xl sm:text-6xl md:text-7xl">
+            <Digit>{pad(hours)}</Digit>
+            <Sep />
+            <Digit>{pad(minutes)}</Digit>
+            <Sep />
+            <span className={`font-headline font-bold tracking-tight tabular-nums ${live ? 'text-primary' : 'text-muted-foreground/40'}`}>
+              {pad(seconds)}
+            </span>
+          </div>
         </div>
 
-        {isPaused && (
-          <p className="text-sm text-muted-foreground animate-pulse mt-2 font-label uppercase tracking-widest">Paused</p>
-        )}
-
-        {/* Controls */}
-        <div className="flex gap-4 w-full max-w-md mt-8">
+        {/* ── Right: action stack ───────────────────────────────── */}
+        <div className="flex md:flex-col gap-2 md:w-[200px] md:shrink-0">
           {!isRunning && elapsed === 0 && (
             <button
               onClick={onStart}
-              className="flex-1 h-14 bg-gradient-to-br from-primary to-primary/80 text-primary-foreground font-label font-bold uppercase tracking-wider rounded-lg flex items-center justify-center gap-3 shadow-lg shadow-primary/10 hover:opacity-90 transition-all active:scale-95"
+              className="flex-1 md:w-full h-11 bg-primary text-primary-foreground font-label font-bold uppercase tracking-wider rounded-md flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[.98]"
             >
-              <MIcon name="play_arrow" className="text-xl" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
-              Start Session
+              <MIcon name="play_arrow" className="text-lg" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+              Start session
             </button>
           )}
           {(isRunning || elapsed > 0) && (
@@ -193,25 +193,27 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
               {isRunning && !isPaused && (
                 <button
                   onClick={handlePause}
-                  className="w-14 h-14 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                  className="flex-1 md:w-full h-11 bg-secondary text-foreground font-label font-bold uppercase tracking-wider rounded-md border border-border flex items-center justify-center gap-2 hover:bg-accent transition-colors"
                 >
-                  <MIcon name="pause" className="text-xl" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+                  <MIcon name="pause" className="text-base" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+                  Pause
                 </button>
               )}
               {isRunning && isPaused && (
                 <button
                   onClick={handleResume}
-                  className="w-14 h-14 flex items-center justify-center rounded-lg border border-border text-primary hover:bg-primary/10 transition-colors"
+                  className="flex-1 md:w-full h-11 bg-secondary text-primary font-label font-bold uppercase tracking-wider rounded-md border border-primary/40 flex items-center justify-center gap-2 hover:bg-primary/10 transition-colors"
                 >
-                  <MIcon name="play_arrow" className="text-xl" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+                  <MIcon name="play_arrow" className="text-base" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+                  Resume
                 </button>
               )}
               <button
                 onClick={handleStop}
-                className="flex-1 h-14 bg-gradient-to-br from-destructive to-destructive/80 text-destructive-foreground font-label font-bold uppercase tracking-wider rounded-lg flex items-center justify-center gap-3 shadow-lg shadow-destructive/10 hover:opacity-90 transition-all active:scale-95"
+                className="flex-1 md:w-full h-11 bg-primary text-primary-foreground font-label font-bold uppercase tracking-wider rounded-md flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[.98]"
               >
-                <MIcon name="stop" className="text-xl" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
-                Log Session
+                <MIcon name="stop" className="text-base" style={{ fontVariationSettings: "'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24" }} />
+                Stop &amp; log
               </button>
             </>
           )}

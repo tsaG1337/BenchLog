@@ -1,0 +1,81 @@
+import type { DeviceTemplate } from '../types';
+
+// Per Garmin GTX 35R/45R Install Manual 190-01499-10 Rev. 1.
+//   P3251 — 62-pin Main Board connector (RESERVED pins omitted)
+//   P3252 — 15-pin ADS-B Board connector (GTX 45R only; RESERVED pins omitted)
+const device: DeviceTemplate = {
+  id: 'garmin-gtx-45r',
+  manufacturer: 'Garmin',
+  partNumber: '011-03303-00',
+  name: 'GTX 35R / 45R',
+  category: 'transponder',
+  description: 'Remote-mount Mode S ES transponder. 45R adds ADS-B In via P3252.',
+  width: 240,
+  height: 360,
+  manuals: [
+    { label: 'Manuals', url: 'https://support.garmin.com/en-US/?partNumber=010-01757-01&tab=manuals' },
+  ],
+  connectors: [
+    {
+      name: 'P3251',
+      gender: 'F',
+      connectorType: 'dsub',
+      pins: [
+        { pinNumber: '2',  name: 'USB DATA HI',             side: 'right' },
+        { pinNumber: '5',  name: 'ARINC 429 OUT A',         side: 'right' },
+        { pinNumber: '6',  name: 'ARINC 429 OUT B',         side: 'right' },
+        { pinNumber: '7',  name: 'RS-232 OUT 3',            side: 'right' },
+        { pinNumber: '8',  name: 'RS-232 OUT 2',            side: 'right' },
+        { pinNumber: '9',  name: 'RS-232 OUT 1',            side: 'right' },
+        { pinNumber: '14', name: 'EXTERNAL STANDBY SELECT', side: 'right' },
+        { pinNumber: '15', name: 'TIS-A SELECT',            side: 'right' },
+        { pinNumber: '17', name: 'XPDR FAIL 1',             side: 'right' },
+        { pinNumber: '18', name: 'EXTERNAL SUPPRESSION',    side: 'right' },
+        { pinNumber: '20', name: 'AIRCRAFT GROUND',         side: 'left',  role: 'ground' },
+        { pinNumber: '21', name: 'AIRCRAFT POWER 1',        side: 'left',  role: 'power'  },
+        { pinNumber: '24', name: 'USB DATA LO',             side: 'right' },
+        { pinNumber: '27', name: 'ARINC 429 IN 1A',         side: 'right' },
+        { pinNumber: '28', name: 'ARINC 429 IN 1B',         side: 'right' },
+        { pinNumber: '29', name: 'RS-232 IN 3',             side: 'right' },
+        { pinNumber: '30', name: 'RS-232 IN 2',             side: 'right' },
+        { pinNumber: '31', name: 'RS-232 IN 1',             side: 'right' },
+        { pinNumber: '36', name: 'EXTERNAL IDENT SELECT',   side: 'right' },
+        { pinNumber: '38', name: 'POWER CONTROL',           side: 'right' },
+        { pinNumber: '41', name: 'AIRCRAFT GROUND',         side: 'left',  role: 'ground' },
+        { pinNumber: '42', name: 'AIRCRAFT POWER 1',        side: 'left',  role: 'power'  },
+        { pinNumber: '44', name: 'USB VBUS POWER',          side: 'right' },
+        { pinNumber: '45', name: 'USB GND',                 side: 'right', role: 'ground' },
+        { pinNumber: '48', name: 'ARINC 429 IN 2A',         side: 'right' },
+        { pinNumber: '49', name: 'ARINC 429 IN 2B',         side: 'right' },
+        { pinNumber: '50', name: 'RS-232 GND 3',            side: 'right', role: 'ground' },
+        { pinNumber: '51', name: 'RS-232 GND 2',            side: 'right', role: 'ground' },
+        { pinNumber: '52', name: 'RS-232 GND 1',            side: 'right', role: 'ground' },
+        { pinNumber: '59', name: 'POWER CONFIG',            side: 'right' },
+        { pinNumber: '61', name: 'AIRCRAFT POWER 2',        side: 'left',  role: 'power'  },
+        { pinNumber: '62', name: 'AIRCRAFT POWER 2',        side: 'left',  role: 'power'  },
+      ],
+    },
+    {
+      name: 'P3252',
+      gender: 'F',
+      connectorType: 'dsub',
+      pins: [
+        { pinNumber: '1',  name: 'ETHERNET OUT 1B', side: 'right' },
+        { pinNumber: '2',  name: 'ETHERNET IN 1B',  side: 'right' },
+        { pinNumber: '3',  name: 'ETHERNET OUT 2B', side: 'right' },
+        { pinNumber: '4',  name: 'ETHERNET IN 2B',  side: 'right' },
+        { pinNumber: '5',  name: 'RS-232 OUT 4',    side: 'right' },
+        { pinNumber: '6',  name: 'ETHERNET OUT 1A', side: 'right' },
+        { pinNumber: '7',  name: 'ETHERNET IN 1A',  side: 'right' },
+        { pinNumber: '8',  name: 'ETHERNET OUT 2A', side: 'right' },
+        { pinNumber: '9',  name: 'ETHERNET IN 2A',  side: 'right' },
+        { pinNumber: '10', name: 'RS-232 IN 4',     side: 'right' },
+        { pinNumber: '11', name: 'RS-422 A',        side: 'right' },
+        { pinNumber: '12', name: 'RS-422 B',        side: 'right' },
+        { pinNumber: '15', name: 'RS-232 GND 4',    side: 'right', role: 'ground' },
+      ],
+    },
+  ],
+};
+
+export default device;

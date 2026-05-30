@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import { subdomainSlug } from '@/lib/hostname';
 
 interface AuthContextType {
   token: string | null;
@@ -86,18 +87,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw error;
     }
     const data = await res.json();
-    // Check for cross-subdomain mismatch BEFORE saving the token to this origin's localStorage.
-    // Saving first would leave a stale foreign token here, causing SubdomainGuard to
+    // Cross-subdomain redirect — only for multi-tenant deployments, where each
+    // user lives on their own `<slug>.<domain>` subdomain. Single-tenant
+    // deployments (and anything reached by a bare IP, which has no subdomain)
+    // skip this: without the `multiTenant` guard an IP login mis-reads the
+    // address octets as a subdomain and builds a broken URL such as
+    // `http://admin.168.1.98/auth-callback`.
+    // Checked BEFORE saving the token to this origin's localStorage — saving
+    // first would strand a stale foreign token here, causing SubdomainGuard to
     // keep redirecting future visitors away from this subdomain.
-    if (data.slug) {
-      const parts = window.location.hostname.split('.');
-      const currentSlug = parts.length >= 3 && !['www', 'account', 'demo'].includes(parts[0]) ? parts[0] : null;
+    if (multiTenant && data.slug) {
+      // `subdomainSlug` returns null for a bare IP / non-subdomain host, so an
+      // IP login never mistakes an address octet (e.g. "192") for a subdomain.
+      const currentSlug = subdomainSlug(window.location.hostname);
       // Only redirect if we're already on a user subdomain and it's the wrong one.
-      // If currentSlug is null (custom domain, system subdomain, localhost) stay put.
+      // If currentSlug is null (IP, custom domain, system subdomain, localhost) stay put.
       if (currentSlug !== null && currentSlug !== data.slug) {
         // Validate slug is alphanumeric (with hyphens) to prevent open redirect
         if (/^[a-z0-9-]+$/i.test(data.slug)) {
-          const baseDomain = parts.slice(1).join('.');
+          const baseDomain = window.location.hostname.split('.').slice(1).join('.');
           window.location.href = `${window.location.protocol}//${data.slug}.${baseDomain}/auth-callback?token=${encodeURIComponent(data.token)}`;
           return;
         }
@@ -111,6 +119,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setRole(payload.role || null);
       setSlug(payload.slug || null);
     } catch {}
+    // Re-pull /auth/status so a demo deployment's demoMode flag flips to
+    // `false` for an authenticated admin. Without this the frontend would
+    // stay in read-only display until the next page reload.
+    void checkAuth();
   };
 
   const setup = async (password: string) => {
@@ -135,6 +147,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setIsAuthenticated(false);
     setSlug(null);
+    setRole(null);
+    // Re-pull status so a demo deployment switches back to demoMode:true
+    // immediately — without this, the previous admin's flags would persist
+    // until the next page load.
+    void checkAuth();
   };
 
   return (

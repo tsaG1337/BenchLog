@@ -19,9 +19,18 @@ function initMasterSchema(masterSqlite) {
       project_name  TEXT NOT NULL DEFAULT 'My Build',
       aircraft_type TEXT NOT NULL DEFAULT 'RV-10',
       public_blog   INTEGER NOT NULL DEFAULT 1,
-      role          TEXT NOT NULL DEFAULT 'user'
+      role          TEXT NOT NULL DEFAULT 'user',
+      indexnow_key  TEXT NOT NULL DEFAULT ''
     )
   `);
+
+  // Migrate existing master DBs to add indexnow_key column
+  try {
+    const cols = masterSqlite.prepare(`PRAGMA table_info(tenants)`).all().map(r => r.name);
+    if (!cols.includes('indexnow_key')) {
+      masterSqlite.exec(`ALTER TABLE tenants ADD COLUMN indexnow_key TEXT NOT NULL DEFAULT ''`);
+    }
+  } catch {}
 }
 
 /**
@@ -203,6 +212,30 @@ function initTenantSchema(tenantSqlite, tenantId) {
     )
   `);
 
+  // ─── Wiring editor (singleton project per tenant) ────────────────
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS wiring_projects (
+      tenant_id  TEXT NOT NULL PRIMARY KEY,
+      name       TEXT NOT NULL DEFAULT 'Wiring',
+      data       TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  // ─── Wiring user-templates (one row per custom device template) ──
+  // Per-tenant row-per-template store. Keys are (tenant_id, template_id)
+  // so each tenant has its own namespace and we can update/delete one
+  // template at a time without rewriting the whole library.
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS wiring_user_templates (
+      tenant_id   TEXT NOT NULL,
+      template_id TEXT NOT NULL,
+      data        TEXT NOT NULL,
+      updated_at  TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, template_id)
+    )
+  `);
+
   // ─── Inventory ───────────────────────────────────────────────────
   tenantSqlite.exec(`
     CREATE TABLE IF NOT EXISTS inventory_locations (
@@ -226,7 +259,6 @@ function initTenantSchema(tenantSqlite, tenantId) {
       kit          TEXT DEFAULT '',
       sub_kit      TEXT DEFAULT '',
       category     TEXT DEFAULT 'other',
-      mfg_date     TEXT DEFAULT '',
       bag          TEXT DEFAULT '',
       notes        TEXT DEFAULT '',
       created_at   TEXT DEFAULT (datetime('now'))
@@ -246,6 +278,7 @@ function initTenantSchema(tenantSqlite, tenantId) {
       condition   TEXT DEFAULT 'new',
       batch       TEXT DEFAULT '',
       source_kit  TEXT DEFAULT '',
+      mfg_date    TEXT DEFAULT '',
       notes       TEXT DEFAULT '',
       updated_at  TEXT DEFAULT (datetime('now'))
     )
@@ -288,6 +321,62 @@ function initTenantSchema(tenantSqlite, tenantId) {
     )
   `);
   tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_check_items_session ON inventory_check_items (session_id, tenant_id)`);
+
+  // ─── Plans library (PDF references + per-builder annotations) ────
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS plan_files (
+      id              TEXT PRIMARY KEY,
+      tenant_id       TEXT NOT NULL DEFAULT '',
+      url             TEXT NOT NULL,
+      original_name   TEXT NOT NULL,
+      section_id      TEXT NOT NULL DEFAULT '',
+      section_title   TEXT NOT NULL DEFAULT '',
+      phase           TEXT NOT NULL DEFAULT 'other',
+      description     TEXT DEFAULT '',
+      file_size       INTEGER DEFAULT 0,
+      page_count      INTEGER DEFAULT 0,
+      pinned          INTEGER NOT NULL DEFAULT 0,
+      uploaded_at     TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_plan_files_tenant ON plan_files (tenant_id, phase, section_id)`);
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS plan_annotations (
+      id           TEXT PRIMARY KEY,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      file_id      TEXT NOT NULL,
+      page_number  INTEGER NOT NULL DEFAULT 1,
+      kind         TEXT NOT NULL DEFAULT 'text',
+      data         TEXT NOT NULL DEFAULT '{}',
+      created_at   TEXT DEFAULT (datetime('now')),
+      updated_at   TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_plan_anno_file ON plan_annotations (tenant_id, file_id, page_number)`);
+
+  // Add indexed_at column on existing DBs (no-op on fresh)
+  try {
+    const cols = tenantSqlite.prepare(`PRAGMA table_info(plan_files)`).all().map(r => r.name);
+    if (!cols.includes('indexed_at')) {
+      tenantSqlite.exec(`ALTER TABLE plan_files ADD COLUMN indexed_at TEXT`);
+    }
+  } catch {}
+
+  tenantSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS plan_part_refs (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      file_id      TEXT NOT NULL,
+      page_number  INTEGER NOT NULL,
+      part_number  TEXT NOT NULL,
+      snippet      TEXT DEFAULT '',
+      bbox         TEXT,
+      indexed_at   TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_plan_part_refs_lookup ON plan_part_refs (tenant_id, part_number)`);
+  tenantSqlite.exec(`CREATE INDEX IF NOT EXISTS idx_plan_part_refs_file ON plan_part_refs (tenant_id, file_id)`);
 }
 
 /**
@@ -311,8 +400,10 @@ async function initPostgresSchema(pool) {
       project_name  TEXT NOT NULL DEFAULT 'My Build',
       aircraft_type TEXT NOT NULL DEFAULT 'RV-10',
       public_blog   INTEGER NOT NULL DEFAULT 1,
-      role          TEXT NOT NULL DEFAULT 'user'
+      role          TEXT NOT NULL DEFAULT 'user',
+      indexnow_key  TEXT NOT NULL DEFAULT ''
     )`,
+    `ALTER TABLE tenants ADD COLUMN IF NOT EXISTS indexnow_key TEXT NOT NULL DEFAULT ''`,
     `CREATE TABLE IF NOT EXISTS sessions (
       id               TEXT NOT NULL,
       tenant_id        TEXT NOT NULL DEFAULT '',
@@ -446,6 +537,21 @@ async function initPostgresSchema(pool) {
       uploaded_at BIGINT NOT NULL,
       PRIMARY KEY (url, tenant_id)
     )`,
+    // ─── Wiring editor (singleton project per tenant) ────────────
+    `CREATE TABLE IF NOT EXISTS wiring_projects (
+      tenant_id  TEXT NOT NULL PRIMARY KEY,
+      name       TEXT NOT NULL DEFAULT 'Wiring',
+      data       TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    // ─── Wiring user-templates (one row per custom device template) ─
+    `CREATE TABLE IF NOT EXISTS wiring_user_templates (
+      tenant_id   TEXT NOT NULL,
+      template_id TEXT NOT NULL,
+      data        TEXT NOT NULL,
+      updated_at  TEXT DEFAULT (${NOW_TEXT}),
+      PRIMARY KEY (tenant_id, template_id)
+    )`,
     `ALTER TABLE tenants ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`,
 
     // ─── Inventory ───────────────────────────────────────────────
@@ -466,7 +572,6 @@ async function initPostgresSchema(pool) {
       manufacturer TEXT DEFAULT '',
       kit          TEXT DEFAULT '',
       category     TEXT DEFAULT 'other',
-      mfg_date     TEXT DEFAULT '',
       bag          TEXT DEFAULT '',
       notes        TEXT DEFAULT '',
       created_at   TEXT DEFAULT (${NOW_TEXT})
@@ -483,6 +588,7 @@ async function initPostgresSchema(pool) {
       condition   TEXT DEFAULT 'new',
       batch       TEXT DEFAULT '',
       source_kit  TEXT DEFAULT '',
+      mfg_date    TEXT DEFAULT '',
       notes       TEXT DEFAULT '',
       updated_at  TEXT DEFAULT (${NOW_TEXT})
     )`,
@@ -517,6 +623,46 @@ async function initPostgresSchema(pool) {
       scanned_at     TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_check_items_session ON inventory_check_items (session_id, tenant_id)`,
+
+    // ─── Plans library ───────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS plan_files (
+      id              TEXT PRIMARY KEY,
+      tenant_id       TEXT NOT NULL DEFAULT '',
+      url             TEXT NOT NULL,
+      original_name   TEXT NOT NULL,
+      section_id      TEXT NOT NULL DEFAULT '',
+      section_title   TEXT NOT NULL DEFAULT '',
+      phase           TEXT NOT NULL DEFAULT 'other',
+      description     TEXT DEFAULT '',
+      file_size       INTEGER DEFAULT 0,
+      page_count      INTEGER DEFAULT 0,
+      pinned          INTEGER NOT NULL DEFAULT 0,
+      uploaded_at     TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_plan_files_tenant ON plan_files (tenant_id, phase, section_id)`,
+    `CREATE TABLE IF NOT EXISTS plan_annotations (
+      id           TEXT PRIMARY KEY,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      file_id      TEXT NOT NULL,
+      page_number  INTEGER NOT NULL DEFAULT 1,
+      kind         TEXT NOT NULL DEFAULT 'text',
+      data         TEXT NOT NULL DEFAULT '{}',
+      created_at   TEXT DEFAULT (${NOW_TEXT}),
+      updated_at   TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_plan_anno_file ON plan_annotations (tenant_id, file_id, page_number)`,
+    `CREATE TABLE IF NOT EXISTS plan_part_refs (
+      id           BIGSERIAL PRIMARY KEY,
+      tenant_id    TEXT NOT NULL DEFAULT '',
+      file_id      TEXT NOT NULL,
+      page_number  INTEGER NOT NULL,
+      part_number  TEXT NOT NULL,
+      snippet      TEXT DEFAULT '',
+      bbox         TEXT,
+      indexed_at   TEXT DEFAULT (${NOW_TEXT})
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_plan_part_refs_lookup ON plan_part_refs (tenant_id, part_number)`,
+    `CREATE INDEX IF NOT EXISTS idx_plan_part_refs_file ON plan_part_refs (tenant_id, file_id)`,
   ];
 
   for (const sql of statements) {
@@ -528,8 +674,18 @@ async function initPostgresSchema(pool) {
     const { rows } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'inventory_parts' AND table_schema = current_schema()`);
     const cols = rows.map(r => r.column_name);
     if (cols.length > 0 && !cols.includes('sub_kit')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN sub_kit TEXT DEFAULT ''`);
-    if (cols.length > 0 && !cols.includes('mfg_date')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN mfg_date TEXT DEFAULT ''`);
     if (cols.length > 0 && !cols.includes('bag')) await pool.query(`ALTER TABLE inventory_parts ADD COLUMN bag TEXT DEFAULT ''`);
+    // Move mfg_date from inventory_parts → inventory_stock — a date describes a
+    // received batch, not the part type. Presence of inventory_parts.mfg_date
+    // marks an un-migrated DB; backfill stock before dropping the source.
+    if (cols.length > 0 && cols.includes('mfg_date')) {
+      const { rows: stockColRows } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'inventory_stock' AND table_schema = current_schema()`);
+      if (!stockColRows.map(r => r.column_name).includes('mfg_date')) {
+        await pool.query(`ALTER TABLE inventory_stock ADD COLUMN mfg_date TEXT DEFAULT ''`);
+      }
+      await pool.query(`UPDATE inventory_stock s SET mfg_date = COALESCE(p.mfg_date, '') FROM inventory_parts p WHERE p.id = s.part_id AND p.tenant_id = s.tenant_id`);
+      await pool.query(`ALTER TABLE inventory_parts DROP COLUMN mfg_date`);
+    }
   } catch (e) { /* table may not exist yet — fine */ }
 
   // Migrate blog_posts: add plans_section column
@@ -537,6 +693,13 @@ async function initPostgresSchema(pool) {
     const { rows: blogCols } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'blog_posts' AND table_schema = current_schema()`);
     const bc = blogCols.map(r => r.column_name);
     if (bc.length > 0 && !bc.includes('plans_section')) await pool.query(`ALTER TABLE blog_posts ADD COLUMN plans_section TEXT DEFAULT ''`);
+  } catch (e) { /* table may not exist yet — fine */ }
+
+  // Migrate plan_files: add indexed_at column
+  try {
+    const { rows: pfCols } = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'plan_files' AND table_schema = current_schema()`);
+    const pc = pfCols.map(r => r.column_name);
+    if (pc.length > 0 && !pc.includes('indexed_at')) await pool.query(`ALTER TABLE plan_files ADD COLUMN indexed_at TEXT`);
   } catch (e) { /* table may not exist yet — fine */ }
 
   // Migrate inventory_stock: add source_kit column

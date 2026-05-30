@@ -333,8 +333,12 @@ export default function BlogPage() {
                 </div>
               </section>}
 
-              {/* Search & Filters */}
-              <section className="mb-8 flex flex-col lg:flex-row gap-4 items-end">
+              {/* Search & Filters — wrapped in a Cobalt-style card with a header */}
+              <section className="mb-8 rounded-lg border border-border bg-card p-4 sm:p-5">
+                <div className="font-mono text-[10px] tracking-[0.18em] uppercase text-muted-foreground mb-3">
+                  Filters
+                </div>
+                <div className="flex flex-col lg:flex-row gap-4 items-end">
                 <div className="w-full lg:w-1/3">
                   <label className="font-label text-[10px] uppercase mb-2 block ml-1 text-muted-foreground">
                     Search Build Logs
@@ -436,6 +440,7 @@ export default function BlogPage() {
                     <MIcon name="tune" className="text-sm" />
                     CLEAR FILTERS
                   </button>
+                </div>
                 </div>
               </section>
 

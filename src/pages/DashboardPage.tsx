@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useSections } from '@/contexts/SectionsContext';
 import {
   fetchBlogPosts, fetchBuildStats, fetchGeneralSettings, trackPageView,
-  type BlogPost, type BuildStats,
+  fetchFlowchartPackages, fetchFlowchartStatus,
+  type BlogPost, type BuildStats, type PackagesMap, type StatusMap, type FlowItem,
 } from '@/lib/api';
 import { BuildFlowchart } from '@/components/blog/BuildFlowchart';
 import { AppShell, MIcon } from '@/components/AppShell';
@@ -42,11 +43,20 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<BuildStats | null>(null);
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [projectName, setProjectName] = useState('BenchLog');
+  const [inspectorName, setInspectorName] = useState<string>('');
+  const [packages, setPackages] = useState<PackagesMap>({});
+  const [flowStatuses, setFlowStatuses] = useState<StatusMap>({});
+
   // ─── Data fetching ──────────────────────────────────────────────
   useEffect(() => {
     fetchBuildStats().then(setStats).catch(() => {});
-    fetchGeneralSettings().then(s => setProjectName(s.projectName)).catch(() => {});
+    fetchGeneralSettings().then(s => {
+      setProjectName(s.projectName);
+      setInspectorName(s.inspectorName?.trim() ?? '');
+    }).catch(() => {});
     fetchBlogPosts({ limit: 200 }).then(r => setPosts(r.posts)).catch(() => {});
+    fetchFlowchartPackages().then(setPackages).catch(() => {});
+    fetchFlowchartStatus().then(setFlowStatuses).catch(() => {});
     trackPageView('/dashboard');
   }, []);
 
@@ -130,60 +140,165 @@ export default function DashboardPage() {
     .filter(sec => (sectionHours[sec.id] || 0) > 0)
     .sort((a, b) => (sectionHours[b.id] || 0) - (sectionHours[a.id] || 0));
 
+  // ─── Cobalt hero data ──────────────────────────────────────────
+  // Subtitle = "{section} is X% complete." for the *most recently tracked*
+  // section, where the percent is computed from the section's flowchart
+  // packages (count of 'done' nodes / total nodes — same logic as
+  // BuildFlowchart). Omitted entirely when there's no tracked section yet,
+  // or the section has no work packages defined.
+  const lastSession = posts.find(p => p.source === 'session');
+  const lastSectionId = lastSession?.section ?? sortedSections[0]?.id;
+  const lastSectionLabel = lastSectionId ? (labels[lastSectionId] || lastSectionId) : null;
+
+  const lastSectionPct = useMemo(() => {
+    if (!lastSectionId) return null;
+    const flatten = (items: FlowItem[]): FlowItem[] =>
+      items.flatMap(i => [i, ...(i.children ? flatten(i.children) : [])]);
+    const items = flatten(packages[lastSectionId] ?? []);
+    if (items.length === 0) return null;
+    const done = items.filter(i => flowStatuses[i.id] === 'done').length;
+    return Math.round((done / items.length) * 100);
+  }, [lastSectionId, packages, flowStatuses]);
+
+  const overallPct = stats?.progressPct ?? 0;
+
+  // Time-of-day greeting from the user's local clock. Late-night (22–04)
+  // gets a slightly cheekier line that fits the builder voice — the typical
+  // hour someone fires up the dashboard at 1am after a garage session.
+  const greeting = useMemo(() => {
+    const h = new Date().getHours();
+    if (h >= 5 && h < 12)  return 'Good morning';
+    if (h >= 12 && h < 17) return 'Good afternoon';
+    if (h >= 17 && h < 22) return 'Good evening';
+    return 'Working late';
+  }, []);
+
+  // Hours-this-week / -month toggle for the KPI tile.
+  const [hoursMode, setHoursMode] = useState<'week' | 'month'>('week');
+  const hoursThisMonth = useMemo(() => {
+    const start = new Date();
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    return posts
+      .filter(p => p.source === 'session' && new Date(p.publishedAt) >= start)
+      .reduce((sum, p) => sum + (p.durationMinutes || 0) / 60, 0);
+  }, [posts]);
+  const hoursValue = hoursMode === 'week' ? hoursThisWeek : hoursThisMonth;
+  const hoursGoal  = hoursMode === 'week' ? 20 : 80;
+
   // ─── Render ─────────────────────────────────────────────────────
   return (
     <AppShell activePage="dashboard" projectName={projectName}>
 
-          {/* ─── Hero Metrics ──────────────────────────────────────── */}
-          <section className="mb-10 space-y-3 md:space-y-4">
-            {/* Top row: two compact stat cards on mobile, three on md+ */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4">
+          {/* ─── Cobalt Hero ────────────────────────────────────────── */}
+          <section className="mb-6 md:mb-8">
+            <div className="relative overflow-hidden rounded-lg border border-border bg-card p-6 md:p-7">
+              {/* Soft cobalt radial glow in the top-right corner */}
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -top-32 -right-32 h-[360px] w-[360px] rounded-full"
+                style={{ background: 'radial-gradient(circle, hsl(var(--primary) / 0.15) 0%, transparent 60%)' }}
+              />
+              <div className="relative">
+                <div className="font-mono text-[11px] tracking-[0.16em] uppercase text-muted-foreground">
+                  {format(new Date(), 'EEEE · MMMM d')}
+                </div>
+                <div className="mt-1.5 font-headline font-bold text-2xl md:text-4xl tracking-tight leading-[1.1] text-foreground">
+                  {greeting}{inspectorName ? `, ${inspectorName}` : ''}.
+                  {lastSectionLabel && lastSectionPct !== null && (
+                    <>
+                      <br />
+                      <span className="text-muted-foreground font-semibold">
+                        {lastSectionLabel} is {lastSectionPct}% complete.
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="mt-5 flex flex-wrap items-stretch gap-x-6 gap-y-3">
+                  <div>
+                    <div className="font-mono text-[10px] tracking-[0.16em] uppercase text-muted-foreground">Total hours</div>
+                    <div className="font-headline font-bold text-2xl md:text-3xl tracking-tight text-foreground">
+                      {(stats?.totalHours ?? 0).toLocaleString()}<span className="text-primary">h</span>
+                    </div>
+                  </div>
+                  <div className="w-px bg-border" />
+                  <div>
+                    <div className="font-mono text-[10px] tracking-[0.16em] uppercase text-muted-foreground">Est. first flight</div>
+                    <div className="font-headline font-bold text-2xl md:text-3xl tracking-tight text-foreground">
+                      {stats?.estimatedFinish ? format(new Date(stats.estimatedFinish), 'MMM yyyy') : '—'}
+                    </div>
+                  </div>
+                  <div className="w-px bg-border" />
+                  <div>
+                    <div className="font-mono text-[10px] tracking-[0.16em] uppercase text-muted-foreground">Sessions this year</div>
+                    <div className="font-headline font-bold text-2xl md:text-3xl tracking-tight text-foreground">
+                      {sessionsThisYear}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* ─── KPI Row ────────────────────────────────────────────── */}
+          <section className="mb-10">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
               {/* Total Sessions */}
-              <div className="p-3 md:p-6 bg-card rounded shadow-sm border-l-4 border-primary">
-                <h5 className="font-label text-[10px] uppercase font-bold text-muted-foreground">
-                  Total Sessions
+              <div className="p-3 md:p-5 bg-card rounded border border-border">
+                <h5 className="font-mono text-[10px] tracking-[0.16em] uppercase font-semibold text-muted-foreground">
+                  Total sessions
                 </h5>
-                <p className="font-headline font-bold text-xl md:text-3xl mt-1 md:mt-2 text-foreground">
+                <p className="font-headline font-bold text-2xl md:text-3xl mt-1 md:mt-2 text-foreground">
                   {stats?.sessionCount ?? 0}
                 </p>
-                <div className="flex items-center gap-1 mt-1">
-                  <MIcon name="trending_up" className="text-xs text-muted-foreground" />
-                  <span className="font-label text-[10px] uppercase text-muted-foreground">
-                    {stats?.totalHours ?? 0}h logged
-                  </span>
+                <div className="font-mono text-[10px] tracking-wider text-muted-foreground mt-1">
+                  {stats?.totalHours ?? 0}h logged
                 </div>
               </div>
 
-              {/* Hours / Week */}
-              <div className="p-3 md:p-6 bg-card rounded shadow-sm border-l-4 border-amber-500">
-                <h5 className="font-label text-[10px] uppercase font-bold text-muted-foreground">
-                  Hours / Week
+              {/* Hours · clickable week/month toggle */}
+              <button
+                onClick={() => setHoursMode(m => m === 'week' ? 'month' : 'week')}
+                title="Click to toggle week / month"
+                className="text-left p-3 md:p-5 bg-card rounded border border-border hover:border-primary/40 transition-colors"
+              >
+                <h5 className="font-mono text-[10px] tracking-[0.16em] uppercase font-semibold text-muted-foreground">
+                  {hoursMode === 'week' ? 'Hours this week' : 'Hours this month'}
                 </h5>
-                <p className="font-headline font-bold text-xl md:text-3xl mt-1 md:mt-2 text-foreground">
-                  {stats?.hoursPerWeek ?? '—'}
+                <p className="font-headline font-bold text-2xl md:text-3xl mt-1 md:mt-2 text-foreground">
+                  {hoursValue.toFixed(1)}
                 </p>
-                <span className="font-label text-[10px] uppercase text-muted-foreground">
-                  Avg {avgSessionHours}h / session
-                </span>
+                <div className="font-mono text-[10px] tracking-wider text-muted-foreground mt-1">
+                  of {hoursGoal} {hoursMode} goal · click to swap
+                </div>
+              </button>
+
+              {/* Avg session length */}
+              <div className="p-3 md:p-5 bg-card rounded border border-border">
+                <h5 className="font-mono text-[10px] tracking-[0.16em] uppercase font-semibold text-muted-foreground">
+                  Avg. session
+                </h5>
+                <p className="font-headline font-bold text-2xl md:text-3xl mt-1 md:mt-2 text-foreground">
+                  {avgSessionHours}<span className="text-primary text-base">h</span>
+                </p>
+                <div className="font-mono text-[10px] tracking-wider text-muted-foreground mt-1">
+                  per session
+                </div>
               </div>
 
-              {/* Completion Velocity — spans full width on mobile, third column on md+ */}
-              <div className="col-span-2 md:col-span-1 p-3 md:p-6 bg-card rounded shadow-sm border-l-4 border-primary">
-                <h5 className="font-label text-[10px] uppercase font-bold text-muted-foreground">
-                  Completion Velocity
+              {/* Overall completion */}
+              <div className="col-span-2 md:col-span-1 p-3 md:p-5 bg-card rounded border border-border">
+                <h5 className="font-mono text-[10px] tracking-[0.16em] uppercase font-semibold text-muted-foreground">
+                  Overall completion
                 </h5>
-                <div className="w-full h-1.5 mt-2 bg-accent">
-                  <div className="h-full transition-all bg-primary" style={{ width: `${stats?.progressPct ?? 0}%` }} />
+                <p className="font-headline font-bold text-2xl md:text-3xl mt-1 md:mt-2 text-foreground">
+                  {overallPct}%
+                </p>
+                <div className="w-full h-1 mt-2 bg-secondary rounded-full overflow-hidden">
+                  <div className="h-full bg-primary" style={{ width: `${overallPct}%` }} />
                 </div>
-                <div className="flex justify-between items-baseline mt-1.5">
-                  <span className="font-label text-[10px] uppercase text-muted-foreground">
-                    Est. finish: {stats?.estimatedFinish
-                      ? format(new Date(stats.estimatedFinish), 'MMM. yyyy')
-                      : '—'}
-                  </span>
-                  <span className="font-headline font-bold text-sm text-primary">
-                    {stats?.progressPct ?? 0}%
-                  </span>
+                <div className="font-mono text-[10px] tracking-wider text-muted-foreground mt-1.5">
+                  est. {stats?.estimatedFinish ? format(new Date(stats.estimatedFinish), 'MMM yyyy') : '—'}
                 </div>
               </div>
             </div>
@@ -259,25 +374,6 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Efficiency Stats */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-6 bg-card rounded shadow-sm border-l-4 border-primary">
-                  <h5 className="font-label text-[10px] uppercase font-bold text-muted-foreground">
-                    Avg Session Length
-                  </h5>
-                  <p className="font-headline font-bold text-3xl mt-2 text-foreground">
-                    {avgSessionHours} <span className="text-sm font-label uppercase text-muted-foreground">HRS</span>
-                  </p>
-                </div>
-                <div className="p-6 bg-card rounded shadow-sm border-l-4 border-amber-500">
-                  <h5 className="font-label text-[10px] uppercase font-bold text-muted-foreground">
-                    Sessions Per Week
-                  </h5>
-                  <p className="font-headline font-bold text-3xl mt-2 text-foreground">
-                    {sessionsPerWeek} <span className="text-sm font-label uppercase text-muted-foreground">ACTV</span>
-                  </p>
-                </div>
-              </div>
             </div>
 
             {/* Build Progress */}

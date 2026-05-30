@@ -3,7 +3,7 @@
  * Each vendor defines part-number regex patterns, sub-kit options, and optional
  * prefix-to-subkit mapping for auto-detection from scanned labels.
  *
- * Vendor data lives in src/templates/ocr/<vendor>.ts.
+ * Vendor data lives in src/lib/ocr/<vendor>.ts.
  * To add a new vendor: create the template, then add one import + one array entry here.
  */
 
@@ -21,12 +21,20 @@ export interface OcrVendorConfig {
 }
 
 // ─── Registry ─────────────────────────────────────────────────────
+// Vendor OCR configs are sourced from the aircraft registry at
+// `src/lib/aircraft/<manufacturer>/label-ocr.ts` (one file per manufacturer,
+// because Van's bag labels are identical across RV-7/9/10/14, etc.). The
+// generic fallback stays here — it isn't tied to an aircraft.
 
-import { VANS_VENDOR } from '@/templates/ocr/vans';
-import { GENERIC_VENDOR } from '@/templates/ocr/generic';
+import { MANUFACTURERS } from '@/lib/aircraft';
+import { GENERIC_VENDOR } from '@/lib/ocr/generic';
+
+const MANUFACTURER_VENDORS: OcrVendorConfig[] = MANUFACTURERS
+  .map(m => m.labelOcr)
+  .filter((v): v is OcrVendorConfig => !!v);
 
 export const OCR_VENDORS: OcrVendorConfig[] = [
-  VANS_VENDOR,
+  ...MANUFACTURER_VENDORS,
   GENERIC_VENDOR,
 ];
 

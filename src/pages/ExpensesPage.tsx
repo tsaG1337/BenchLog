@@ -592,12 +592,22 @@ function ReceiptDropdown({ exp }: { exp: Expense }) {
           return (
             <DropdownMenuItem key={url} onSelect={() => {
               if (!isSafeUrl) return;
-              if (isPdf && !url.startsWith('http')) {
+              // Open the receipt directly with the auth token in the URL —
+              // the server's `peekAuth` accepts `?token=` for callers that
+              // can't set the Authorization header (this is the same path
+              // used by <img> tags). The browser handles the PDF natively,
+              // including its embedded viewer, with the correct Content-
+              // Type and full body — no blob rewrap, no "0 of 0 pages"
+              // black-screen failures.
+              if (!url.startsWith('http')) {
                 const token = localStorage.getItem('auth_token');
-                fetch(fileUrl, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-                  .then(r => r.ok ? r.blob() : Promise.reject('Could not open file'))
-                  .then(blob => { const blobUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = blobUrl; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.click(); setTimeout(() => URL.revokeObjectURL(blobUrl), 60000); })
-                  .catch(e => toast.error(String(e)));
+                const sep = fileUrl.includes('?') ? '&' : '?';
+                const authedUrl = token ? `${fileUrl}${sep}token=${encodeURIComponent(token)}` : fileUrl;
+                const a = document.createElement('a');
+                a.href = authedUrl;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.click();
               } else {
                 const a = document.createElement('a'); a.href = fileUrl; a.target = '_blank'; a.rel = 'noreferrer'; a.click();
               }

@@ -71,6 +71,29 @@ function getLeafLocations(locations: InvLocation[]): InvLocation[] {
   return locations.filter(l => !parentIds.has(Number(l.id)));
 }
 
+/** The set of `rootId` plus every location nested under it, at any depth.
+ *  Filtering or counting by a parent location uses this so it includes the
+ *  stock held in its child locations, not only stock placed at its own level. */
+function locationSubtreeIds(rootId: number, locations: InvLocation[]): Set<number> {
+  const childrenOf = new Map<number, number[]>();
+  for (const l of locations) {
+    if (l.parentId == null) continue;
+    const pid = Number(l.parentId);
+    const arr = childrenOf.get(pid) ?? [];
+    arr.push(Number(l.id));
+    childrenOf.set(pid, arr);
+  }
+  const ids = new Set<number>([rootId]);
+  const queue = [rootId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const child of childrenOf.get(cur) ?? []) {
+      if (!ids.has(child)) { ids.add(child); queue.push(child); }
+    }
+  }
+  return ids;
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  MAIN PAGE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -351,11 +374,10 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
         )}
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3">
-        <StatCard icon="inventory_2" label="Parts" value={String(stats?.totalParts ?? 0)} />
+      {/* Stats Grid — Parts on hand · Locations · Backordered */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 sm:gap-3">
+        <StatCard icon="inventory_2" label="Parts on hand" value={String(stats?.totalParts ?? 0)} />
         <StatCard icon="warehouse" label="Locations" value={String(stats?.totalLocations ?? 0)} />
-        <StatCard icon="check_circle" label="Installed" value={String(stats?.installed ?? 0)} accent="blue" />
         <StatCard icon="local_shipping" label="Backordered" value={String(stats?.backordered ?? 0)} accent="red" />
       </div>
 
@@ -666,12 +688,26 @@ function LocationsTab({ locations, stock, parts, readOnly, onRefresh, onViewLoca
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const tree = useMemo(() => buildLocationTree(locations), [locations]);
 
-  // Count stock items per location
+  // Count stock items per location (direct — stock placed at that level only)
   const stockCounts = useMemo(() => {
     const counts: Record<number, number> = {};
     for (const s of stock) counts[s.locationId] = (counts[s.locationId] || 0) + 1;
     return counts;
   }, [stock]);
+
+  // Roll the direct counts up the tree so a parent location's badge reflects
+  // everything nested under it, not just stock placed directly at its level.
+  const cumulativeCounts = useMemo(() => {
+    const out: Record<number, number> = {};
+    for (const loc of locations) {
+      let n = 0;
+      for (const id of locationSubtreeIds(Number(loc.id), locations)) {
+        n += stockCounts[id] || 0;
+      }
+      out[Number(loc.id)] = n;
+    }
+    return out;
+  }, [locations, stockCounts]);
 
   // Map part IDs to part numbers for display in delete warning
   const partMap = useMemo(() => new Map(parts.map(p => [p.id, p])), [parts]);
@@ -911,7 +947,7 @@ function LocationsTab({ locations, stock, parts, readOnly, onRefresh, onViewLoca
                   </div>
                 </div>
                 <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-2">
-                  <span className="text-[10px] sm:text-xs text-muted-foreground">{stockCounts[loc.id] || 0}</span>
+                  <span className="text-[10px] sm:text-xs text-muted-foreground">{cumulativeCounts[loc.id] || 0}</span>
                   {!readOnly && (
                     <>
                       <button onClick={() => { setEditing(loc); setShowForm(true); }} className="p-1 rounded hover:bg-muted"><Pencil className="w-3.5 h-3.5 text-muted-foreground" /></button>
@@ -994,6 +1030,13 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
   useEffect(() => {
     if (initialLocationFilter != null) setFilterLocId(initialLocationFilter);
   }, [initialLocationFilter]);
+
+  // The location filter matches the chosen location AND everything nested
+  // under it — so filtering by a parent shows its children's stock too.
+  const filterLocIds = useMemo(
+    () => filterLocId != null ? locationSubtreeIds(filterLocId, locations) : null,
+    [filterLocId, locations],
+  );
   const [showMassIngest, setShowMassIngest] = useState(false);
   const [bulkMoving, setBulkMoving] = useState(false);
   const [expandedParts, setExpandedParts] = useState<Set<number>>(new Set());
@@ -1049,10 +1092,10 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
         return ps.some(s => s.status === filterStatus);
       });
     }
-    if (filterLocId) {
+    if (filterLocIds) {
       list = list.filter(p => {
         const ps = stockByPart.get(Number(p.id)) || [];
-        return ps.some(s => s.locationId === filterLocId);
+        return ps.some(s => filterLocIds.has(Number(s.locationId)));
       });
     }
     if (filterBag) list = list.filter(p => {
@@ -1061,7 +1104,7 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
       return ps.some(s => s.batch === filterBag);
     });
     return list;
-  }, [parts, search, filterCat, filterKit, filterStatus, filterLocId, filterBag, stockByPart]);
+  }, [parts, search, filterCat, filterKit, filterStatus, filterLocIds, filterBag, stockByPart]);
 
   // Clear selection when filters change to prevent invisible bulk actions on non-visible items
   useEffect(() => {
@@ -1076,7 +1119,7 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
     });
   };
 
-  const handleSave = async (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string } }) => {
+  const handleSave = async (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string } }) => {
     try {
       const { _stock, ...partData } = data;
       let savedPart: InvPart;
@@ -1089,6 +1132,7 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
             partId: savedPart.id, locationId: _stock.locationId,
             quantity: _stock.quantity, unit: _stock.unit,
             status: _stock.status as any, condition: _stock.condition as any,
+            mfgDate: _stock.mfgDate,
           });
         }
       }
@@ -1170,7 +1214,7 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
         const partStk = stockByPart.get(Number(pid)) || [];
         for (const s of partStk) {
           // Only move stock that matches current filters
-          if (filterLocId && s.locationId !== filterLocId) continue;
+          if (filterLocIds && !filterLocIds.has(Number(s.locationId))) continue;
           if (s.locationId !== bulkMoveTarget) {
             await updateInvStock(s.id, { locationId: bulkMoveTarget });
             moved++;
@@ -1359,7 +1403,7 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
           )}
           {filtered.map(p => {
             let allPartStock = stockByPart.get(Number(p.id)) || [];
-            if (filterLocId) allPartStock = allPartStock.filter(s => s.locationId === filterLocId);
+            if (filterLocIds) allPartStock = allPartStock.filter(s => filterLocIds.has(Number(s.locationId)));
             if (filterBag) allPartStock = allPartStock.filter(s => s.batch === filterBag || (!s.batch && p.bag === filterBag));
             const partStock = allPartStock;
             const isExpanded = expandedParts.has(p.id);
@@ -1497,8 +1541,8 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
 function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel, ocrEnabled, ocrVendor, aircraftType, onBagIngest }: {
   part: InvPart | null; locations: InvLocation[];
   existingParts: InvPart[];
-  onSave: (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string } }) => void;
-  onAddStock: (data: { partId: number; locationId: number; quantity: number; unit: string; status: string; condition: string }) => void;
+  onSave: (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string } }) => void;
+  onAddStock: (data: { partId: number; locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string }) => void;
   onCancel: () => void;
   ocrEnabled?: boolean;
   ocrVendor?: string;
@@ -1512,7 +1556,9 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
   const [kit, setKit] = useState(part?.kit || '');
   const [subKit, setSubKit] = useState(part?.subKit || '');
   const [category, setCategory] = useState(part?.category || 'other');
-  const [mfgDate, setMfgDate] = useState(part?.mfgDate || '');
+  // mfgDate is a STOCK attribute (a received-batch date) — captured here only
+  // to set it on the stock entry this form creates, never on the part.
+  const [mfgDate, setMfgDate] = useState('');
   const [notes, setNotes] = useState(part?.notes || '');
   const [showScanner, setShowScanner] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -1686,11 +1732,11 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
 
   const handleSubmit = () => {
     if (!partNumber) return;
-    const data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string } } = {
-      partNumber, name, manufacturer, kit, subKit, category, mfgDate, bag: part?.bag || '', notes,
+    const data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string } } = {
+      partNumber, name, manufacturer, kit, subKit, category, bag: part?.bag || '', notes,
     };
     if (isNew && locationId) {
-      data._stock = { locationId, quantity, unit, status, condition };
+      data._stock = { locationId, quantity, unit, status, condition, mfgDate };
     }
     onSave(data);
   };
@@ -1867,6 +1913,11 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
                     {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
+                <div>
+                  <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Mfg Date</label>
+                  <input value={mfgDate} onChange={e => setMfgDate(e.target.value)} placeholder="e.g. 01/15/2025"
+                    className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                </div>
               </div>
             </div>
           )}
@@ -1875,7 +1926,7 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
             <button onClick={onCancel} className="px-4 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted">Cancel</button>
             <button onClick={() => {
                 if (!locationId) { toast.error('Select a location'); return; }
-                onAddStock({ partId: matchedExisting.id, locationId, quantity, unit, status, condition });
+                onAddStock({ partId: matchedExisting.id, locationId, quantity, unit, status, condition, mfgDate });
               }}
               disabled={!locationId || locations.length === 0}
               className="px-4 py-2 rounded-md bg-primary text-primary-foreground font-label text-xs font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-50">
@@ -1922,11 +1973,6 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
                 </select>
               </div>
             )}
-            <div>
-              <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Mfg Date</label>
-              <input value={mfgDate} onChange={e => setMfgDate(e.target.value)} placeholder="e.g. 01/15/2025"
-                className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" />
-            </div>
             <div>
               <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Notes</label>
               <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes"
@@ -1985,6 +2031,12 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
                     {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
+                <div>
+                  <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Mfg Date</label>
+                  <input value={mfgDate} onChange={e => setMfgDate(e.target.value)} placeholder="e.g. 01/15/2025"
+                    disabled={!locationId}
+                    className="w-full px-3 py-2 rounded-md bg-card border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50" />
+                </div>
               </div>
             </div>
           )}
@@ -2020,6 +2072,7 @@ function StockForm({ entry, parts, locations, fixedPartId, onSave, onCancel }: {
   const [condition, setCondition] = useState(entry?.condition || 'new');
   const [batch, setBatch] = useState(entry?.batch || '');
   const [sourceKit, setSourceKit] = useState(entry?.sourceKit || '');
+  const [mfgDate, setMfgDate] = useState(entry?.mfgDate || '');
   const [notes, setNotes] = useState(entry?.notes || '');
 
   if (parts.length === 0 || locations.length === 0) {
@@ -2090,6 +2143,11 @@ function StockForm({ entry, parts, locations, fixedPartId, onSave, onCancel }: {
             className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
         </div>
         <div>
+          <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Mfg Date</label>
+          <input value={mfgDate} onChange={e => setMfgDate(e.target.value)} placeholder="e.g. 01/15/2025"
+            className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30" />
+        </div>
+        <div>
           <label className="font-label text-[10px] uppercase mb-1 block text-muted-foreground">Notes</label>
           <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional"
             className="w-full px-3 py-2 rounded-md bg-muted/50 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
@@ -2097,7 +2155,7 @@ function StockForm({ entry, parts, locations, fixedPartId, onSave, onCancel }: {
       </div>
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="px-4 py-2 rounded-md text-sm text-muted-foreground hover:bg-muted">Cancel</button>
-        <button onClick={() => partId && locationId && onSave({ partId, locationId, quantity, unit, status: status as any, condition: condition as any, batch, sourceKit, notes })}
+        <button onClick={() => partId && locationId && onSave({ partId, locationId, quantity, unit, status: status as any, condition: condition as any, batch, sourceKit, mfgDate, notes })}
           className="px-4 py-2 rounded-md bg-primary text-primary-foreground font-label text-xs font-bold uppercase tracking-wider hover:opacity-90">
           {entry ? 'Update' : 'Create'}
         </button>

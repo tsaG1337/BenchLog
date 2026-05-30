@@ -1,14 +1,20 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
+# Static fallback — the authoritative robots.txt is served dynamically by
+# the Express server (tenant-aware, respects per-tenant public_blog setting).
+# This file is only used if the dynamic route is bypassed.
 
 User-agent: *
-Allow: /
+Allow: /blog
+Allow: /blog/
+# /api/* is intentionally not blocked — the blog is a React SPA and Google
+# needs to fetch API endpoints at render time to see post content.
+Disallow: /timer
+Disallow: /settings
+Disallow: /admin
+Disallow: /account
+Disallow: /dashboard
+Disallow: /sessions
+Disallow: /timeline
+Disallow: /inventory
+Disallow: /inspections
+Disallow: /expenses
+Disallow: /flowchart

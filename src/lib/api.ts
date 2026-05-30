@@ -179,6 +179,9 @@ export interface GeneralSettings {
   ocrEnabled?: boolean;
   ocrVendor?: string;
   aircraftType?: string;
+  /** Per-tenant feature flags. Admin-controlled. Missing keys default to true.
+   *  When a flag is false, the page is hidden from non-admin users. */
+  featureFlags?: Partial<Record<'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans', boolean>>;
 }
 
 let _generalSettingsPromise: Promise<GeneralSettings> | null = null;
@@ -773,6 +776,46 @@ export async function fetchWpTemplates(): Promise<WpTemplate[]> {
   return request<WpTemplate[]>('/api/templates/work-packages');
 }
 
+// ── Wiring editor (singleton project per tenant) ────────────────────
+export interface WiringProjectPayload {
+  name: string;
+  data: unknown | null;
+  updatedAt: string | null;
+}
+
+export async function fetchWiringProject(): Promise<WiringProjectPayload> {
+  return request<WiringProjectPayload>('/api/wiring');
+}
+
+export async function saveWiringProject(name: string, data: unknown): Promise<{ ok: true; updatedAt: string }> {
+  return request('/api/wiring', {
+    method: 'PUT',
+    body: JSON.stringify({ name, data }),
+  });
+}
+
+export async function deleteWiringProject(): Promise<void> {
+  await request('/api/wiring', { method: 'DELETE' });
+}
+
+// ── Wiring user library (row-per-template per tenant) ────────────────
+// `unknown[]` rather than the concrete DeviceTemplate type so this module
+// doesn't drag in the wiring type graph — consumers cast on their side.
+export async function fetchUserLibrary(): Promise<{ templates: unknown[] }> {
+  return request<{ templates: unknown[] }>('/api/wiring/library');
+}
+
+export async function saveUserLibraryTemplate(id: string, template: unknown): Promise<{ ok: true; updatedAt: string }> {
+  return request(`/api/wiring/library/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(template),
+  });
+}
+
+export async function deleteUserLibraryTemplate(id: string): Promise<void> {
+  await request(`/api/wiring/library/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function fetchWpTemplate(filename: string): Promise<PackagesMap> {
   return request<PackagesMap>(`/api/templates/work-packages/${encodeURIComponent(filename)}`);
 }
@@ -905,7 +948,6 @@ export interface InvPart {
   kit: string;
   subKit: string;
   category: string;
-  mfgDate: string;
   bag: string;
   notes: string;
   createdAt: string;
@@ -921,6 +963,7 @@ export interface InvStock {
   condition: 'new' | 'used' | 'damaged';
   batch: string;
   sourceKit: string;
+  mfgDate: string;
   notes: string;
   updatedAt: string;
   // joined
@@ -951,7 +994,7 @@ export const fetchInvParts       = (params?: Record<string, string>)     => { co
 export const createInvPart       = (data: Partial<InvPart>)              => request<InvPart>('/api/inventory/parts', { method: 'POST', body: JSON.stringify(data) });
 export const updateInvPart       = (id: number, data: Partial<InvPart>)  => request<InvPart>(`/api/inventory/parts/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 export const deleteInvPart       = (id: number)                          => request<{ ok: boolean }>(`/api/inventory/parts/${id}`, { method: 'DELETE' });
-export const ingestInvPart       = (data: Partial<InvPart> & { quantity?: number; unit?: string; status?: string; locationId?: number }) => request<{ part: InvPart; created: boolean }>('/api/inventory/parts/ingest', { method: 'POST', body: JSON.stringify(data) });
+export const ingestInvPart       = (data: Partial<InvPart> & { quantity?: number; unit?: string; status?: string; locationId?: number; mfgDate?: string }) => request<{ part: InvPart; created: boolean }>('/api/inventory/parts/ingest', { method: 'POST', body: JSON.stringify(data) });
 
 // Stock
 export const fetchInvStock       = (params?: Record<string, string>)     => { const q = params ? '?' + new URLSearchParams(params).toString() : ''; return request<InvStock[]>(`/api/inventory/stock${q}`); };
@@ -1019,3 +1062,150 @@ export const updateCheckItem = (sessionId: number, itemId: number, data: Partial
 
 export const verifyCheckBatch = (sessionId: number, items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string }[]) =>
   request<{ matched: number }>(`/api/inventory/checks/${sessionId}/verify-batch`, { method: 'POST', body: JSON.stringify({ items }) });
+
+// ─── Plans API ────────────────────────────────────────────────────────
+
+export interface PlanFile {
+  id: string;
+  originalName: string;
+  sectionId: string;
+  sectionTitle: string;
+  phase: string;
+  description: string;
+  fileSize: number;
+  pageCount: number;
+  pinned: boolean;
+  uploadedAt: string;
+  indexedAt: string | null;
+}
+
+export interface PlanAnnotation {
+  id: string;
+  fileId: string;
+  pageNumber: number;
+  /** 'text' = sticky note; 'stroke' = freehand SVG path */
+  kind: 'text' | 'stroke';
+  /** Shape varies by kind. Text: { x, y, text, color? }.
+   *  Stroke: { points: [{x,y},...], color, width } in PDF page coordinates (0..1). */
+  data: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const listPlans = () => request<PlanFile[]>('/api/plans');
+
+export const uploadPlans = async (files: File[]): Promise<{ uploaded: PlanFile[] }> => {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const res = await fetch(`${API_URL}/api/plans/upload`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders() },
+    body: fd,
+  });
+  if (!res.ok) {
+    handle401(res);
+    let msg = res.statusText;
+    try { msg = (await res.json()).error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+};
+
+export const updatePlan = (id: string, data: Partial<Pick<PlanFile, 'sectionId' | 'sectionTitle' | 'phase' | 'description' | 'pinned' | 'pageCount'>>) =>
+  request<PlanFile>(`/api/plans/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+
+export const deletePlan = async (id: string) => {
+  const out = await request<{ ok: boolean }>(`/api/plans/${id}`, { method: 'DELETE' });
+  // Best-effort: also drop any cached PDF bytes for this file so the
+  // offline copy doesn't outlive the server-side row.
+  try {
+    const { deleteCachedPdf } = await import('@/lib/planCache');
+    await deleteCachedPdf(id);
+  } catch { /* IndexedDB unavailable — no-op */ }
+  return out;
+};
+
+export interface PlanPartRef {
+  fileId: string;
+  pageNumber: number;
+  partNumber: string;
+  snippet: string;
+  file: {
+    originalName: string;
+    sectionId: string;
+    sectionTitle: string;
+    phase: string;
+  };
+}
+
+export interface PlanPartRefInput {
+  pageNumber: number;
+  partNumber: string;
+  snippet?: string;
+  bbox?: [number, number, number, number];
+}
+
+export const indexPlan = (id: string, refs: PlanPartRefInput[]) =>
+  request<{ ok: boolean; count: number }>(`/api/plans/${id}/index`, {
+    method: 'POST',
+    body: JSON.stringify({ refs }),
+  });
+
+export const searchPlanPartRefs = (q: string = '', limit: number = 500) => {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  params.set('limit', String(limit));
+  return request<{ refs: PlanPartRef[] }>(`/api/plans/search?${params.toString()}`);
+};
+
+/** Build the auth-required URL for a plan PDF. The token is sent via the
+ *  Authorization header by `fetch`, so for use with <embed>/<iframe>/PDF.js
+ *  it's simpler to fetch as a Blob first and create an object URL. */
+export const planFileUrl = (id: string) => `${API_URL}/api/plans/${id}/file`;
+
+/** Fetch the plan PDF as an ArrayBuffer.
+ *
+ * Cache-first strategy: if the file is in IndexedDB (because the user
+ * previously opened it) we serve from cache without a network round-trip.
+ * Otherwise we fetch from the server and persist a copy for future
+ * offline reads. Plan files are content-immutable per ID (re-upload
+ * yields a new ID), so cache invalidation is implicit.
+ *
+ * On offline or 5xx errors we fall back to the cache one more time —
+ * useful when navigator.onLine claims we're online but the request
+ * actually times out at the network layer. */
+export const fetchPlanPdf = async (id: string): Promise<ArrayBuffer> => {
+  const cache = await import('@/lib/planCache');
+  const cached = await cache.getCachedPdf(id);
+  if (cached) return cached;
+  try {
+    const res = await fetch(planFileUrl(id), { headers: { ...getAuthHeaders() } });
+    if (!res.ok) {
+      handle401(res);
+      throw new Error(`Failed to load plan (${res.status})`);
+    }
+    const bytes = await res.arrayBuffer();
+    // Persist a copy for offline reads — fire-and-forget so we don't
+    // block the caller on the IDB write.
+    cache.cachePdf(id, bytes).catch(() => {});
+    return bytes;
+  } catch (err) {
+    // Network failure path — if a cache entry showed up while the
+    // request was in flight (race), serve it; otherwise rethrow.
+    const fallback = await cache.getCachedPdf(id);
+    if (fallback) return fallback;
+    throw err;
+  }
+};
+
+export const listAnnotations = (planId: string) =>
+  request<PlanAnnotation[]>(`/api/plans/${planId}/annotations`);
+
+export const createAnnotation = (planId: string, anno: Pick<PlanAnnotation, 'pageNumber' | 'kind' | 'data'>) =>
+  request<PlanAnnotation>(`/api/plans/${planId}/annotations`, { method: 'POST', body: JSON.stringify(anno) });
+
+export const updateAnnotation = (annoId: string, data: Partial<Pick<PlanAnnotation, 'data' | 'pageNumber'>>) =>
+  request<PlanAnnotation>(`/api/plans/annotations/${annoId}`, { method: 'PUT', body: JSON.stringify(data) });
+
+export const deleteAnnotation = (annoId: string) =>
+  request<{ ok: boolean }>(`/api/plans/annotations/${annoId}`, { method: 'DELETE' });

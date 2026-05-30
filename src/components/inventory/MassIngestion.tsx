@@ -63,6 +63,12 @@ export interface IngestedItem {
   bag?: string;
   /** Location ID assigned during scan */
   locationId?: number;
+  /** Kit-check session tracking outcome:
+   *  'tracked' — recorded in a kit's check session;
+   *  'failed'  — the session call errored, NOT tracked (re-scan to fix);
+   *  'no-kit'  — part is in no kit manifest, so no session applies.
+   *  Undefined when not applicable (free-scan mode, or the bag flow). */
+  sessionStatus?: 'tracked' | 'failed' | 'no-kit';
 }
 
 interface MassIngestionProps {
@@ -101,7 +107,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const locationMap = useMemo(() => new Map(locations.map(l => [l.id, l.name])), [locations]);
   const [error, setError] = useState('');
   const [cameraReady, setCameraReady] = useState(false);
-  const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean } | null>(null);
+  const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string } | null>(null);
   const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[] } | null>(null);
   const [bagVerifyItems, setBagVerifyItems] = useState<BagVerifyEntry[]>([]);
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
@@ -119,6 +125,44 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     catch { /* non-critical — session tracking is best-effort */ }
   }, [activeCheckSessionId]);
 
+  /** Record a part in its OWN kit's check session. Finds a non-completed
+   *  session for `kitId`, creating one (with that kit's full manifest) when
+   *  none exists yet, then marks `partNumber` verified in it. Returns `ok`
+   *  (whether the part was successfully recorded) and `createdSession`
+   *  (whether a new session had to be created). On any error `ok` is false —
+   *  the caller surfaces that so a scan is never silently left untracked. */
+  const checkPartInOwnKit = useCallback(async (kitId: string, partNumber: string): Promise<{ ok: boolean; createdSession: boolean }> => {
+    const kit = aircraft?.kits.find(k => k.id === kitId);
+    if (!kit) return { ok: false, createdSession: false };
+    try {
+      let session = existingSessions.find(s => s.kitId === kitId && s.status !== 'completed');
+      let createdSession = false;
+      if (!session) {
+        const perBagEntries = getKitEntriesPerBag(aircraftType, kitId);
+        const newSession = await createCheckSession({
+          aircraftType,
+          kitId,
+          kitLabel: kit.label,
+          items: perBagEntries.map(e => ({
+            partNumber: e.partNumber,
+            nomenclature: e.nomenclature,
+            subKit: e.subKit,
+            bag: e.bag,
+            qtyExpected: e.qtyRequired,
+            unit: e.unit,
+          })),
+        });
+        setExistingSessions(prev => [...prev, newSession]);
+        session = newSession;
+        createdSession = true;
+      }
+      await verifyCheckBatch(session.id, [{ partNumber, qtyFound: 1 }]);
+      return { ok: true, createdSession };
+    } catch {
+      return { ok: false, createdSession: false };
+    }
+  }, [aircraft, aircraftType, existingSessions]);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -132,9 +176,40 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   // All manifest entries across all kits (for auto-fill when no kit selected)
   const allManifestEntries = useMemo(() => getAllEntries(aircraftType), [aircraftType]);
 
+  /** Classify a part number against the SELECTED kit's manifest.
+   *  `inManifest` — true when the part is in the selected kit (or, with no kit
+   *  selected, in any kit). `belongsToKit` — set to another kit's label when
+   *  the part is NOT in the selected kit but IS in that other kit, so the
+   *  confirm dialog can name the kit the part really belongs to. */
+  const classifyAgainstKit = useCallback((pn: string): { inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string } => {
+    const homeKit = aircraft?.kits.find(k =>
+      k.entries.some(e => normPN(e.partNumber) === normPN(pn)));
+    const inSelectedKit = selectedKit
+      ? manifestEntries.some(e => normPN(e.partNumber) === normPN(pn))
+      : !!homeKit;
+    return {
+      inManifest: inSelectedKit,
+      // The part's actual home kit (any kit) — drives session routing.
+      homeKitId: homeKit?.id,
+      homeKitLabel: homeKit?.label,
+      // Cross-kit: in another kit but not the selected one — flagged so the
+      // confirm dialog can route the part (and its check session) there.
+      belongsToKit: !inSelectedKit && selectedKit && homeKit ? homeKit.label : undefined,
+    };
+  }, [aircraft, selectedKit, manifestEntries]);
+
   // ─── Camera ──────────────────────────────────────────────────
 
   const startCamera = useCallback(async () => {
+    // The camera API (`getUserMedia`) only exists in a secure context — HTTPS,
+    // or localhost. Served over plain http:// the whole `mediaDevices` API is
+    // absent, which otherwise surfaces as a misleading "access denied".
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(window.isSecureContext
+        ? 'This browser has no camera API available.'
+        : 'The camera needs a secure connection — open this app over HTTPS (or via localhost).');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -146,8 +221,17 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         await videoRef.current.play();
         setCameraReady(true);
       }
-    } catch {
-      setError('Camera access denied. Please allow camera permissions.');
+    } catch (err: any) {
+      // Report the actual failure rather than always blaming permissions.
+      const name = err?.name || '';
+      setError(
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'Camera access denied — allow camera permission for this site, then reopen.'
+        : name === 'NotFoundError' || name === 'OverconstrainedError'
+          ? 'No camera found on this device.'
+        : name === 'NotReadableError'
+          ? 'The camera is in use by another app — close it and try again.'
+        : `Camera could not start${name ? ` (${name})` : ''}.`);
     }
   }, []);
 
@@ -219,7 +303,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       ctx.beginPath(); ctx.moveTo(frameX + frameW - accentLen, y2); ctx.lineTo(frameX + frameW - r, y2); ctx.arcTo(frameX + frameW, y2, frameX + frameW, y2 - r, r); ctx.lineTo(frameX + frameW, y2 - accentLen); ctx.stroke();
 
       ctx.font = 'bold 11px system-ui, sans-serif';
-      const label = `Mass Scan${selectedKit ? ' — ' + selectedKit.label : ''} (${items.length})`;
+      const label = `${selectedKit ? 'Mass Scan — ' + selectedKit.label : 'Auto-Sort Scan'} (${items.length})`;
       const tw = ctx.measureText(label).width;
       const lx = (canvas.width - tw - 10) / 2;
       ctx.fillStyle = 'rgba(34, 197, 94, 0.85)';
@@ -344,22 +428,24 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         return;
       }
 
-      // Auto-fill from manifest
+      // Auto-fill from manifest — `manifestHit` (any kit) drives name / sub-kit.
       const manifestHit = allManifestEntries.find(e => normPN(e.partNumber) === normPN(detectedPN));
+      // Kit membership is judged against the SELECTED kit, not all kits.
+      const kitClass = classifyAgainstKit(detectedPN);
 
       setPendingScan({
         partNumber: detectedPN,
         name: nm?.text || manifestHit?.nomenclature || '',
         subKit: manifestHit?.subKit || (detectedPN ? detectSubKit(detectedPN, vendor) : ''),
         mfgDate: dt?.text || '',
-        inManifest: !!manifestHit,
+        ...kitClass,
       });
       setStage('confirm');
     } catch (err: any) {
       toast.error(err.message || 'OCR failed');
       setStage('camera');
     }
-  }, [vendor, aircraftType, allManifestEntries]);
+  }, [vendor, aircraftType, allManifestEntries, classifyAgainstKit]);
 
   // ─── Capture for bag-verify mode (scan items inside bag) ──────
   const bagVerifyCapture = useCallback(async () => {
@@ -439,22 +525,48 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       const manifestEntry = manifestEntries.find(e => normPN(e.partNumber) === normPN(pendingScan.partNumber))
         || allManifestEntries.find(e => normPN(e.partNumber) === normPN(pendingScan.partNumber));
 
+      // The part is ingested into its OWN kit (its manifest home kit); the
+      // kit being checked is only a fallback for parts in no manifest.
+      const targetKit = pendingScan.homeKitLabel || selectedKit?.label || '';
+
       const { part, created } = await ingestInvPart({
         partNumber: pendingScan.partNumber,
         name: pendingScan.name || manifestEntry?.nomenclature || pendingScan.partNumber,
         subKit: pendingScan.subKit || manifestEntry?.subKit || '',
-        kit: selectedKit?.label || '',
+        kit: targetKit,
         mfgDate: pendingScan.mfgDate,
         quantity: 1,
         unit: manifestEntry?.unit || 'pcs',
         ...(selectedLocationId ? { locationId: selectedLocationId } : {}),
       });
 
+      // ─── Kit-check session tracking ───
+      // Every part with a known kit is recorded in that kit's check session,
+      // created on the fly when missing — so a scan always lands in inventory
+      // AND a session, in kit-check mode and in Auto-Sort (free-scan) mode
+      // alike. A part in no kit manifest can't belong to any session — it is
+      // flagged 'no-kit' (inventory only).
+      let sessionStatus: IngestedItem['sessionStatus'];
+      let kitNote = '';
+      if (!pendingScan.homeKitId) {
+        sessionStatus = 'no-kit';
+      } else {
+        const r = await checkPartInOwnKit(pendingScan.homeKitId, pendingScan.partNumber);
+        sessionStatus = r.ok ? 'tracked' : 'failed';
+        // Note the destination kit when it differs from the kit being checked
+        // (cross-kit), or always in Auto-Sort mode where there is no selected
+        // kit to contrast against.
+        const destKit = pendingScan.belongsToKit ?? (!selectedKit ? pendingScan.homeKitLabel : undefined);
+        if (destKit) {
+          kitNote = ` → ${destKit}${r.createdSession ? ' (check started)' : ''}`;
+        }
+      }
+
       setItems(prev => {
         const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(pendingScan.partNumber));
         if (idx >= 0) {
           const updated = [...prev];
-          updated[idx] = { ...updated[idx], scannedQty: updated[idx].scannedQty + 1 };
+          updated[idx] = { ...updated[idx], scannedQty: updated[idx].scannedQty + 1, sessionStatus };
           return updated;
         }
         return [...prev, {
@@ -467,18 +579,22 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
           wasCreated: created,
           expectedQty: manifestEntry?.qtyRequired ?? 0,
           locationId: selectedLocationId ?? undefined,
+          sessionStatus,
         }];
       });
 
-      toast.success(`${created ? 'New' : '+'} ${pendingScan.partNumber}`);
-      markChecked([{ partNumber: pendingScan.partNumber, qtyFound: 1 }]);
+      if (sessionStatus === 'failed') {
+        toast.error(`${pendingScan.partNumber} added to inventory, but NOT to a check session — re-scan to track it`);
+      } else {
+        toast.success(`${created ? 'New' : '+'} ${pendingScan.partNumber}${kitNote}`);
+      }
     } catch (err: any) {
       toast.error(err.message || 'Ingest failed');
     }
 
     setPendingScan(null);
     setStage('camera');
-  }, [pendingScan, selectedKit, manifestEntries, allManifestEntries, markChecked, selectedLocationId]);
+  }, [pendingScan, selectedKit, manifestEntries, allManifestEntries, checkPartInOwnKit, selectedLocationId]);
 
   // ─── Bag workflow: "No" — ingest all as not verified ──────────
   const bagSkipVerify = useCallback(async () => {
@@ -771,7 +887,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
             onClick={() => setStage('camera')}
             className="mt-6 w-full px-4 py-3 rounded-xl border border-dashed border-border text-sm text-muted-foreground hover:text-foreground hover:border-muted-foreground transition-colors"
           >
-            Back — Scan without kit check
+            Auto-Sort Scan — parts sort into their kits automatically
           </button>
         </div>
       )}
@@ -820,18 +936,21 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                 <div className="bg-card/95 backdrop-blur-sm rounded-xl p-5 mx-4 max-w-sm w-full space-y-3">
                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Detected Part</p>
                   {!pendingScan.inManifest && (
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-600/20 border border-amber-500/30">
-                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                      <p className="text-xs text-amber-300">
-                        This part is <span className="font-bold">not in the manifest</span>{selectedKit ? ` for ${selectedKit.label}` : ''}. It may be misread or belong to a different kit.
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-600/20 border border-amber-500/40">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <p className="text-xs text-amber-800 dark:text-amber-200">
+                        {pendingScan.belongsToKit ? (
+                          <>This part belongs to the <span className="font-bold">{pendingScan.belongsToKit}</span> kit{selectedKit ? `, not ${selectedKit.label}` : ''}. Add it to {pendingScan.belongsToKit}?</>
+                        ) : (
+                          <>This part is <span className="font-bold">not in the manifest</span>{selectedKit ? ` for ${selectedKit.label}` : ''}. It may be misread or belong to a different kit.</>
+                        )}
                       </p>
                     </div>
                   )}
                   <input value={pendingScan.partNumber}
                     onChange={e => {
                       const pn = e.target.value;
-                      const hit = allManifestEntries.find(m => normPN(m.partNumber) === normPN(pn));
-                      setPendingScan({ ...pendingScan, partNumber: pn, inManifest: !!hit });
+                      setPendingScan({ ...pendingScan, partNumber: pn, ...classifyAgainstKit(pn) });
                     }}
                     className="w-full px-3 py-2 rounded bg-accent border border-border text-foreground text-lg font-mono font-bold" />
                   <div className="grid grid-cols-2 gap-2">
@@ -846,6 +965,9 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                   </div>
                   {pendingScan.subKit && (
                     <p className="text-xs text-emerald-400">Sub-kit: {pendingScan.subKit}</p>
+                  )}
+                  {!selectedKit && pendingScan.homeKitLabel && (
+                    <p className="text-xs text-emerald-400">Filing into the <span className="font-bold">{pendingScan.homeKitLabel}</span> kit</p>
                   )}
                   {locations.length > 0 && (
                     <div className="flex items-center gap-2">
@@ -866,8 +988,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                       <RotateCcw className="w-4 h-4" /> Retake
                     </button>
                     <button onClick={confirmAndIngest}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md font-bold text-sm transition-colors ${pendingScan.inManifest ? 'bg-emerald-600 text-foreground hover:bg-emerald-500' : 'bg-amber-600 text-foreground hover:bg-amber-500'}`}>
-                      <Check className="w-4 h-4" /> {pendingScan.inManifest ? 'Add' : 'Add Anyway'}
+                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md font-bold text-sm transition-colors ${pendingScan.inManifest || pendingScan.belongsToKit ? 'bg-emerald-600 text-foreground hover:bg-emerald-500' : 'bg-amber-600 text-foreground hover:bg-amber-500'}`}>
+                      <Check className="w-4 h-4" /> {pendingScan.belongsToKit ? `Add to ${pendingScan.belongsToKit}` : (!selectedKit && pendingScan.homeKitLabel) ? `Add to ${pendingScan.homeKitLabel}` : pendingScan.inManifest ? 'Add' : 'Add Anyway'}
                     </button>
                   </div>
                 </div>
@@ -1143,6 +1265,16 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                             {item.bag && <span className="ml-1.5 text-primary/60">[{item.bag}]</span>}
                             {item.mfgDate && <span className="ml-1.5 text-muted-foreground/60">{item.mfgDate}</span>}
                           </p>
+                          {/* Session-tracking status — surface the gaps so a part
+                              is never silently inventory-only. */}
+                          {item.sessionStatus === 'failed' && (
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 font-medium mt-0.5 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 shrink-0" /> Not in a check session — re-scan to track
+                            </p>
+                          )}
+                          {item.sessionStatus === 'no-kit' && (
+                            <p className="text-[10px] text-muted-foreground/70 mt-0.5">Inventory only — not in a kit</p>
+                          )}
                           {/* Per-item location */}
                           {locations.length > 0 && (
                             <select

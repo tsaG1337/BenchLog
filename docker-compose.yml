@@ -17,6 +17,11 @@ services:
       DB_PATH: /data/database.db
       DB_BACKEND: ${DB_BACKEND:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
+      # SINGLE_TENANT: set to "true" to run as one user with no subdomain /
+      # username routing — for self-hosting without a *.benchlog.build domain
+      # (e.g. reached by a bare IP like 192.168.1.x). No effect with
+      # DB_BACKEND=sqlite, which is already single-user.
+      SINGLE_TENANT: ${SINGLE_TENANT:-false}
       # JWT_SECRET: optional — auto-generated and persisted to /data/.jwt_secret on first run
       # ADMIN_PASSWORD: optional — pre-sets the password on first startup; ignored after first run
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}

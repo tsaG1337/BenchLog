@@ -281,9 +281,11 @@ Set the following in your `.env`:
 
 ```env
 DB_BACKEND=postgres
-DATABASE_URL=postgresql://benchlog:yourpassword@benchlog-db:5432/benchlog
+DATABASE_URL=postgresql://benchlog:yourpassword@postgres:5432/benchlog
 POSTGRES_PASSWORD=yourpassword
 ```
+
+> **Self-hosting for just yourself?** PostgreSQL mode normally routes each user from their own subdomain (`username.example.com`). If you run the app for yourself alone and reach it by a bare IP or a plain domain, also set `SINGLE_TENANT=true` — this turns off subdomain routing and serves your single account directly. (SQLite mode is single-user already and needs no flag.)
 
 ### Optional: OCR service
 
@@ -293,7 +295,9 @@ Enables label scanning in the Inventory module (scan a part bag label to auto-fi
 docker compose --profile ocr up -d
 ```
 
-Set `OCR_URL=http://benchlog-ocr:8000` in your `.env` to connect Benchlog to the OCR service.
+Set `OCR_URL=http://ocr:8000` in your `.env` to connect Benchlog to the OCR service.
+
+> **Camera scanning requires HTTPS.** The label / mass scanner uses your device's camera, and every browser only grants camera access in a **secure context** — an `https://` origin, or `localhost`. This is a browser security rule (identical on desktop, iOS, and Android — it is not a Benchlog setting). Reaching the app over plain `http://` by LAN IP — e.g. `http://192.168.1.50:3010`, the usual case when scanning from a phone — leaves the camera blocked and the scanner reports a camera error. To enable scanning, serve Benchlog over HTTPS: put it behind a reverse proxy that terminates TLS (e.g. [Caddy](https://caddyserver.com/), which issues certificates automatically), expose it through a tunnel (Tailscale, Cloudflare Tunnel), or use a self-signed certificate. The rest of the app — manual part entry, kit checks, every other inventory feature — works normally over plain `http://`.
 
 ### Build from Source
 
@@ -329,7 +333,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 |---|---|---|
 | `PORT` | `3001` | HTTP server port |
 | `DATA_DIR` | `./data` | Directory for database, JWT secret, and local uploads |
-| `DB_PATH` | `$DATA_DIR/database.db` | Path to SQLite database file (SQLite mode only) |
+| `DB_PATH` | `$DATA_DIR/database.db` | Legacy variable. Its parent directory is where local uploads are stored (`<dir>/uploads/...`); the active databases always live under `$DATA_DIR` regardless. The default is fine for normal Docker setups. |
 | `JWT_SECRET` | *(auto-generated)* | Secret for signing JWT tokens. Auto-generated on first run and persisted to `$DATA_DIR/.jwt_secret` if not set. |
 | `ADMIN_PASSWORD` | — | Pre-sets the admin password on first startup. Ignored if a password is already set. |
 | `DEMO_MODE` | `false` | Set to `true` for a public read-only demo — all write operations are blocked, no login required. |
@@ -340,6 +344,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 |---|---|---|
 | `DB_BACKEND` | `sqlite` | `sqlite` (default, single-user) or `postgres` (multi-tenant) |
 | `DATABASE_URL` | — | PostgreSQL connection string. Required when `DB_BACKEND=postgres`. Example: `postgresql://user:pass@host:5432/benchlog` |
+| `SINGLE_TENANT` | `false` | Set to `true` to run a `postgres` instance as a single user with no subdomain/username routing — for self-hosting without a `*.benchlog.build` domain (e.g. reached by a bare IP). No effect with `DB_BACKEND=sqlite`, which is single-user already. |
 
 ### Image Storage
 
@@ -357,7 +362,7 @@ Set `VITE_API_URL=http://localhost:3001` in a `.env.local` file so the frontend 
 
 | Variable | Default | Description |
 |---|---|---|
-| `OCR_URL` | — | URL of the OCR service for inventory label scanning (e.g. `http://benchlog-ocr:8000`). Activate the `ocr` Docker Compose profile to start the service. |
+| `OCR_URL` | — | URL of the OCR service for inventory label scanning (e.g. `http://ocr:8000`). Activate the `ocr` Docker Compose profile to start the service. |
 | `INTERNAL_API_KEY` | — | Enables `/api/internal/*` endpoints for service-to-service calls (e.g. from the account management server). Generate with `openssl rand -hex 32`. |
 | `CORS_ORIGIN` | — | Allowed CORS origin(s) for cross-domain requests. Comma-separated list or a single URL. |
 

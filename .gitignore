@@ -54,3 +54,5 @@ deploy-demo.sh
 /load-tests
 /.superpowers
 /docs/superpowers
+public/robots.txt
+/tmp

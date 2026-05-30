@@ -1,3 +1,4 @@
+@import 'material-symbols/outlined.css';
 @import '@fontsource/inter/400.css';
 @import '@fontsource/inter/500.css';
 @import '@fontsource/inter/600.css';
@@ -19,99 +20,99 @@
 @tailwind utilities;
 
 @layer base {
-  /* ── Dark mode (default): "The Obsidian Aviator" ───────────────── */
+  /* ── Dark mode (default): "Cobalt · night hangar" ───────────────── */
   :root,
   .dark {
-    --background: 224 52% 10%;      /* #0b1326 — deep cockpit base */
-    --foreground: 226 90% 90%;      /* #dae2fd — luminescent text */
+    --background: 222 49% 8%;       /* #0B1320 — night-hangar base */
+    --foreground: 216 50% 94%;      /* #E8EEF7 — luminescent ink */
 
-    --card: 224 40% 13%;            /* #131b2e — surface-container-low */
-    --card-foreground: 226 90% 90%;
+    --card: 219 44% 13%;            /* #121C2E — surface */
+    --card-foreground: 216 50% 94%;
 
-    --popover: 224 30% 22%;         /* #2d3449 — surface-container-highest */
-    --popover-foreground: 226 90% 90%;
+    --popover: 218 37% 16%;         /* #1A2538 — surface raised */
+    --popover-foreground: 216 50% 94%;
 
-    --primary: 220 100% 84%;        /* #adc6ff — instrument blue glow */
-    --primary-foreground: 220 100% 21%; /* #002e6b — dark on primary */
+    --primary: 222 100% 65%;        /* #4D7CFF — cobalt accent */
+    --primary-foreground: 222 49% 8%;
 
-    --secondary: 220 38% 31%;       /* #304671 — secondary-container */
-    --secondary-foreground: 220 40% 82%;
+    --secondary: 218 37% 16%;       /* #1A2538 — surface raised */
+    --secondary-foreground: 218 24% 73%;
 
-    --muted: 224 25% 18%;           /* deep inset */
-    --muted-foreground: 226 14% 63%; /* #8c909f — outline */
+    --muted: 219 44% 13%;           /* surface, used for inset states */
+    --muted-foreground: 219 15% 51%;/* #6E7C95 — dim caption */
 
-    --accent: 224 30% 22%;          /* #2d3449 */
-    --accent-foreground: 220 100% 84%;
+    --accent: 218 37% 16%;
+    --accent-foreground: 216 50% 94%;
 
-    --destructive: 12 100% 84%;     /* #ffb4ab — error glow */
-    --destructive-foreground: 0 100% 10%;
-
-    --border: 224 20% 17%;          /* ghost border — tonal shift */
-    --input: 224 55% 8%;            /* #060e20 — etched input */
-    --ring: 220 100% 84%;
-
-    --radius: 0.25rem;              /* precision-tooled edges */
-
-    --success: 150 60% 40%;
-    --success-foreground: 150 60% 90%;
-
-    --timer-glow: 220 100% 84%;
-
-    --sidebar-background: 224 40% 13%;
-    --sidebar-foreground: 226 90% 90%;
-    --sidebar-primary: 220 100% 84%;
-    --sidebar-primary-foreground: 220 100% 21%;
-    --sidebar-accent: 224 30% 22%;
-    --sidebar-accent-foreground: 226 90% 90%;
-    --sidebar-border: 224 20% 17%;
-    --sidebar-ring: 220 100% 84%;
-  }
-
-  /* ── Light mode: "Flight Deck Precision" ───────────────────────── */
-  .light {
-    --background: 220 14% 96%;      /* #f8f9fb — base fuselage */
-    --foreground: 210 14% 11%;      /* #191c1e — high-contrast text */
-
-    --card: 0 0% 100%;              /* #ffffff — surface-container-lowest */
-    --card-foreground: 210 14% 11%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 210 14% 11%;
-
-    --primary: 211 100% 37%;        /* #0058be — instrument blue */
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 215 12% 38%;       /* #555f6f — aviation slate */
-    --secondary-foreground: 0 0% 100%;
-
-    --muted: 216 12% 95%;           /* #f3f4f6 — surface-container-low */
-    --muted-foreground: 225 12% 30%; /* #424754 — on-surface-variant */
-
-    --accent: 220 25% 93%;          /* tonal lift */
-    --accent-foreground: 211 100% 37%;
-
-    --destructive: 0 72% 41%;       /* #ba1a1a */
+    --destructive: 0 72% 65%;       /* tuned red on cobalt night */
     --destructive-foreground: 0 0% 100%;
 
-    --border: 220 8% 88%;           /* ghost border — tonal */
-    --input: 220 6% 88%;            /* #e1e2e4 — recessed appearance */
-    --ring: 211 100% 37%;
+    --border: 219 35% 20%;          /* rule on raised surface */
+    --input: 219 44% 11%;           /* recessed input */
+    --ring: 222 100% 65%;
 
     --radius: 0.25rem;
 
-    --success: 150 60% 40%;
-    --success-foreground: 150 60% 15%;
+    --success: 189 70% 70%;         /* #7CD7E8 — cyan data accent */
+    --success-foreground: 222 49% 8%;
 
-    --timer-glow: 211 100% 37%;
+    --timer-glow: 222 100% 65%;
 
-    --sidebar-background: 216 12% 95%;
-    --sidebar-foreground: 210 14% 11%;
-    --sidebar-primary: 211 100% 37%;
+    --sidebar-background: 219 44% 13%;
+    --sidebar-foreground: 216 50% 94%;
+    --sidebar-primary: 222 100% 65%;
+    --sidebar-primary-foreground: 222 49% 8%;
+    --sidebar-accent: 218 37% 16%;
+    --sidebar-accent-foreground: 216 50% 94%;
+    --sidebar-border: 219 35% 20%;
+    --sidebar-ring: 222 100% 65%;
+  }
+
+  /* ── Light mode: "Cobalt · paper-blue" ───────────────────────── */
+  .light {
+    --background: 220 33% 97%;      /* #F5F7FB — paper-blue base */
+    --foreground: 222 49% 8%;       /* #0B1320 — deep navy ink */
+
+    --card: 0 0% 100%;              /* #FFFFFF */
+    --card-foreground: 222 49% 8%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 49% 8%;
+
+    --primary: 223 70% 52%;         /* #2E5BD9 — cobalt (deeper for daylight) */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 216 38% 95%;       /* #EEF2F8 — surface raised */
+    --secondary-foreground: 218 20% 31%;
+
+    --muted: 216 38% 95%;
+    --muted-foreground: 217 14% 54%;/* #7A8699 — dim */
+
+    --accent: 216 38% 95%;
+    --accent-foreground: 223 70% 52%;
+
+    --destructive: 0 72% 41%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 222 14% 88%;          /* rule on paper */
+    --input: 222 14% 88%;
+    --ring: 223 70% 52%;
+
+    --radius: 0.25rem;
+
+    --success: 188 63% 33%;         /* #1F7A88 — cyan data accent (light) */
+    --success-foreground: 0 0% 100%;
+
+    --timer-glow: 223 70% 52%;
+
+    --sidebar-background: 216 38% 95%;
+    --sidebar-foreground: 222 49% 8%;
+    --sidebar-primary: 223 70% 52%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 220 8% 91%;
-    --sidebar-accent-foreground: 225 12% 30%;
-    --sidebar-border: 220 8% 88%;
-    --sidebar-ring: 211 100% 37%;
+    --sidebar-accent: 220 33% 97%;
+    --sidebar-accent-foreground: 218 20% 31%;
+    --sidebar-border: 222 14% 88%;
+    --sidebar-ring: 223 70% 52%;
   }
 }
 
@@ -281,58 +282,58 @@
 }
 
 /* ── BenchLog design system ──────────────────────────────────────── */
-/* Light: "Flight Deck Precision" — aviation slates + instrument blue */
+/* Light: "Cobalt · paper-blue" — deep navy ink on paper, cobalt accent */
 .benchlog-page {
-  --bl-surface: #f8f9fb;
-  --bl-surface-low: #f3f4f6;
-  --bl-surface-high: #e7e8ea;
-  --bl-surface-highest: #e1e2e4;
-  --bl-surface-lowest: #ffffff;
-  --bl-surface-dim: #d9dadc;
-  --bl-on-surface: #191c1e;
-  --bl-on-surface-variant: #424754;
-  --bl-primary: #0058be;
-  --bl-primary-container: #2170e4;
-  --bl-on-primary: #ffffff;
-  --bl-on-primary-container: #fefcff;
-  --bl-secondary: #555f6f;
-  --bl-secondary-container: #d6e0f3;
-  --bl-tertiary: #825100;
-  --bl-tertiary-container: #a36700;
-  --bl-on-tertiary: #ffffff;
-  --bl-outline: #727785;
-  --bl-outline-variant: #c2c6d6;
-  --bl-error: #ba1a1a;
-  --bl-error-container: #ffdad6;
-  --bl-destructive: #ba1a1a;
-  --bl-inverse-surface: #2e3132;
+  --bl-surface: #F5F7FB;
+  --bl-surface-low: #EEF2F8;
+  --bl-surface-high: #E4EAF3;
+  --bl-surface-highest: #D9E1EE;
+  --bl-surface-lowest: #FFFFFF;
+  --bl-surface-dim: #D9E1EE;
+  --bl-on-surface: #0B1320;
+  --bl-on-surface-variant: #3F4A5E;
+  --bl-primary: #2E5BD9;
+  --bl-primary-container: #1F47B8;
+  --bl-on-primary: #FFFFFF;
+  --bl-on-primary-container: #FFFFFF;
+  --bl-secondary: #3F4A5E;
+  --bl-secondary-container: #EEF2F8;
+  --bl-tertiary: #1F7A88;
+  --bl-tertiary-container: #C9E5EA;
+  --bl-on-tertiary: #FFFFFF;
+  --bl-outline: #7A8699;
+  --bl-outline-variant: #C8D1DF;
+  --bl-error: #B91C1C;
+  --bl-error-container: #FCD8D4;
+  --bl-destructive: #B91C1C;
+  --bl-inverse-surface: #121C2E;
 }
 
-/* Dark: "The Obsidian Aviator" — deep cockpit, luminescent data */
+/* Dark: "Cobalt · night hangar" — deep blue base, luminescent ink */
 .dark .benchlog-page {
-  --bl-surface: #0b1326;
-  --bl-surface-low: #131b2e;
-  --bl-surface-high: #222a3d;
-  --bl-surface-highest: #2d3449;
-  --bl-surface-lowest: #060e20;
-  --bl-surface-dim: #0b1326;
-  --bl-on-surface: #dae2fd;
-  --bl-on-surface-variant: #c2c6d6;
-  --bl-primary: #adc6ff;
-  --bl-primary-container: #4d8eff;
-  --bl-on-primary: #002e6b;
-  --bl-on-primary-container: #d8e2ff;
-  --bl-secondary: #bdc7d9;
-  --bl-secondary-container: #304671;
-  --bl-tertiary: #ffb786;
-  --bl-tertiary-container: #653e00;
-  --bl-on-tertiary: #2a1700;
-  --bl-outline: #8c909f;
-  --bl-outline-variant: #424754;
-  --bl-error: #ffb4ab;
-  --bl-error-container: #93000a;
-  --bl-destructive: #ffb4ab;
-  --bl-inverse-surface: #dae2fd;
+  --bl-surface: #0B1320;
+  --bl-surface-low: #121C2E;
+  --bl-surface-high: #1A2538;
+  --bl-surface-highest: #243149;
+  --bl-surface-lowest: #060E1B;
+  --bl-surface-dim: #0B1320;
+  --bl-on-surface: #E8EEF7;
+  --bl-on-surface-variant: #A9B6CC;
+  --bl-primary: #4D7CFF;
+  --bl-primary-container: #2E5BD9;
+  --bl-on-primary: #0B1320;
+  --bl-on-primary-container: #E8EEF7;
+  --bl-secondary: #A9B6CC;
+  --bl-secondary-container: #1A2538;
+  --bl-tertiary: #7CD7E8;
+  --bl-tertiary-container: #1F4A55;
+  --bl-on-tertiary: #0B1320;
+  --bl-outline: #6E7C95;
+  --bl-outline-variant: #2A3650;
+  --bl-error: #F87171;
+  --bl-error-container: #4A1414;
+  --bl-destructive: #F87171;
+  --bl-inverse-surface: #E8EEF7;
 }
 
 .scrollbar-hide::-webkit-scrollbar { display: none; }

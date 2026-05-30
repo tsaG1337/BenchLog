@@ -33,6 +33,9 @@ const {
   openSqlite,
   tenantDbPath,
   listTenants,
+  listPublicTenants,
+  getOrCreateIndexNowKey,
+  getTenantByIndexNowKey,
   getTenantById,
   createTenantRow,
   updateTenantRow,
@@ -40,6 +43,7 @@ const {
 } = require('./db');
 const { initMasterSchema, initTenantSchema, initPostgresSchema } = require('./schema');
 const { DEFAULT_GENERAL, DEFAULT_SECTIONS, loadDefaultWorkPackages } = require('./tenant-defaults');
+const indexNow = require('./indexnow');
 
 // ─── Auth helpers ────────────────────────────────────────────────────
 function loadOrCreateJwtSecret() {
@@ -123,7 +127,20 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of _deactivatedTen
 
 async function requireAuth(req, res, next) {
   if (DEMO_MODE) {
-    // In demo mode, attach the default db so route handlers work
+    // Demo deployments accept a real Bearer token if one is presented (lets
+    // the operator log in as admin without disabling DEMO_MODE on the server).
+    // Anonymous visitors fall through with no `req.user` — every privileged
+    // endpoint downstream still gates on `req.user.role === 'admin'`.
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      const payload = verifyToken(auth.slice(7));
+      if (payload) {
+        req.user = payload;
+        req.tenantId = payload.tenantId || getDefaultTenantId();
+        try { req.db = getTenantDb(req.tenantId); } catch { req.db = getDefaultDb(); }
+        return next();
+      }
+    }
     req.tenantId = getDefaultTenantId() || 'demo';
     try { req.db = getDefaultDb(); } catch { req.db = null; }
     return next();
@@ -151,6 +168,19 @@ async function requireAuth(req, res, next) {
 function requireAdmin(req, res, next) {
   if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+// Blocks writes when the server is running in demo mode. Demo tenants are
+// shared across visitors, so we explicitly refuse mutations on endpoints that
+// don't already have a per-feature read-only flag at the UI layer.
+function requireNotDemo(req, res, next) {
+  // Admins with a verified Bearer token bypass the demo gate so they can
+  // administer the demo tenant in place. requireAuth runs upstream and sets
+  // req.user when a valid token is presented.
+  if (DEMO_MODE && !(req.user && req.user.role === 'admin')) {
+    return res.status(403).json({ error: 'Demo mode is read-only — changes cannot be saved.' });
   }
   next();
 }
@@ -258,6 +288,25 @@ const DIST_PATH  = process.env.DIST_PATH || path.join(__dirname, '../dist');
 const TEMPLATES_WP_PATH = path.join(__dirname, '../templates/work-packages');
 const DEMO_MODE  = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
+
+// SINGLE_TENANT forces a Postgres deployment to behave as one user with no
+// subdomain routing — for self-hosting a single build log reachable by raw IP
+// or any domain. SQLite is already single-tenant, so the flag only changes
+// Postgres behaviour. MULTI_TENANT is the derived "route by subdomain" switch,
+// kept distinct from DB_BACKEND (which only selects the SQL dialect).
+const SINGLE_TENANT = process.env.SINGLE_TENANT === 'true';
+const MULTI_TENANT  = DB_BACKEND === 'postgres' && !SINGLE_TENANT;
+if (SINGLE_TENANT) console.log('[init] SINGLE_TENANT enabled — subdomain routing off, serving one tenant');
+
+/** True when `host` is a bare IP address rather than a domain name. IPv4
+ *  octets ("192.168.1.22") look like a 4-label hostname to `.split('.')`, so
+ *  without this guard the first octet gets mistaken for a tenant subdomain.
+ *  `host` is expected to already have any :port stripped. */
+function isBareIpHost(host) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;        // IPv4
+  if (host.startsWith('[') || host.includes(':')) return true;  // IPv6 literal
+  return false;
+}
 const OCR_URL    = process.env.OCR_URL || '';
 if (OCR_URL) {
   try { const u = new URL(OCR_URL); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('invalid'); }
@@ -270,6 +319,7 @@ const DB_PATH    = process.env.DB_PATH || path.join(DATA_DIR, 'database.db');
 const UPLOADS_DIR    = path.join(path.dirname(DB_PATH), 'uploads', 'sessions');
 const RECEIPTS_DIR   = path.join(path.dirname(DB_PATH), 'uploads', 'receipts');
 const SIGNATURES_DIR = path.join(path.dirname(DB_PATH), 'uploads', 'signatures');
+const PLANS_DIR      = path.join(path.dirname(DB_PATH), 'uploads', 'plans');
 
 // DEFAULT_GENERAL, DEFAULT_SECTIONS, and loadDefaultWorkPackages
 // are imported from ./tenant-defaults.js — edit that file to change new-user defaults.
@@ -302,8 +352,8 @@ if (STORAGE_BACKEND === 'r2') {
 }
 
 function createStorage(namespace, { forceLocal = false } = {}) {
-  const dirMap    = { receipts: RECEIPTS_DIR, signatures: SIGNATURES_DIR };
-  const prefixMap = { receipts: '/receipts',  signatures: '/signatures' };
+  const dirMap    = { receipts: RECEIPTS_DIR, signatures: SIGNATURES_DIR, plans: PLANS_DIR };
+  const prefixMap = { receipts: '/receipts',  signatures: '/signatures',  plans: '/plans-raw' };
   const localDir    = dirMap[namespace]    || UPLOADS_DIR;
   const localPrefix = prefixMap[namespace] || '/files';
   if (STORAGE_BACKEND === 'r2' && !forceLocal) {
@@ -377,6 +427,9 @@ function createStorage(namespace, { forceLocal = false } = {}) {
 const imageStore     = createStorage('sessions');
 const receiptStore   = createStorage('receipts', { forceLocal: true });  // Always local — receipts contain sensitive data (addresses, financial info)
 const signatureStore = createStorage('signatures', { forceLocal: true }); // Always local — personal signatures
+// Plan PDFs are copyrighted (Van's etc.) — keep them local-only by default,
+// off R2's public bucket, so a tenant's plans aren't trivially URL-guessable.
+const plansStore     = createStorage('plans', { forceLocal: true });
 
 // ─── Server-side log capture ─────────────────────────────────────────
 const SERVER_LOG_BUFFER = [];
@@ -406,6 +459,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 fs.mkdirSync(SIGNATURES_DIR, { recursive: true });
+fs.mkdirSync(PLANS_DIR, { recursive: true });
 
 // ─── Schema + tenant bootstrap ───────────────────────────────────────
 if (DB_BACKEND === 'postgres') {
@@ -451,9 +505,19 @@ if (DB_BACKEND === 'postgres') {
         sqlite.exec(`ALTER TABLE inventory_parts ADD COLUMN sub_kit TEXT DEFAULT ''`);
         console.log('[migration] Added sub_kit column to inventory_parts');
       }
-      if (partCols.length > 0 && !partCols.includes('mfg_date')) {
-        sqlite.exec(`ALTER TABLE inventory_parts ADD COLUMN mfg_date TEXT DEFAULT ''`);
-        console.log('[migration] Added mfg_date column to inventory_parts');
+      // Move mfg_date from inventory_parts → inventory_stock — a date describes
+      // a received batch, not the part type. Presence of inventory_parts.mfg_date
+      // marks an un-migrated DB; backfill stock before dropping the source.
+      if (partCols.length > 0 && partCols.includes('mfg_date')) {
+        const stockCols = sqlite.prepare('PRAGMA table_info(inventory_stock)').all().map(c => c.name);
+        if (!stockCols.includes('mfg_date')) {
+          sqlite.exec(`ALTER TABLE inventory_stock ADD COLUMN mfg_date TEXT DEFAULT ''`);
+        }
+        sqlite.exec(`UPDATE inventory_stock SET mfg_date = COALESCE(
+          (SELECT p.mfg_date FROM inventory_parts p
+           WHERE p.id = inventory_stock.part_id AND p.tenant_id = inventory_stock.tenant_id), '')`);
+        sqlite.exec(`ALTER TABLE inventory_parts DROP COLUMN mfg_date`);
+        console.log('[migration] Moved mfg_date from inventory_parts to inventory_stock');
       }
       if (partCols.length > 0 && !partCols.includes('bag')) {
         sqlite.exec(`ALTER TABLE inventory_parts ADD COLUMN bag TEXT DEFAULT ''`);
@@ -512,11 +576,17 @@ const app = express();
 app.use(compression());
 
 // ─── Security headers ───────────────────────────────────────────────
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(self), microphone=()');
+  // HSTS — only when the request itself arrived over HTTPS, so HTTP-only
+  // localhost development isn't poisoned with a year-long HTTPS lock.
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  if (proto === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -552,16 +622,339 @@ app.use(cors({
 // Hashed assets (assets/) are safe to cache long-term; index.html must always be fresh
 // so deploys take effect immediately instead of serving stale chunk references.
 app.use('/assets', express.static(path.join(DIST_PATH, 'assets'), { maxAge: '7d', immutable: true }));
+
+// IndexNow proof-of-ownership file. Each tenant has a 32-char hex key
+// generated lazily on first POST/PUT/DELETE /api/blog; the corresponding
+// /{key}.txt file must be served at the same host as the URLs being
+// submitted. We match strictly to avoid colliding with any user-defined
+// content path: 32 hex chars + ".txt", nothing else.
+app.get(/^\/([a-f0-9]{32})\.txt$/, async (req, res) => {
+  try {
+    const key = req.params[0];
+    const tenant = await getTenantByIndexNowKey(key);
+    if (!tenant) return res.status(404).type('text/plain').send('Not found');
+    res.type('text/plain').send(key);
+  } catch (err) {
+    res.status(500).type('text/plain').send('Error');
+  }
+});
+
+/**
+ * isParentHost(req) — true when the request targets the bare apex domain
+ * or its www alias (e.g. `benchlog.build` or `www.benchlog.build`), as
+ * opposed to a tenant subdomain like `pbihn.benchlog.build`. Used by
+ * /robots.txt, /sitemap.xml, /llms.txt and /blogs to switch to the
+ * cross-tenant ("parent") view: a sitemap-index that points at every
+ * public tenant, a /blogs directory page, and an llms.txt that lists
+ * those same blogs. SINGLE_TENANT deployments have no parent-host
+ * concept — the one tenant owns whatever domain it's reached on.
+ *
+ * Production deployment requires Caddy to reverse-proxy these paths from
+ * benchlog.build → the main-tool container, since the apex is normally
+ * served by the account-frontend. See deploy notes / Caddyfile snippet.
+ */
+function isParentHost(req) {
+  if (!MULTI_TENANT) return false;
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+  if (isBareIpHost(host)) return false;
+  const parts = host.split('.');
+  if (parts.length < 3) return true;                            // benchlog.build
+  if (parts.length === 3 && parts[0] === 'www') return true;    // www.benchlog.build
+  return false;
+}
+
+// Tenant-aware robots.txt — must run before express.static so the dynamic
+// version wins over any baked-in public/robots.txt. Resolves tenant inline
+// because this sits before the global subdomain resolver.
+app.get('/robots.txt', async (req, res) => {
+  res.type('text/plain');
+  try {
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+
+    // Parent host (benchlog.build / www.benchlog.build): allow everything that
+    // matters for discovery (the /blogs directory + each tenant's sitemap via
+    // the sitemap-index) and disallow the obvious noise.
+    if (isParentHost(req)) {
+      const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+      return res.send([
+        'User-agent: *',
+        'Allow: /',
+        'Allow: /blogs',
+        '',
+        `Sitemap: ${proto}://${host}/sitemap.xml`,
+        '',
+      ].join('\n'));
+    }
+
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    if (tenant && tenant.public_blog === 0) {
+      return res.send('User-agent: *\nDisallow: /\n');
+    }
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const sitemapUrl = `${proto}://${host}/sitemap.xml`;
+    return res.send([
+      'User-agent: *',
+      'Allow: /blog',
+      'Allow: /blog/',
+      // /api/* is intentionally NOT blocked: Google must be able to fetch the
+      // blog API endpoints at render time to see post content (this is an SPA).
+      // JSON responses are not indexed as HTML pages, and auth-protected
+      // endpoints return 401 to crawlers.
+      'Disallow: /timer',
+      'Disallow: /settings',
+      'Disallow: /admin',
+      'Disallow: /account',
+      'Disallow: /dashboard',
+      'Disallow: /sessions',
+      'Disallow: /timeline',
+      'Disallow: /inventory',
+      'Disallow: /inspections',
+      'Disallow: /expenses',
+      'Disallow: /flowchart',
+      '',
+      `Sitemap: ${sitemapUrl}`,
+      '',
+    ].join('\n'));
+  } catch {
+    // Fail closed: if tenant lookup throws, default to disallowing everything.
+    res.send('User-agent: *\nDisallow: /\n');
+  }
+});
+
+// Tenant-aware /llms.txt — the well-known location LLM crawlers (ChatGPT,
+// Perplexity, Claude, Google AI Overviews) look at for a markdown manifest
+// of the site's indexable content. Mirrors the robots.txt tenant resolution.
+app.get('/llms.txt', async (req, res) => {
+  res.type('text/plain');
+  try {
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+
+    // Parent host: enumerate public tenant blogs so AI agents (Perplexity,
+    // ChatGPT search, Claude, AI Overviews) can crawl the community without
+    // walking the parent sitemap-index first. No /blogs directory page exists
+    // on the parent — discovery is sitemap-index + this manifest only.
+    if (isParentHost(req)) {
+      try {
+        const tenants = await listPublicTenants();
+        const baseDomain = host.split('.').slice(-2).join('.');  // e.g. benchlog.build
+        const lines = [
+          '# BenchLog',
+          '',
+          '> Community of build journals from experimental aircraft homebuilders. Each builder runs their own subdomain blog at {slug}.' + baseDomain + '/blog.',
+          '',
+          '## Individual build blogs',
+          '',
+        ];
+        for (const t of tenants) {
+          const label = t.projectName && t.projectName !== 'My Build' ? `${t.projectName} (${t.aircraftType})` : `${t.slug} (${t.aircraftType})`;
+          lines.push(`- [${label}](https://${t.slug}.${baseDomain}/blog): ${t.postCount} post${t.postCount === 1 ? '' : 's'}`);
+        }
+        lines.push('', `## Sitemap`, '', `- [Sitemap index](${proto}://${host}/sitemap.xml): machine-readable URL list across all blogs`, '');
+        return res.send(lines.join('\n'));
+      } catch (err) {
+        console.error('parent llms.txt error:', err.message);
+        return res.status(500).send('# Error\n');
+      }
+    }
+
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    if (tenant && tenant.public_blog === 0) {
+      return res.status(404).send('# Not available\n');
+    }
+    const base  = `${proto}://${host}`;
+    const db    = tenant ? getTenantDb(tenant.id) : getDefaultDb();
+    const general = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const projectName = general.projectName || 'Build Tracker';
+    return res.send([
+      `# ${projectName}`,
+      '',
+      `> Build journal for the ${projectName} aircraft homebuilt project.`,
+      '',
+      '## Blog',
+      '',
+      `- [${projectName} blog](${base}/blog): index of build journal posts and work sessions`,
+      `- [Sitemap](${base}/sitemap.xml): complete list of indexable URLs`,
+      '',
+      '## Optional',
+      '',
+      `- [robots.txt](${base}/robots.txt)`,
+      '',
+    ].join('\n'));
+  } catch {
+    res.status(500).type('text/plain').send('# Error\n');
+  }
+});
+
+// Per-tenant sitemap.xml — auto-generated from the tenant's public blog posts
+// and work sessions. Private tenants (public_blog=0) return 404.
+//
+// Parent host (benchlog.build / www.benchlog.build) serves a sitemap-INDEX
+// instead — one <sitemap> entry per public tenant pointing at that tenant's
+// own /sitemap.xml. Requires a Caddy reverse-proxy rule because the parent
+// apex is normally served by the account-frontend container. See deploy
+// notes for the Caddyfile snippet.
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+
+    // Parent host — emit a sitemap-INDEX listing every public tenant's
+    // per-tenant sitemap. Lets one GSC submission ("benchlog.build/sitemap.xml"
+    // under a Domain property) cover every current and future tenant blog.
+    if (isParentHost(req)) {
+      try {
+        const tenants    = await listPublicTenants();
+        const baseDomain = host.split('.').slice(-2).join('.');
+        const fmt        = (d) => (d ? String(d).slice(0, 10) : '');
+        const entries    = tenants.map(t => {
+          const loc     = `https://${t.slug}.${baseDomain}/sitemap.xml`;
+          const lastmod = fmt(t.latestPostDate);
+          return '  <sitemap>\n' +
+                 `    <loc>${escapeHtml(loc)}</loc>\n` +
+                 (lastmod ? `    <lastmod>${lastmod}</lastmod>\n` : '') +
+                 '  </sitemap>';
+        });
+        const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+          '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+          entries.join('\n') +
+          '\n</sitemapindex>\n';
+        res.set('Cache-Control', 'public, max-age=300');
+        return res.type('application/xml').send(xml);
+      } catch (err) {
+        console.error('parent sitemap-index error:', err.message);
+        return res.status(500).type('text/plain').send('Failed to generate sitemap index.');
+      }
+    }
+
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    if (tenant && tenant.public_blog === 0) {
+      return res.status(404).type('text/plain').send('Sitemap not available for private blogs.');
+    }
+
+    const tenantId = tenant ? tenant.id : getDefaultTenantId();
+    const db       = tenant ? getTenantDb(tenant.id) : getDefaultDb();
+    const base     = baseUrl(req);
+
+    // Blog posts — always include (authored content)
+    const posts = await db.all(
+      'SELECT id, published_at, updated_at FROM blog_posts WHERE tenant_id = ? ORDER BY published_at DESC',
+      [tenantId]
+    );
+    // Work sessions — include only those with notes or images (skip thin content)
+    const sessions = await db.all(
+      `SELECT id, start_time, end_time FROM sessions WHERE tenant_id = ?
+       AND ((notes IS NOT NULL AND notes != '') OR (image_urls IS NOT NULL AND image_urls != '[]'))
+       ORDER BY start_time DESC`,
+      [tenantId]
+    );
+
+    const fmt = (d) => (d ? String(d).slice(0, 10) : '');
+    const entries = [];
+    // Blog index — lastmod = most recent post's update time
+    const latestMod = posts[0] ? (posts[0].updated_at || posts[0].published_at) : null;
+    entries.push([`${base}/blog`, fmt(latestMod), 'weekly', '1.0']);
+    for (const p of posts) {
+      entries.push([`${base}/blog/${p.id}`, fmt(p.updated_at || p.published_at), 'monthly', '0.8']);
+    }
+    for (const s of sessions) {
+      entries.push([`${base}/blog/session-${s.id}`, fmt(s.end_time || s.start_time), 'yearly', '0.6']);
+    }
+
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+      entries.map(([loc, lastmod, cf, pr]) =>
+        '  <url>\n' +
+        `    <loc>${escapeHtml(loc)}</loc>\n` +
+        (lastmod ? `    <lastmod>${lastmod}</lastmod>\n` : '') +
+        `    <changefreq>${cf}</changefreq>\n` +
+        `    <priority>${pr}</priority>\n` +
+        '  </url>'
+      ).join('\n') +
+      '\n</urlset>\n';
+
+    res.type('application/xml').send(xml);
+  } catch (err) {
+    console.error('sitemap.xml error:', err.message);
+    res.status(500).type('text/plain').send('Failed to generate sitemap.');
+  }
+});
+
+// Tenant root — must run BEFORE express.static, otherwise the static
+// middleware serves the bare SPA shell (no og:* / canonical / JSON-LD) and
+// the page is invisible to crawlers that happen to land on `/`. The SPA
+// router still drives the in-browser experience; we only enrich the head.
+app.get('/', async (req, res, next) => {
+  if (!fs.existsSync(distIndexPath)) return next();
+  try {
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    // No tenant resolved (apex, www, demo, etc.) — let express.static serve
+    // the unmodified shell. Tenant subdomains get the enriched head.
+    if (!tenant) return next();
+    const db          = getTenantDb(tenant.id);
+    const isPublic    = tenant.public_blog !== 0;
+    const general     = await getSetting(db, 'general', DEFAULT_GENERAL);
+    const projectName = general.projectName || 'Build Tracker';
+    const base        = baseUrl(req);
+    const html        = fs.readFileSync(distIndexPath, 'utf8');
+    res.type('html').send(injectOgTags(html, {
+      title:       `${projectName} — Build Journal`,
+      description: `Follow along on this ${projectName} homebuilt aircraft build.`,
+      imageUrl:    null,
+      pageUrl:     `${base}/`,
+      // Consolidate signal onto /blog — the actual indexable destination.
+      canonical:   isPublic ? `${base}/blog` : undefined,
+      noindex:     !isPublic,
+    }));
+  } catch {
+    next();
+  }
+});
+
 app.use(express.static(DIST_PATH, { maxAge: 0, etag: true, lastModified: true }));
 app.use(express.json({ limit: '10mb' }));
 
-// Resolve tenant from subdomain for public endpoints (postgres multi-tenant mode)
+// Resolve tenant from subdomain for public endpoints (multi-tenant mode only).
+// Single-tenant deployments (SQLite, or Postgres with SINGLE_TENANT=true) skip
+// this entirely and keep the default tenant set above.
 app.use(async (req, res, next) => {
   try { req.db = getDefaultDb(); req.tenantId = getDefaultTenantId(); } catch {}
-  if (DB_BACKEND === 'postgres') {
+  if (MULTI_TENANT) {
     const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
     const parts = host.split('.');
-    if (parts.length >= 3) {
+    if (parts.length >= 3 && !isBareIpHost(host)) {
       const slug = parts[0];
       if (!['www', 'account', 'demo'].includes(slug)) {
         try {
@@ -576,11 +969,19 @@ app.use(async (req, res, next) => {
 });
 
 if (DEMO_MODE) {
+  // Read-only by default. Two carve-outs:
+  //   1. Auth endpoints must always pass so the admin can log in / check status.
+  //   2. A request that presents a verifiably-admin Bearer token gets through
+  //      — anonymous visitors and forged tokens still 403 here.
   app.use('/api', (req, res, next) => {
-    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-      return res.status(403).json({ error: 'Demo mode — read only' });
+    if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) return next();
+    if (['/auth/login', '/auth/setup', '/auth/status'].includes(req.path)) return next();
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      const payload = verifyToken(auth.slice(7));
+      if (payload && payload.role === 'admin') return next();
     }
-    next();
+    return res.status(403).json({ error: 'Demo mode — read only' });
   });
 }
 
@@ -607,6 +1008,45 @@ if (!DEMO_MODE) {
     } catch { return res.status(503).json({ error: 'Service unavailable' }); }
   });
 }
+
+// ─── Feature-flag gate ───────────────────────────────────────────────
+// Mirrors the frontend's FeatureRoute on the API. When the tenant has a
+// feature toggled off in general settings, every relevant route returns 403
+// unless the caller presents a verified admin token. Demo visitors (whose
+// faked role='admin' is NOT backed by a token) hit the same 403, closing
+// the gap where the UI hid a page but the API was still callable.
+function requireFeature(key) {
+  return async (req, res, next) => {
+    // Real admin bypass — requires a verified Bearer token, not just the
+    // demo-mode faked role. peekAuth returns null for anonymous demo
+    // visitors and for missing/forged tokens.
+    const payload = peekAuth(req);
+    if (payload && payload.role === 'admin') return next();
+    try {
+      const tenantId = payload?.tenantId || req.tenantId || getDefaultTenantId();
+      const db = (tenantId ? getTenantDb(tenantId) : null) || getDefaultDb();
+      const settings = await getSetting(db, 'general', DEFAULT_GENERAL);
+      if (settings?.featureFlags?.[key] === false) {
+        return res.status(403).json({ error: `This feature is disabled.` });
+      }
+    } catch { /* fail-open on lookup error so a settings glitch doesn't lock everything down */ }
+    next();
+  };
+}
+
+// Register the gate as a path-prefix middleware for every feature-keyed
+// API namespace. Sub-paths inherit automatically (so /api/wiring/library
+// is covered by the '/api/wiring' prefix). Per-route requireAuth still
+// runs afterwards and enforces authentication on writes.
+app.use('/api/wiring',       requireFeature('wiring'));
+app.use('/api/inventory',    requireFeature('inventory'));
+app.use('/api/expenses',     requireFeature('expenses'));
+app.use('/api/signoffs',     requireFeature('inspections'));
+app.use('/api/inspection-sessions', requireFeature('inspections'));
+app.use('/api/blog',         requireFeature('blog'));
+app.use('/api/sessions',     requireFeature('tracker'));
+app.use('/api/timer',        requireFeature('tracker'));
+app.use('/api/plans',        requireFeature('plans'));
 
 // Image proxy — lets the browser fetch R2 images server-side (avoids CORS restrictions in PDF export)
 // No auth required: only proxies URLs from the configured storage backend (already public assets)
@@ -678,6 +1118,79 @@ function peekAuth(req) {
 }
 
 // Local file serving (R2 URLs are served directly by Cloudflare)
+// ── /receipts/* — expense attachments (ALWAYS local-disk + auth) ──
+// Receipts and signatures are stored on the server's local disk
+// regardless of STORAGE_BACKEND (see `forceLocal: true` on the storage
+// stores) — they contain sensitive personal data that we don't push to
+// object storage. So their serving routes must be mounted unconditionally;
+// otherwise an R2/S3 deployment would have no route here and the request
+// falls through to the SPA, which renders a 404.
+app.get('/receipts/:slug/:filename', receiptsHandler);
+app.get('/receipts/:filename', receiptsHandler);
+async function receiptsHandler(req, res) {
+  const filename = path.basename(req.params.filename);
+  const slug = req.params.slug ? path.basename(req.params.slug) : null;
+  const filePath = slug
+    ? path.join(RECEIPTS_DIR, slug, filename)
+    : path.join(RECEIPTS_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+
+  if (!DEMO_MODE) {
+    const payload = peekAuth(req);
+    if (!payload) return res.status(401).send('Unauthorized');
+
+    // Multi-tenant: verify receipt belongs to the requesting tenant
+    if (DB_BACKEND === 'postgres') {
+      const payloadTenantId = payload.tenantId || (req.tenantId || getDefaultTenantId());
+      const payloadDb = getTenantDb(payloadTenantId);
+      const like = `%${filename}%`;
+      const owned = await payloadDb.get(
+        'SELECT 1 FROM expenses WHERE tenant_id = ? AND receipt_urls LIKE ? LIMIT 1',
+        [payloadTenantId, like]);
+      if (!owned) {
+        // Also check pending_uploads (file just uploaded, not yet saved to expense)
+        const pending = await payloadDb.get(
+          'SELECT 1 FROM pending_uploads WHERE tenant_id = ? AND url LIKE ? LIMIT 1',
+          [payloadTenantId, like]);
+        if (!pending) return res.status(403).send('Forbidden');
+      }
+    }
+  }
+  res.sendFile(filePath);
+}
+
+// ── /signatures/* — sign-off signatures (ALWAYS local-disk + auth) ──
+app.get('/signatures/:slug/:filename', signaturesHandler);
+app.get('/signatures/:filename', signaturesHandler);
+async function signaturesHandler(req, res) {
+  const filename = path.basename(req.params.filename);
+  const slug = req.params.slug ? path.basename(req.params.slug) : null;
+  const filePath = slug
+    ? path.join(SIGNATURES_DIR, slug, filename)
+    : path.join(SIGNATURES_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+
+  if (!DEMO_MODE) {
+    const payload = peekAuth(req);
+    if (!payload) return res.status(401).send('Unauthorized');
+
+    if (DB_BACKEND === 'postgres') {
+      const payloadTenantId = payload.tenantId || (req.tenantId || getDefaultTenantId());
+      const payloadDb = getTenantDb(payloadTenantId);
+      const like = `%${filename}%`;
+      const owned = await payloadDb.get(
+        'SELECT 1 FROM sign_offs WHERE tenant_id = ? AND signature_png LIKE ? LIMIT 1',
+        [payloadTenantId, like]);
+      if (!owned) return res.status(403).send('Forbidden');
+    }
+  }
+  res.sendFile(filePath);
+}
+
+// /files/:filename serves session & blog images, which DO get pushed to
+// object storage when STORAGE_BACKEND === 'r2'. So this route is only
+// mounted when the backend is local — on R2 deployments those URLs are
+// served by Cloudflare directly.
 if (STORAGE_BACKEND === 'local') {
 
   // ── /files/:filename — session & blog images ──
@@ -715,69 +1228,6 @@ if (STORAGE_BACKEND === 'local') {
     }
     res.sendFile(filePath);
   });
-
-  // ── /receipts/* — expense attachments (always require auth) ──
-  app.get('/receipts/:slug/:filename', receiptsHandler);
-  app.get('/receipts/:filename', receiptsHandler);
-  async function receiptsHandler(req, res) {
-    const filename = path.basename(req.params.filename);
-    const slug = req.params.slug ? path.basename(req.params.slug) : null;
-    const filePath = slug
-      ? path.join(RECEIPTS_DIR, slug, filename)
-      : path.join(RECEIPTS_DIR, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-
-    if (!DEMO_MODE) {
-      const payload = peekAuth(req);
-      if (!payload) return res.status(401).send('Unauthorized');
-
-      // Multi-tenant: verify receipt belongs to the requesting tenant
-      if (DB_BACKEND === 'postgres') {
-        const payloadTenantId = payload.tenantId || (req.tenantId || getDefaultTenantId());
-        const payloadDb = getTenantDb(payloadTenantId);
-        const like = `%${filename}%`;
-        const owned = await payloadDb.get(
-          'SELECT 1 FROM expenses WHERE tenant_id = ? AND receipt_urls LIKE ? LIMIT 1',
-          [payloadTenantId, like]);
-        if (!owned) {
-          // Also check pending_uploads (file just uploaded, not yet saved to expense)
-          const pending = await payloadDb.get(
-            'SELECT 1 FROM pending_uploads WHERE tenant_id = ? AND url LIKE ? LIMIT 1',
-            [payloadTenantId, like]);
-          if (!pending) return res.status(403).send('Forbidden');
-        }
-      }
-    }
-    res.sendFile(filePath);
-  }
-
-  // ── /signatures/* — sign-off signatures (always require auth) ──
-  app.get('/signatures/:slug/:filename', signaturesHandler);
-  app.get('/signatures/:filename', signaturesHandler);
-  async function signaturesHandler(req, res) {
-    const filename = path.basename(req.params.filename);
-    const slug = req.params.slug ? path.basename(req.params.slug) : null;
-    const filePath = slug
-      ? path.join(SIGNATURES_DIR, slug, filename)
-      : path.join(SIGNATURES_DIR, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-
-    if (!DEMO_MODE) {
-      const payload = peekAuth(req);
-      if (!payload) return res.status(401).send('Unauthorized');
-
-      if (DB_BACKEND === 'postgres') {
-        const payloadTenantId = payload.tenantId || (req.tenantId || getDefaultTenantId());
-        const payloadDb = getTenantDb(payloadTenantId);
-        const like = `%${filename}%`;
-        const owned = await payloadDb.get(
-          'SELECT 1 FROM sign_offs WHERE tenant_id = ? AND signature_png LIKE ? LIMIT 1',
-          [payloadTenantId, like]);
-        if (!owned) return res.status(403).send('Forbidden');
-      }
-    }
-    res.sendFile(filePath);
-  }
 }
 
 // ─── Multer (memory storage — works for both local and R2) ───────────
@@ -1413,10 +1863,12 @@ app.post('/api/auth/login', async (req, res) => {
 
     const { password, username } = req.body;
     let tenant = null;
-    if (DB_BACKEND === 'postgres') {
+    if (MULTI_TENANT) {
       if (!username) return res.status(400).json({ error: 'Username is required' });
       tenant = await getTenantBySlug(username);
     } else {
+      // Single-tenant (SQLite, or Postgres with SINGLE_TENANT=true): the sole
+      // tenant is the only account — no username needed.
       tenant = await getFirstTenant();
     }
     if (!tenant) return res.status(400).json({ error: 'User not found' });
@@ -1430,9 +1882,9 @@ app.post('/api/auth/login', async (req, res) => {
       const db = getTenantDb(tenant.id);
       await setSetting(db, 'auth_password_hash', rehash).catch(() => {});
     }
-    // Block non-admin login when maintenance mode is active
-    // In single-tenant (SQLite) mode the sole user is always the admin
-    const role = tenant.role || (DB_BACKEND === 'postgres' ? 'user' : 'admin');
+    // Block non-admin login when maintenance mode is active.
+    // In a single-tenant deployment the sole user is always the admin.
+    const role = tenant.role || (MULTI_TENANT ? 'user' : 'admin');
     if (role !== 'admin') {
       const db = getTenantDb(tenant.id);
       const general = await getSetting(db, 'general', DEFAULT_GENERAL);
@@ -1470,7 +1922,7 @@ app.get('/api/auth/status', async (req, res) => {
     }
     // Check if tenant is deactivated (multi-tenant only)
     let isDeactivated = false;
-    if (!DEMO_MODE && DB_BACKEND === 'postgres' && req.tenantId) {
+    if (!DEMO_MODE && MULTI_TENANT && req.tenantId) {
       try {
         const tenantRow = await getTenantById(req.tenantId);
         if (tenantRow && (tenantRow.is_active === 0 || tenantRow.is_active === false)) {
@@ -1478,11 +1930,18 @@ app.get('/api/auth/status', async (req, res) => {
         }
       } catch {}
     }
+    // Admin-with-real-token override: when an admin presents a verified token
+    // on a demo deployment, report `demoMode: false` for that session so the
+    // frontend treats them as a regular admin (saves enabled, full nav, real
+    // admin panel). Anonymous demo visitors continue to see demoMode:true,
+    // role:'admin' (faked) so they can browse every page in read-only mode —
+    // and the route gates that key off `demoMode` reject them appropriately.
+    const adminOverride = DEMO_MODE && authenticated && role === 'admin';
     res.json({
       hasPassword:   DEMO_MODE ? true : hasPassword,
       authenticated: DEMO_MODE ? true : authenticated,
-      demoMode:      DEMO_MODE,
-      multiTenant:   DB_BACKEND === 'postgres',
+      demoMode:      adminOverride ? false : DEMO_MODE,
+      multiTenant:   MULTI_TENANT,
       role:          DEMO_MODE ? 'admin' : role,
       maintenanceMode,
       isDeactivated,
@@ -1768,6 +2227,295 @@ app.post('/api/ocr', requireAuth, ocrUpload.single('image'), async (req, res) =>
   }
 });
 
+// ─── Plans API ───────────────────────────────────────────────────────
+// PDF plan-drawings library. Each file is associated with a build phase +
+// section ID (parsed from filename via the aircraft manufacturer's parser,
+// or assigned manually). Annotations are per-file/per-page JSON overlays.
+//
+// Storage: PDFs land in PLANS_DIR (local-only by default, see plansStore).
+// The DB stores metadata only. Files are served through an auth-gated
+// streaming endpoint at /api/plans/:id/file — they never get a public URL.
+
+const plansUpload = multer({
+  storage: multer.memoryStorage(),
+  // RV-10 sections range from ~800 KB to ~5 MB per file; allow generous
+  // headroom for other manufacturers' larger PDFs.
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === 'application/pdf') cb(null, true);
+    else cb(new Error('Only PDF files are allowed'));
+  },
+});
+
+function planRow(r) {
+  return {
+    id:           String(r.id),
+    originalName: r.original_name,
+    sectionId:    r.section_id || '',
+    sectionTitle: r.section_title || '',
+    phase:        r.phase || 'other',
+    description:  r.description || '',
+    fileSize:     Number(r.file_size) || 0,
+    pageCount:    Number(r.page_count) || 0,
+    pinned:       Number(r.pinned) === 1,
+    uploadedAt:   r.uploaded_at,
+    indexedAt:    r.indexed_at || null,
+  };
+}
+
+function annoRow(r) {
+  let data = {};
+  try { data = JSON.parse(r.data || '{}'); } catch {}
+  return {
+    id:         String(r.id),
+    fileId:     String(r.file_id),
+    pageNumber: Number(r.page_number) || 1,
+    kind:       r.kind || 'text',
+    data,
+    createdAt:  r.created_at,
+    updatedAt:  r.updated_at,
+  };
+}
+
+// List all plan files for the current tenant.
+app.get('/api/plans', requireAuth, async (req, res) => {
+  try {
+    const rows = await req.db.all(
+      'SELECT * FROM plan_files WHERE tenant_id = ? ORDER BY phase, section_id, original_name',
+      [req.tenantId]
+    );
+    res.json(rows.map(planRow));
+  } catch (err) { serverError(res, err); }
+});
+
+// Upload one or more PDFs. Each file is parsed by the active aircraft's
+// filename parser; the client is expected to confirm/correct the section
+// assignment via PUT /api/plans/:id afterwards if the parse missed.
+app.post('/api/plans/upload', requireAuth, plansUpload.array('files', 50), async (req, res) => {
+  try {
+    if (!req.files?.length) return res.status(400).json({ error: 'No files provided' });
+    const out = [];
+    for (const file of req.files) {
+      const id       = uuidv4();
+      const filename = `${id}.pdf`;
+      const url      = await plansStore.save(filename, file.buffer, 'application/pdf', req.user?.slug);
+      // Filename parsing is done client-side after upload (the server is
+      // aircraft-agnostic; the client has the active manufacturer's parser).
+      // We persist the row with an empty section and let the client patch
+      // it via PUT once it has classified the file.
+      await req.db.run(
+        `INSERT INTO plan_files (id, tenant_id, url, original_name, section_id, section_title, phase, description, file_size, page_count, pinned, uploaded_at)
+         VALUES (?, ?, ?, ?, '', '', 'other', '', ?, 0, 0, ?)`,
+        [id, req.tenantId, url, file.originalname, file.size || file.buffer.length, new Date().toISOString()]
+      );
+      const row = await req.db.get('SELECT * FROM plan_files WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+      out.push(planRow(row));
+    }
+    res.json({ uploaded: out });
+  } catch (err) {
+    console.error('[plans] upload error:', err.message);
+    serverError(res, err);
+  }
+});
+
+// Update a plan file's classification / pinned state.
+app.put('/api/plans/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const current = await req.db.get('SELECT * FROM plan_files WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    if (!current) return res.status(404).json({ error: 'Plan file not found' });
+    const fields = [];
+    const values = [];
+    if (req.body.sectionId    !== undefined) { fields.push('section_id = ?');    values.push(String(req.body.sectionId)); }
+    if (req.body.sectionTitle !== undefined) { fields.push('section_title = ?'); values.push(String(req.body.sectionTitle)); }
+    if (req.body.phase        !== undefined) { fields.push('phase = ?');         values.push(String(req.body.phase)); }
+    if (req.body.description  !== undefined) { fields.push('description = ?');   values.push(String(req.body.description)); }
+    if (req.body.pageCount    !== undefined) { fields.push('page_count = ?');    values.push(Number(req.body.pageCount) || 0); }
+    if (req.body.pinned       !== undefined) { fields.push('pinned = ?');        values.push(req.body.pinned ? 1 : 0); }
+    if (!fields.length) return res.json(planRow(current));
+    values.push(id, req.tenantId);
+    await req.db.run(`UPDATE plan_files SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`, values);
+    const updated = await req.db.get('SELECT * FROM plan_files WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    res.json(planRow(updated));
+  } catch (err) { serverError(res, err); }
+});
+
+// Delete a plan file + its annotations + the underlying PDF.
+app.delete('/api/plans/:id', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const row = await req.db.get('SELECT * FROM plan_files WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'Plan file not found' });
+    await plansStore.delete(row.url).catch(() => {});
+    await req.db.run('DELETE FROM plan_annotations WHERE tenant_id = ? AND file_id = ?', [req.tenantId, id]);
+    await req.db.run('DELETE FROM plan_part_refs   WHERE tenant_id = ? AND file_id = ?', [req.tenantId, id]);
+    await req.db.run('DELETE FROM plan_files       WHERE id = ? AND tenant_id = ?',       [id, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// Bulk-replace the part-number index for one plan file. Called by the
+// client after PDF.js extracts text and the aircraft vendor patterns
+// match part numbers. Server is dumb storage — the regex library lives
+// in the frontend bundle and is per-aircraft.
+app.post('/api/plans/:id/index', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = await req.db.get('SELECT 1 FROM plan_files WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    if (!file) return res.status(404).json({ error: 'Plan file not found' });
+    const refs = Array.isArray(req.body?.refs) ? req.body.refs : [];
+    // Replace, don't append — re-indexing a file should reflect current state.
+    // Wrapped in a transaction so a mid-loop failure rolls back the DELETE
+    // instead of silently dropping the file's existing refs.
+    await req.db.transaction(async (tx) => {
+      await tx.run('DELETE FROM plan_part_refs WHERE tenant_id = ? AND file_id = ?', [req.tenantId, id]);
+      for (const r of refs) {
+        const page = Math.floor(Number(r.pageNumber)) || 0;
+        const pn = String(r.partNumber || '').trim();
+        if (!pn || page <= 0) continue;
+        await tx.run(
+          `INSERT INTO plan_part_refs (tenant_id, file_id, page_number, part_number, snippet, bbox)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [req.tenantId, id, page, pn, String(r.snippet || '').slice(0, 200), r.bbox ? JSON.stringify(r.bbox) : null]
+        );
+      }
+      await tx.run('UPDATE plan_files SET indexed_at = ? WHERE id = ? AND tenant_id = ?',
+        [new Date().toISOString(), id, req.tenantId]);
+    });
+    res.json({ ok: true, count: refs.length });
+  } catch (err) { serverError(res, err); }
+});
+
+// Search part-number refs across all plan files for the current tenant.
+// Returns up to `limit` refs joined with their plan file's section metadata
+// so the palette can show "AN3-5A · 14 Wing Ribs · p4" without extra lookups.
+app.get('/api/plans/search', requireAuth, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    // Clamp to a positive range — SQLite treats negative LIMIT as "no limit"
+    // and Postgres outright rejects it; the bare `|| 500` also swallows 0.
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 500, 2000));
+    const params = [req.tenantId];
+    let where = 'r.tenant_id = ?';
+    if (q) {
+      // Escape LIKE metachars (%, _, \) so a user-supplied % doesn't match
+      // everything and legitimate underscores in part numbers are literal.
+      const escaped = q.toUpperCase().replace(/[\\%_]/g, ch => '\\' + ch);
+      where += ` AND UPPER(r.part_number) LIKE ? ESCAPE '\\'`;
+      params.push(`%${escaped}%`);
+    }
+    params.push(limit);
+    const rows = await req.db.all(
+      `SELECT r.file_id, r.page_number, r.part_number, r.snippet,
+              f.original_name, f.section_id, f.section_title, f.phase
+         FROM plan_part_refs r
+         JOIN plan_files f ON f.id = r.file_id AND f.tenant_id = r.tenant_id
+        WHERE ${where}
+        ORDER BY r.part_number, f.section_id, r.page_number
+        LIMIT ?`,
+      params
+    );
+    res.json({
+      refs: rows.map(r => ({
+        fileId:       String(r.file_id),
+        pageNumber:   Number(r.page_number) || 1,
+        partNumber:   r.part_number,
+        snippet:      r.snippet || '',
+        file: {
+          originalName: r.original_name,
+          sectionId:    r.section_id || '',
+          sectionTitle: r.section_title || '',
+          phase:        r.phase || 'other',
+        },
+      })),
+    });
+  } catch (err) { serverError(res, err); }
+});
+
+// Stream the raw PDF (auth-gated — copyrighted content, never public).
+app.get('/api/plans/:id/file', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get('SELECT * FROM plan_files WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!row) return res.status(404).json({ error: 'Plan file not found' });
+    const buf = await plansStore.readBuffer(row.url);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(buf.length));
+    res.setHeader('Content-Disposition', `inline; filename="${row.original_name.replace(/[^a-zA-Z0-9._-]/g, '_')}"`);
+    // Prevent caching by intermediaries — copyrighted content + per-tenant scope.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(buf);
+  } catch (err) { serverError(res, err); }
+});
+
+// ─── Annotations ─────────────────────────────────────────────────────
+
+// List all annotations for a plan file.
+app.get('/api/plans/:id/annotations', requireAuth, async (req, res) => {
+  try {
+    // Verify file ownership first (avoid leaking via crafted file_id).
+    const file = await req.db.get('SELECT 1 FROM plan_files WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!file) return res.status(404).json({ error: 'Plan file not found' });
+    const rows = await req.db.all(
+      'SELECT * FROM plan_annotations WHERE tenant_id = ? AND file_id = ? ORDER BY page_number, created_at',
+      [req.tenantId, req.params.id]
+    );
+    res.json(rows.map(annoRow));
+  } catch (err) { serverError(res, err); }
+});
+
+// Create one annotation.
+app.post('/api/plans/:id/annotations', requireAuth, async (req, res) => {
+  try {
+    const file = await req.db.get('SELECT 1 FROM plan_files WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    if (!file) return res.status(404).json({ error: 'Plan file not found' });
+    const id = uuidv4();
+    const kind = (req.body.kind === 'stroke') ? 'stroke' : 'text';
+    const pageNumber = Math.max(1, Number(req.body.pageNumber) || 1);
+    const data = req.body.data && typeof req.body.data === 'object' ? req.body.data : {};
+    const now = new Date().toISOString();
+    await req.db.run(
+      `INSERT INTO plan_annotations (id, tenant_id, file_id, page_number, kind, data, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.tenantId, req.params.id, pageNumber, kind, JSON.stringify(data), now, now]
+    );
+    const row = await req.db.get('SELECT * FROM plan_annotations WHERE id = ? AND tenant_id = ?', [id, req.tenantId]);
+    res.json(annoRow(row));
+  } catch (err) { serverError(res, err); }
+});
+
+// Update one annotation's data (text content, stroke geometry, position).
+app.put('/api/plans/annotations/:annoId', requireAuth, async (req, res) => {
+  try {
+    const current = await req.db.get('SELECT * FROM plan_annotations WHERE id = ? AND tenant_id = ?', [req.params.annoId, req.tenantId]);
+    if (!current) return res.status(404).json({ error: 'Annotation not found' });
+    const fields = [];
+    const values = [];
+    if (req.body.data && typeof req.body.data === 'object') {
+      fields.push('data = ?');
+      values.push(JSON.stringify(req.body.data));
+    }
+    if (req.body.pageNumber !== undefined) {
+      fields.push('page_number = ?');
+      values.push(Math.max(1, Number(req.body.pageNumber) || 1));
+    }
+    if (!fields.length) return res.json(annoRow(current));
+    fields.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(req.params.annoId, req.tenantId);
+    await req.db.run(`UPDATE plan_annotations SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`, values);
+    const row = await req.db.get('SELECT * FROM plan_annotations WHERE id = ? AND tenant_id = ?', [req.params.annoId, req.tenantId]);
+    res.json(annoRow(row));
+  } catch (err) { serverError(res, err); }
+});
+
+// Delete one annotation.
+app.delete('/api/plans/annotations/:annoId', requireAuth, async (req, res) => {
+  try {
+    await req.db.run('DELETE FROM plan_annotations WHERE id = ? AND tenant_id = ?', [req.params.annoId, req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
 // ─── General Settings API ────────────────────────────────────────────
 
 app.get('/api/settings/general', async (req, res) => {
@@ -1787,6 +2535,7 @@ app.put('/api/settings/general', requireAuth, async (req, res) => {
     const updates  = req.body;
     const newSettings = {
       projectName:  updates.projectName  !== undefined ? updates.projectName  : current.projectName,
+      authorName:   updates.authorName   !== undefined ? updates.authorName   : (current.authorName || ''),
       targetHours:  updates.targetHours  !== undefined ? updates.targetHours  : current.targetHours,
       progressMode: updates.progressMode !== undefined ? updates.progressMode : (current.progressMode || 'time'),
       imageResizing:updates.imageResizing !== undefined ? updates.imageResizing : (current.imageResizing ?? true),
@@ -1797,6 +2546,11 @@ app.put('/api/settings/general', requireAuth, async (req, res) => {
       wafPercent:   updates.wafPercent  !== undefined ? updates.wafPercent  : (current.wafPercent ?? 100),
       maintenanceMode: (updates.maintenanceMode !== undefined && req.user?.role === 'admin') ? updates.maintenanceMode : (current.maintenanceMode ?? false),
       blogShowSessionStats: updates.blogShowSessionStats !== undefined ? updates.blogShowSessionStats : (current.blogShowSessionStats ?? true),
+      // Feature flags are admin-only writes. Merge so partial updates from the
+      // admin panel don't wipe unrelated keys.
+      featureFlags: (updates.featureFlags !== undefined && req.user?.role === 'admin')
+        ? { ...(current.featureFlags ?? {}), ...updates.featureFlags }
+        : (current.featureFlags ?? {}),
     };
     await setSetting(req.db, 'general', newSettings);
     // Persist publicBlog to tenants table (used by checkBlogAccess)
@@ -2195,7 +2949,7 @@ async function buildExport(archive, db, tenantId, options, onProgress) {
       stock: stock.map(r => ({
         id: Number(r.id), partId: Number(r.part_id), locationId: Number(r.location_id), quantity: r.quantity,
         unit: r.unit || 'pcs', status: r.status || 'in_stock', condition: r.condition || 'new',
-        batch: r.batch || '', sourceKit: r.source_kit || '', notes: r.notes || '', updatedAt: r.updated_at,
+        batch: r.batch || '', sourceKit: r.source_kit || '', mfgDate: r.mfg_date || '', notes: r.notes || '', updatedAt: r.updated_at,
       })),
       checkSessions: checkSessions.map(r => ({
         id: Number(r.id), aircraftType: r.aircraft_type, kitId: r.kit_id, kitLabel: r.kit_label || '',
@@ -2494,14 +3248,14 @@ async function applyInventoryImport(db, tenantId, inv, results) {
     if (!existing) existing = await db.get('SELECT id FROM inventory_parts WHERE part_number = ? AND tenant_id = ?', [part.partNumber, tenantId]);
     if (existing) {
       await db.run(
-        `UPDATE inventory_parts SET part_number=?,name=?,manufacturer=?,kit=?,sub_kit=?,category=?,mfg_date=?,bag=?,notes=? WHERE id=? AND tenant_id=?`,
-        [part.partNumber, part.name, part.manufacturer||'', part.kit||'', part.subKit||'', part.category||'other', part.mfgDate||'', part.bag||'', part.notes||'', existing.id, tenantId]
+        `UPDATE inventory_parts SET part_number=?,name=?,manufacturer=?,kit=?,sub_kit=?,category=?,bag=?,notes=? WHERE id=? AND tenant_id=?`,
+        [part.partNumber, part.name, part.manufacturer||'', part.kit||'', part.subKit||'', part.category||'other', part.bag||'', part.notes||'', existing.id, tenantId]
       );
       partIdMap.set(part.id, existing.id);
     } else {
       const r = await db.run(
-        `INSERT INTO inventory_parts(tenant_id,part_number,name,manufacturer,kit,sub_kit,category,mfg_date,bag,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-        [tenantId, part.partNumber, part.name, part.manufacturer||'', part.kit||'', part.subKit||'', part.category||'other', part.mfgDate||'', part.bag||'', part.notes||'', part.createdAt||new Date().toISOString()]
+        `INSERT INTO inventory_parts(tenant_id,part_number,name,manufacturer,kit,sub_kit,category,bag,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        [tenantId, part.partNumber, part.name, part.manufacturer||'', part.kit||'', part.subKit||'', part.category||'other', part.bag||'', part.notes||'', part.createdAt||new Date().toISOString()]
       );
       let newId = r.lastID;
       if (!newId) {
@@ -2520,13 +3274,13 @@ async function applyInventoryImport(db, tenantId, inv, results) {
     if (!existing) existing = await db.get('SELECT id FROM inventory_stock WHERE part_id = ? AND location_id = ? AND tenant_id = ?', [newPartId, newLocId, tenantId]);
     if (existing) {
       await db.run(
-        `UPDATE inventory_stock SET part_id=?,location_id=?,quantity=?,unit=?,status=?,condition=?,batch=?,source_kit=?,notes=?,updated_at=? WHERE id=? AND tenant_id=?`,
-        [newPartId, newLocId, s.quantity, s.unit||'pcs', s.status||'in_stock', s.condition||'new', s.batch||'', s.sourceKit||'', s.notes||'', s.updatedAt, existing.id, tenantId]
+        `UPDATE inventory_stock SET part_id=?,location_id=?,quantity=?,unit=?,status=?,condition=?,batch=?,source_kit=?,mfg_date=?,notes=?,updated_at=? WHERE id=? AND tenant_id=?`,
+        [newPartId, newLocId, s.quantity, s.unit||'pcs', s.status||'in_stock', s.condition||'new', s.batch||'', s.sourceKit||'', s.mfgDate||'', s.notes||'', s.updatedAt, existing.id, tenantId]
       );
     } else {
       await db.run(
-        `INSERT INTO inventory_stock(tenant_id,part_id,location_id,quantity,unit,status,condition,batch,source_kit,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-        [tenantId, newPartId, newLocId, s.quantity, s.unit||'pcs', s.status||'in_stock', s.condition||'new', s.batch||'', s.sourceKit||'', s.notes||'', s.updatedAt||new Date().toISOString()]
+        `INSERT INTO inventory_stock(tenant_id,part_id,location_id,quantity,unit,status,condition,batch,source_kit,mfg_date,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [tenantId, newPartId, newLocId, s.quantity, s.unit||'pcs', s.status||'in_stock', s.condition||'new', s.batch||'', s.sourceKit||'', s.mfgDate||'', s.notes||'', s.updatedAt||new Date().toISOString()]
       );
     }
     results.inventoryImported = (results.inventoryImported || 0) + 1;
@@ -3201,6 +3955,18 @@ app.get('/api/internal/tenants', requireServiceKey, requirePostgres, async (req,
   } catch (err) { serverError(res, err); }
 });
 
+// Public tenants with blog metadata, for the parent benchlog.build sitemap-index
+// and /blogs directory. No auth — same shape callers see at .../sitemap.xml, just
+// aggregated server-side so the parent doesn't have to fan out one fetch per tenant.
+// 5-min Cache-Control lets the account-frontend cache it in its own layer too.
+app.get('/api/internal/tenants/public', requireServiceKey, async (req, res) => {
+  try {
+    const rows = await listPublicTenants();
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(rows);
+  } catch (err) { serverError(res, err); }
+});
+
 // Get single tenant profile by slug
 app.get('/api/internal/tenants/by-slug/:slug', requireServiceKey, requirePostgres, async (req, res) => {
   try {
@@ -3633,6 +4399,11 @@ app.post('/api/blog', requireAuth, async (req, res) => {
       `INSERT INTO blog_posts (id, tenant_id, title, content, section, plans_section, image_urls, published_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [postId, req.tenantId, title, content || '', section || null, plansSection || '', JSON.stringify(imageUrls), publishedAt || now, now]
     );
+    // Fire-and-forget IndexNow notification — Bing/Yandex/Seznam see new posts
+    // within seconds. Host comes from the request itself so it works on any
+    // deployment without env-var configuration.
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    indexNow.notifyForTenant({ getOrCreateIndexNowKey }, req.tenantId, host, ['/blog', `/blog/${postId}`]);
     res.json({ ok: true, id: postId });
   } catch (err) { serverError(res, err); }
 });
@@ -3661,6 +4432,8 @@ app.put('/api/blog/:id', requireAuth, async (req, res) => {
       values.push(id, req.tenantId);
       await req.db.run(`UPDATE blog_posts SET ${fields.join(', ')} WHERE id = ? AND tenant_id = ?`, values);
     }
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    indexNow.notifyForTenant({ getOrCreateIndexNowKey }, req.tenantId, host, ['/blog', `/blog/${id}`]);
     res.json({ ok: true });
   } catch (err) { serverError(res, err); }
 });
@@ -3680,6 +4453,10 @@ app.delete('/api/blog/:id', requireAuth, async (req, res) => {
       }
     }
     await req.db.run('DELETE FROM blog_posts WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
+    // IndexNow has no explicit "removed" verb — submitting the now-404 URL
+    // tells search engines to re-crawl and discover the deletion.
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    indexNow.notifyForTenant({ getOrCreateIndexNowKey }, req.tenantId, host, ['/blog', `/blog/${req.params.id}`]);
     res.json({ ok: true });
   } catch (err) { serverError(res, err); }
 });
@@ -3731,6 +4508,124 @@ app.get('/api/templates/work-packages', (_req, res) => {
       .map(f => ({ filename: f, name: f.replace(/\.json$/i, '').replace(/-/g, ' ') }));
     res.json(files);
   } catch { res.json([]); }
+});
+
+// ─── Wiring editor (singleton project per tenant) ───────────────────
+// Stores the entire editor state as one JSON blob. Small projects (~100 KB)
+// comfortably fit a single row — revisit if the data balloons past a few MB.
+
+app.get('/api/wiring', requireAuth, async (req, res) => {
+  try {
+    const row = await req.db.get(
+      'SELECT name, data, updated_at FROM wiring_projects WHERE tenant_id = ?',
+      [req.tenantId]
+    );
+    if (!row) return res.json({ name: 'Wiring', data: null, updatedAt: null });
+    let parsed = null;
+    try { parsed = JSON.parse(row.data); } catch { parsed = null; }
+    res.json({ name: row.name, data: parsed, updatedAt: row.updated_at });
+  } catch (err) { serverError(res, err); }
+});
+
+app.put('/api/wiring', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const { name, data } = req.body ?? {};
+    if (data === undefined) return res.status(400).json({ error: 'Missing `data` field' });
+    const serialized = JSON.stringify(data ?? {});
+    if (serialized.length > 5_000_000) {
+      return res.status(400).json({ error: 'Wiring project exceeds 5 MB — split into multiple projects or clean up unused elements' });
+    }
+    const projectName = (typeof name === 'string' && name.trim()) ? name.trim() : 'Wiring';
+    const nowIso = new Date().toISOString();
+    // Single UPSERT — works in both SQLite (>=3.24) and Postgres.
+    // Using ON CONFLICT also sidesteps the db-wrapper's auto-append of
+    // "RETURNING id" (this table keys on tenant_id, not id).
+    await req.db.run(
+      `INSERT INTO wiring_projects (tenant_id, name, data, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (tenant_id) DO UPDATE
+         SET name       = EXCLUDED.name,
+             data       = EXCLUDED.data,
+             updated_at = EXCLUDED.updated_at`,
+      [req.tenantId, projectName, serialized, nowIso]
+    );
+    res.json({ ok: true, updatedAt: nowIso });
+  } catch (err) { serverError(res, err); }
+});
+
+app.delete('/api/wiring', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    await req.db.run('DELETE FROM wiring_projects WHERE tenant_id = ?', [req.tenantId]);
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// ─── Wiring user-library (row per custom device template) ───────────────
+// Per-tenant CRUD. Each template is a DeviceTemplate JSON blob, keyed by its
+// own id — lets us update/delete one template at a time instead of rewriting
+// the whole library on every save.
+//
+// Template ids come from the client (random base36 in practice) so they're
+// URL-safe. A PUT can either insert or update; the body's `id` must match the
+// path `:id` so a stale client can't overwrite a different row.
+const USER_TEMPLATE_MAX_BYTES = 500_000; // ~0.5 MB per template — plenty for pin lists + metadata
+
+app.get('/api/wiring/library', requireAuth, async (req, res) => {
+  try {
+    const rows = await req.db.all(
+      'SELECT template_id, data, updated_at FROM wiring_user_templates WHERE tenant_id = ? ORDER BY updated_at DESC',
+      [req.tenantId]
+    );
+    const templates = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.data);
+        if (parsed && typeof parsed === 'object') templates.push(parsed);
+      } catch {
+        // Skip malformed rows rather than failing the whole fetch — they can
+        // be re-saved from the client to repair themselves.
+      }
+    }
+    res.json({ templates });
+  } catch (err) { serverError(res, err); }
+});
+
+app.put('/api/wiring/library/:id', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const pathId = String(req.params.id || '').trim();
+    if (!pathId) return res.status(400).json({ error: 'Missing template id in path' });
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object') return res.status(400).json({ error: 'Body must be a template object' });
+    if (typeof body.id !== 'string' || body.id.trim() !== pathId) {
+      return res.status(400).json({ error: 'Body `id` must match path `:id`' });
+    }
+    const serialized = JSON.stringify(body);
+    if (serialized.length > USER_TEMPLATE_MAX_BYTES) {
+      return res.status(400).json({ error: `Template exceeds ${USER_TEMPLATE_MAX_BYTES} bytes` });
+    }
+    const nowIso = new Date().toISOString();
+    await req.db.run(
+      `INSERT INTO wiring_user_templates (tenant_id, template_id, data, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (tenant_id, template_id) DO UPDATE
+         SET data       = EXCLUDED.data,
+             updated_at = EXCLUDED.updated_at`,
+      [req.tenantId, pathId, serialized, nowIso]
+    );
+    res.json({ ok: true, updatedAt: nowIso });
+  } catch (err) { serverError(res, err); }
+});
+
+app.delete('/api/wiring/library/:id', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const pathId = String(req.params.id || '').trim();
+    if (!pathId) return res.status(400).json({ error: 'Missing template id in path' });
+    await req.db.run(
+      'DELETE FROM wiring_user_templates WHERE tenant_id = ? AND template_id = ?',
+      [req.tenantId, pathId]
+    );
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
 });
 
 app.get('/api/templates/work-packages/:filename', (req, res) => {
@@ -3966,13 +4861,13 @@ function locationRow(r) {
   return { id: Number(r.id), name: r.name, description: r.description || '', parentId: r.parent_id ? Number(r.parent_id) : null, sortOrder: r.sort_order, createdAt: r.created_at };
 }
 function partRow(r) {
-  return { id: Number(r.id), partNumber: r.part_number, name: r.name, manufacturer: r.manufacturer || '', kit: r.kit || '', subKit: r.sub_kit || '', category: r.category || 'other', mfgDate: r.mfg_date || '', bag: r.bag || '', notes: r.notes || '', createdAt: r.created_at };
+  return { id: Number(r.id), partNumber: r.part_number, name: r.name, manufacturer: r.manufacturer || '', kit: r.kit || '', subKit: r.sub_kit || '', category: r.category || 'other', bag: r.bag || '', notes: r.notes || '', createdAt: r.created_at };
 }
 function stockRow(r) {
   return {
     id: Number(r.id), partId: Number(r.part_id), locationId: Number(r.location_id), quantity: r.quantity,
     unit: r.unit || 'pcs', status: r.status || 'in_stock', condition: r.condition || 'new',
-    batch: r.batch || '', sourceKit: r.source_kit || '', notes: r.notes || '', updatedAt: r.updated_at,
+    batch: r.batch || '', sourceKit: r.source_kit || '', mfgDate: r.mfg_date || '', notes: r.notes || '', updatedAt: r.updated_at,
     // joined fields (optional, present in list queries)
     partNumber: r.part_number, partName: r.part_name, manufacturer: r.manufacturer,
     locationName: r.location_name, locationPath: r.location_path,
@@ -4062,11 +4957,11 @@ app.get('/api/inventory/parts', requireAuth, async (req, res) => {
 
 app.post('/api/inventory/parts', requireAuth, async (req, res) => {
   try {
-    const { partNumber, name, manufacturer, kit, subKit, category, mfgDate, bag, notes } = req.body;
+    const { partNumber, name, manufacturer, kit, subKit, category, bag, notes } = req.body;
     if (!partNumber) return res.status(400).json({ error: 'Part number is required' });
     await req.db.run(
-      'INSERT INTO inventory_parts (tenant_id, part_number, name, manufacturer, kit, sub_kit, category, mfg_date, bag, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [req.tenantId, partNumber, name || partNumber, manufacturer || '', kit || '', subKit || '', category || 'other', mfgDate || '', bag || '', notes || '']
+      'INSERT INTO inventory_parts (tenant_id, part_number, name, manufacturer, kit, sub_kit, category, bag, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [req.tenantId, partNumber, name || partNumber, manufacturer || '', kit || '', subKit || '', category || 'other', bag || '', notes || '']
     );
     const row = await req.db.get('SELECT * FROM inventory_parts WHERE tenant_id = ? ORDER BY id DESC LIMIT 1', [req.tenantId]);
     res.json(partRow(row));
@@ -4091,8 +4986,8 @@ app.post('/api/inventory/parts/ingest', requireAuth, async (req, res) => {
     } else {
       // Create new part
       await req.db.run(
-        'INSERT INTO inventory_parts (tenant_id, part_number, name, manufacturer, kit, sub_kit, category, mfg_date, bag, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [req.tenantId, partNumber, name || partNumber, manufacturer || '', kit || '', subKit || '', category || 'other', mfgDate || '', bag || '', notes || '']
+        'INSERT INTO inventory_parts (tenant_id, part_number, name, manufacturer, kit, sub_kit, category, bag, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [req.tenantId, partNumber, name || partNumber, manufacturer || '', kit || '', subKit || '', category || 'other', bag || '', notes || '']
       );
       row = await req.db.get('SELECT * FROM inventory_parts WHERE tenant_id = ? ORDER BY id DESC LIMIT 1', [req.tenantId]);
       created = true;
@@ -4121,9 +5016,9 @@ app.post('/api/inventory/parts/ingest', requireAuth, async (req, res) => {
 
       if (locId) {
         await req.db.run(
-          `INSERT INTO inventory_stock (tenant_id, part_id, location_id, quantity, unit, status, condition, batch, source_kit, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [req.tenantId, row.id, locId, qty, unit || 'pcs', stockStatus || 'in_stock', 'new', bag || '', kit || '', notes || '']
+          `INSERT INTO inventory_stock (tenant_id, part_id, location_id, quantity, unit, status, condition, batch, source_kit, mfg_date, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [req.tenantId, row.id, locId, qty, unit || 'pcs', stockStatus || 'in_stock', 'new', bag || '', kit || '', mfgDate || '', notes || '']
         );
       } else {
         console.warn('[ingest] Could not find or create location for tenant', req.tenantId);
@@ -4136,10 +5031,10 @@ app.post('/api/inventory/parts/ingest', requireAuth, async (req, res) => {
 
 app.put('/api/inventory/parts/:id', requireAuth, async (req, res) => {
   try {
-    const { partNumber, name, manufacturer, kit, subKit, category, mfgDate, bag, notes } = req.body;
+    const { partNumber, name, manufacturer, kit, subKit, category, bag, notes } = req.body;
     await req.db.run(
-      'UPDATE inventory_parts SET part_number = ?, name = ?, manufacturer = ?, kit = ?, sub_kit = ?, category = ?, mfg_date = ?, bag = ?, notes = ? WHERE id = ? AND tenant_id = ?',
-      [partNumber, name, manufacturer || '', kit || '', subKit || '', category || 'other', mfgDate || '', bag || '', notes || '', req.params.id, req.tenantId]
+      'UPDATE inventory_parts SET part_number = ?, name = ?, manufacturer = ?, kit = ?, sub_kit = ?, category = ?, bag = ?, notes = ? WHERE id = ? AND tenant_id = ?',
+      [partNumber, name, manufacturer || '', kit || '', subKit || '', category || 'other', bag || '', notes || '', req.params.id, req.tenantId]
     );
     const row = await req.db.get('SELECT * FROM inventory_parts WHERE id = ? AND tenant_id = ?', [req.params.id, req.tenantId]);
     res.json(partRow(row));
@@ -4206,12 +5101,12 @@ app.get('/api/inventory/stock', requireAuth, async (req, res) => {
 
 app.post('/api/inventory/stock', requireAuth, async (req, res) => {
   try {
-    const { partId, locationId, quantity, unit, status, condition, batch, sourceKit, notes } = req.body;
+    const { partId, locationId, quantity, unit, status, condition, batch, sourceKit, mfgDate, notes } = req.body;
     if (!partId || !locationId) return res.status(400).json({ error: 'Part and location are required' });
     await req.db.run(
-      `INSERT INTO inventory_stock (tenant_id, part_id, location_id, quantity, unit, status, condition, batch, source_kit, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.tenantId, partId, locationId, quantity ?? 0, unit || 'pcs', status || 'in_stock', condition || 'new', batch || '', sourceKit || '', notes || '']
+      `INSERT INTO inventory_stock (tenant_id, part_id, location_id, quantity, unit, status, condition, batch, source_kit, mfg_date, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.tenantId, partId, locationId, quantity ?? 0, unit || 'pcs', status || 'in_stock', condition || 'new', batch || '', sourceKit || '', mfgDate || '', notes || '']
     );
     const latest = await req.db.get('SELECT id FROM inventory_stock WHERE tenant_id = ? ORDER BY id DESC LIMIT 1', [req.tenantId]);
     const row = await req.db.get(
@@ -4236,6 +5131,7 @@ app.put('/api/inventory/stock/:id', requireAuth, async (req, res) => {
     if (req.body.condition  !== undefined) { fields.push('condition = ?');    values.push(req.body.condition || 'new'); }
     if (req.body.batch      !== undefined) { fields.push('batch = ?');        values.push(req.body.batch || ''); }
     if (req.body.sourceKit  !== undefined) { fields.push('source_kit = ?');   values.push(req.body.sourceKit || ''); }
+    if (req.body.mfgDate    !== undefined) { fields.push('mfg_date = ?');     values.push(req.body.mfgDate || ''); }
     if (req.body.notes      !== undefined) { fields.push('notes = ?');        values.push(req.body.notes || ''); }
     if (fields.length === 0) return res.status(400).json({ error: 'No fields to update' });
     fields.push("updated_at = ?");
@@ -4564,13 +5460,151 @@ app.post('/api/reset', requireAuth, requireAdmin, async (req, res) => {
 // ─── OpenGraph meta tag injection ────────────────────────────────────
 const distIndexPath = path.join(DIST_PATH, 'index.html');
 
-function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
+/** Prepend `base` to `raw` only when `raw` is a relative path. R2 / external
+ *  image URLs come through already absolute; without this guard they get the
+ *  tenant base URL concatenated in front, producing a double-`https://`. */
+function resolveImageUrl(base, raw) {
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : `${base}${raw}`;
+}
+
+/** Plain-text excerpt of a TipTap-style HTML blob — strip tags, collapse
+ *  whitespace, and trim with an ellipsis. Used for crawler-readable
+ *  index-page excerpts. */
+function postExcerpt(html, maxLen = 200) {
+  const text = (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
+}
+
+/**
+ * Walk a TipTap doc collecting text from every `text` node — for plain-text
+ * excerpts and meta descriptions. `blog_posts.content` is stored as TipTap
+ * JSON; without this we'd ship the raw JSON wrapper into the noscript /
+ * meta description. Falls back to the HTML-strip path for legacy content.
+ */
+function tiptapToText(value, maxLen) {
+  if (!value) return '';
+  if (typeof value === 'string' && value[0] !== '{') return postExcerpt(value, maxLen);
+  let doc;
+  try { doc = typeof value === 'string' ? JSON.parse(value) : value; }
+  catch { return postExcerpt(typeof value === 'string' ? value : '', maxLen); }
+  const out = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (typeof n !== 'object') return;
+    if (n.type === 'text' && typeof n.text === 'string') out.push(n.text);
+    if (Array.isArray(n.content)) walk(n.content);
+  };
+  walk(doc);
+  const text = out.join(' ').replace(/\s+/g, ' ').trim();
+  if (!maxLen || text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + '…';
+}
+
+/** Render a single TipTap node (or array of nodes) to HTML. Unknown node
+ *  types fall through to their children so we never leak raw JSON. */
+function renderTiptapNode(node, opts = {}) {
+  if (!node) return '';
+  if (Array.isArray(node)) return node.map(n => renderTiptapNode(n, opts)).join('');
+  if (typeof node !== 'object') return '';
+  const kids = Array.isArray(node.content) ? renderTiptapNode(node.content, opts) : '';
+  switch (node.type) {
+    case 'doc':         return kids;
+    case 'paragraph':   return kids ? `<p>${kids}</p>\n` : '';
+    case 'heading': {
+      const level = Math.min(4, Math.max(2, node.attrs?.level || 2));
+      return kids ? `<h${level}>${kids}</h${level}>\n` : '';
+    }
+    case 'bulletList':  return kids ? `<ul>${kids}</ul>\n` : '';
+    case 'orderedList': return kids ? `<ol>${kids}</ol>\n` : '';
+    case 'listItem':    return kids ? `<li>${kids}</li>` : '';
+    case 'blockquote':  return kids ? `<blockquote>${kids}</blockquote>\n` : '';
+    case 'hardBreak':   return '<br />';
+    case 'text': {
+      let t = escapeHtml(node.text || '');
+      for (const m of (node.marks || [])) {
+        if (m.type === 'bold')           t = `<strong>${t}</strong>`;
+        else if (m.type === 'italic')    t = `<em>${t}</em>`;
+        else if (m.type === 'underline') t = `<u>${t}</u>`;
+        else if (m.type === 'strike')    t = `<s>${t}</s>`;
+        else if (m.type === 'code')      t = `<code>${t}</code>`;
+        else if (m.type === 'link' && m.attrs?.href) {
+          const href = escapeHtml(m.attrs.href);
+          t = `<a href="${href}" rel="nofollow noopener">${t}</a>`;
+        }
+      }
+      return t;
+    }
+    case 'imageBlock':
+    case 'image': {
+      const src    = escapeHtml(node.attrs?.src || '');
+      const rawAlt = (node.attrs?.alt || '').trim();
+      // Fall back to a post-derived alt when the editor didn't capture one —
+      // empty alts are an accessibility issue and an image-SEO loss. The
+      // caller passes `opts.altFallback` (e.g. "Photo from: <post title>").
+      const alt    = escapeHtml(rawAlt || opts.altFallback || '');
+      return src ? `<img src="${src}" alt="${alt}" />\n` : '';
+    }
+    default:
+      return kids;
+  }
+}
+
+/** TipTap JSON → readable HTML for the noscript body. Legacy HTML content
+ *  passes through unchanged. Unparseable JSON returns '' rather than
+ *  leaking the raw blob into the page. */
+function tiptapToHtml(value, opts = {}) {
+  if (!value) return '';
+  if (typeof value === 'string' && value[0] !== '{') return value;
+  try {
+    const doc = typeof value === 'string' ? JSON.parse(value) : value;
+    return renderTiptapNode(doc, opts);
+  } catch { return ''; }
+}
+
+/** First image URL inside a TipTap doc — used as an og:image fallback when
+ *  the post has no separate `image_urls` entry. */
+function tiptapFirstImage(value) {
+  if (!value) return null;
+  if (typeof value === 'string' && value[0] !== '{') return null;
+  let doc;
+  try { doc = typeof value === 'string' ? JSON.parse(value) : value; }
+  catch { return null; }
+  let found = null;
+  const walk = (n) => {
+    if (found) return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (typeof n !== 'object' || !n) return;
+    if ((n.type === 'imageBlock' || n.type === 'image') && n.attrs?.src) {
+      found = n.attrs.src;
+      return;
+    }
+    if (Array.isArray(n.content)) walk(n.content);
+  };
+  walk(doc);
+  return found;
+}
+
+/**
+ * Inject per-route SEO into the SPA's static index.html:
+ *  - meta tags into `<head>` (OG, Twitter, canonical, robots, JSON-LD);
+ *  - per-route `<title>` (the template ships with a generic title);
+ *  - optional `bodyContent` rendered inside a `<noscript>` block — gives a
+ *    crawler's first-pass HTML fetch the page text without waiting for the
+ *    React app to mount. Google indexes `<noscript>` and browsers with JS
+ *    enabled ignore it, so React renders normally for users.
+ */
+function injectOgTags(html, { title, description, imageUrl, pageUrl, noindex, canonical, jsonLd, ogType, bodyContent }) {
   const t = escapeHtml(title);
   const d = escapeHtml(description);
   const p = escapeHtml(pageUrl);
   const i = escapeHtml(imageUrl);
+  const c = escapeHtml(canonical);
   const tags = [
-    `<meta property="og:type" content="website" />`,
+    noindex ? `<meta name="robots" content="noindex, nofollow" />` : '',
+    canonical ? `<link rel="canonical" href="${c}" />` : '',
+    `<meta property="og:type" content="${ogType || 'website'}" />`,
     `<meta property="og:title" content="${t}" />`,
     `<meta property="og:description" content="${d}" />`,
     pageUrl  ? `<meta property="og:url" content="${p}" />` : '',
@@ -4579,8 +5613,32 @@ function injectOgTags(html, { title, description, imageUrl, pageUrl }) {
     `<meta name="twitter:title" content="${t}" />`,
     `<meta name="twitter:description" content="${d}" />`,
     imageUrl ? `<meta name="twitter:image" content="${i}" />` : '',
+    // `jsonLd` may be a single object OR an array of objects (multiple
+    // schemas per page, e.g. BlogPosting + BreadcrumbList). Emit one script
+    // per item — preferred over a single `@graph` for indexing reliability.
+    ...(Array.isArray(jsonLd) ? jsonLd : (jsonLd ? [jsonLd] : [])).map(item =>
+      `<script type="application/ld+json">${JSON.stringify(item).replace(/</g, '\\u003c')}</script>`),
   ].filter(Boolean).join('\n    ');
-  return html.replace('</head>', `  ${tags}\n  </head>`);
+  let out = html.replace('</head>', `  ${tags}\n  </head>`);
+  // Replace the static template `<title>` with the per-route title — og:title
+  // alone doesn't update the tab / SERP-displayed title.
+  if (title) {
+    out = out.replace(/<title>[\s\S]*?<\/title>/, `<title>${t}</title>`);
+  }
+  // Replace the static template `<meta name="description">` with the per-route
+  // description — Google's snippets prefer this over og:description.
+  if (description) {
+    out = out.replace(
+      /<meta\s+name=["']description["']\s+content=["'][^"']*["']\s*\/?>/i,
+      `<meta name="description" content="${d}" />`
+    );
+  }
+  // Inject crawler-readable content into `<body>` so a crawler's first-pass
+  // HTML fetch sees the page text rather than just the empty SPA root.
+  if (bodyContent) {
+    out = out.replace('</body>', `  <noscript>\n${bodyContent}\n  </noscript>\n  </body>`);
+  }
+  return out;
 }
 
 function baseUrl(req) {
@@ -4595,7 +5653,22 @@ app.get('/blog', async (req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.status(404).send('Not found');
   try {
     const html    = fs.readFileSync(distIndexPath, 'utf8');
-    const db      = getDefaultDb();
+    // Resolve the tenant from the subdomain — same pattern as /sitemap.xml.
+    // The blog must serve the REQUESTED tenant's content. `getDefaultDb()`
+    // returns the master table's first tenant — using it here would leak
+    // that tenant's blog onto every other subdomain.
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    const db       = tenant ? getTenantDb(tenant.id) : getDefaultDb();
+    const isPublic = !tenant || tenant.public_blog !== 0;
     const general = await getSetting(db, 'general', DEFAULT_GENERAL);
     const projectName = general.projectName || 'Build Tracker';
     const totalRow    = await db.get(
@@ -4609,13 +5682,80 @@ app.get('/blog', async (req, res) => {
     );
     const imageUrls = latestSession ? JSON.parse(latestSession.image_urls || '[]') : [];
     const base      = baseUrl(req);
-    const imageUrl  = imageUrls[0] ? `${base}${imageUrls[0]}` : null;
-    const injected  = injectOgTags(html, {
-      title: `${projectName} — Build Journal`,
-      description: `${totalHours}h logged so far. Follow along on this RV-10 homebuilt aircraft build.`,
-      imageUrl, pageUrl: `${base}/blog`,
-    });
-    res.type('html').send(injected);
+    const imageUrl  = resolveImageUrl(base, imageUrls[0]);
+    const pageUrl   = `${base}/blog`;
+    const title     = `${projectName} — Build Journal`;
+    const description = `${totalHours}h logged so far. Follow along on this RV-10 homebuilt aircraft build.`;
+
+    // Crawler-readable content + Blog JSON-LD only for indexable (public) blogs.
+    let bodyContent;
+    let jsonLd;
+    if (isPublic) {
+      const sectionConfigs = await getSetting(db, 'sections', DEFAULT_SECTIONS);
+      const sectionLabel = (id) => (sectionConfigs.find(s => s.id === id)?.label) || id || '';
+      const posts = await db.all(
+        'SELECT id, title, content, published_at FROM blog_posts WHERE tenant_id = ? ORDER BY published_at DESC LIMIT 50',
+        [db.tenantId]
+      );
+      const sessions = await db.all(
+        `SELECT id, section, start_time, duration_minutes, notes FROM sessions
+         WHERE tenant_id = ? ORDER BY start_time DESC LIMIT 50`,
+        [db.tenantId]
+      );
+      const items = [
+        ...posts.map(p => ({
+          title: p.title, href: `/blog/${p.id}`, date: p.published_at, excerpt: tiptapToText(p.content, 200),
+        })),
+        ...sessions.map(s => {
+          const hours = Math.floor(s.duration_minutes / 60);
+          const mins  = Math.round(s.duration_minutes % 60);
+          const dur   = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+          return {
+            title: `${sectionLabel(s.section)} — Work Session (${dur})`,
+            href: `/blog/session-${s.id}`,
+            date: s.start_time,
+            excerpt: postExcerpt(s.notes || ''),
+          };
+        }),
+      ].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+      const fmtDate = (iso) => iso ? new Date(iso).toISOString().slice(0, 10) : '';
+      bodyContent =
+        `    <header>\n` +
+        `      <h1>${escapeHtml(title)}</h1>\n` +
+        `      <p>${escapeHtml(description)}</p>\n` +
+        `    </header>\n` +
+        (items.length === 0
+          ? `    <p>No posts yet.</p>\n`
+          : `    <ul>\n` + items.map(item =>
+              `      <li>\n` +
+              `        <a href="${escapeHtml(item.href)}"><h2>${escapeHtml(item.title)}</h2></a>\n` +
+              (item.date ? `        <time datetime="${escapeHtml(item.date)}">${escapeHtml(fmtDate(item.date))}</time>\n` : '') +
+              (item.excerpt ? `        <p>${escapeHtml(item.excerpt)}</p>\n` : '') +
+              `      </li>\n`
+            ).join('') + `    </ul>\n`);
+
+      jsonLd = items.length > 0 ? {
+        '@context': 'https://schema.org',
+        '@type': 'Blog',
+        url: pageUrl,
+        name: title,
+        description,
+        blogPost: items.slice(0, 20).map(item => ({
+          '@type': 'BlogPosting',
+          headline: item.title,
+          url: `${base}${item.href}`,
+          ...(item.date ? { datePublished: item.date } : {}),
+        })),
+      } : undefined;
+    }
+
+    res.type('html').send(injectOgTags(html, {
+      title, description, imageUrl, pageUrl,
+      canonical: isPublic ? pageUrl : undefined,
+      noindex: !isPublic,
+      bodyContent, jsonLd,
+    }));
   } catch { res.sendFile(distIndexPath); }
 });
 
@@ -4623,12 +5763,26 @@ app.get('/blog/:postId', async (req, res) => {
   if (!fs.existsSync(distIndexPath)) return res.status(404).send('Not found');
   try {
     const html    = fs.readFileSync(distIndexPath, 'utf8');
-    const db      = getDefaultDb();
+    // Resolve the tenant from the subdomain — see the /blog handler above
+    // for the rationale. Without this, every subdomain's posts route reads
+    // the first tenant's blog_posts table.
+    const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    let tenant = null;
+    if (MULTI_TENANT) {
+      const parts = host.split('.');
+      if (parts.length >= 3 && !isBareIpHost(host) && !['www', 'account', 'demo'].includes(parts[0])) {
+        try { tenant = await getTenantBySlug(parts[0]); } catch {}
+      }
+    } else {
+      try { tenant = await getFirstTenant(); } catch {}
+    }
+    const db       = tenant ? getTenantDb(tenant.id) : getDefaultDb();
+    const isPublic = !tenant || tenant.public_blog !== 0;
     const general = await getSetting(db, 'general', DEFAULT_GENERAL);
     const projectName = general.projectName || 'Build Tracker';
     const base    = baseUrl(req);
     const { postId } = req.params;
-    let title, description, imageUrl;
+    let title, description, imageUrl, datePublished, dateModified, bodyHtml;
 
     if (postId.startsWith('session-')) {
       const sessionId = postId.replace('session-', '');
@@ -4642,30 +5796,102 @@ app.get('/blog/:postId', async (req, res) => {
         title       = `${label} — Work Session (${dur})`;
         description = row.notes || `${dur} build session logged on ${new Date(row.start_time).toLocaleDateString()}`;
         const imgs  = JSON.parse(row.image_urls || '[]');
-        imageUrl    = imgs[0] ? `${base}${imgs[0]}` : null;
+        imageUrl    = resolveImageUrl(base, imgs[0]);
+        datePublished = row.start_time;
+        dateModified  = row.end_time || row.start_time;
+        // Session notes are plain text — escape and wrap in <p>.
+        bodyHtml = row.notes ? `<p>${escapeHtml(row.notes)}</p>` : '';
       }
     } else {
       const row = await db.get('SELECT * FROM blog_posts WHERE id = ? AND tenant_id = ?', [postId, db.tenantId]);
       if (row) {
         title = row.title;
-        const text = row.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        description = text.slice(0, 200) || `Build journal entry — ${projectName}`;
+        description = tiptapToText(row.content, 200) || `Build journal entry — ${projectName}`;
         const imgs  = JSON.parse(row.image_urls || '[]');
-        const match = row.content.match(/src="(\/files\/[^"]+)"/);
-        imageUrl    = imgs[0] ? `${base}${imgs[0]}` : match ? `${base}${match[1]}` : null;
+        const rawImg = imgs[0] || tiptapFirstImage(row.content);
+        imageUrl    = resolveImageUrl(base, rawImg);
+        datePublished = row.published_at;
+        dateModified  = row.updated_at || row.published_at;
+        // Content is TipTap JSON — render to readable HTML for the noscript
+        // block so crawlers see prose instead of the raw JSON wrapper.
+        // Pass an alt-text fallback so images without an editor-supplied
+        // alt aren't left with `alt=""` (accessibility + image-SEO).
+        bodyHtml = tiptapToHtml(row.content, { altFallback: `Photo from: ${row.title}` });
       }
     }
 
     if (!title) {
-      return res.type('html').send(injectOgTags(html, {
-        title: `${projectName} — Build Journal`,
-        description: 'Follow along on this RV-10 homebuilt aircraft build.',
-        imageUrl: null, pageUrl: `${base}/blog`,
+      // Honest 404 — return the status code, set noindex, and inject the
+      // same hangar/rivet-styled body the SPA renders client-side so crawlers
+      // see a real "not found" page instead of a duplicate of the blog index.
+      const notFoundBody =
+        `    <main>\n` +
+        `      <p>404 — wrong heading</p>\n` +
+        `      <h1>This page never made it out of the hangar.</h1>\n` +
+        `      <p>Either the URL is misspelled, this logbook entry has been retired to a dusty hangar somewhere, or you followed a link to something that never got riveted into the build.</p>\n` +
+        `      <p>The rest of the build log is still flying though — head back and pick something else to read.</p>\n` +
+        `      <p><a href="/blog">Back to the build log →</a></p>\n` +
+        `    </main>\n`;
+      return res.status(404).type('html').send(injectOgTags(html, {
+        title: `Wrong heading — ${projectName}`,
+        description: `This page is not part of the ${projectName} build log.`,
+        imageUrl: null, pageUrl: `${base}/blog/${postId}`,
+        noindex: true,
+        bodyContent: notFoundBody,
       }));
     }
+
+    const pageUrl = `${base}/blog/${postId}`;
+    const fmtDate = (iso) => iso ? new Date(iso).toISOString().slice(0, 10) : '';
+    // Author resolution: explicit `authorName` setting overrides; otherwise
+    // the tenant's username (subdomain slug) is used so we never leak the
+    // real-name `display_name` to the public web. Self-hosted with no tenant
+    // → Organization+projectName.
+    const authorOverride = (general.authorName || '').trim();
+    const authorUsername = (tenant?.slug || '').trim();
+    const author = authorOverride
+      ? { '@type': 'Person', name: authorOverride }
+      : authorUsername
+        ? { '@type': 'Person', name: authorUsername }
+        : { '@type': 'Organization', name: projectName };
+    const jsonLd = isPublic ? [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'BlogPosting',
+        headline: title,
+        description,
+        url: pageUrl,
+        ...(datePublished ? { datePublished } : {}),
+        ...(dateModified  ? { dateModified  } : {}),
+        ...(imageUrl ? { image: imageUrl } : {}),
+        author,
+        publisher: { '@type': 'Organization', name: projectName },
+        mainEntityOfPage: { '@type': 'WebPage', '@id': pageUrl },
+      },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Blog', item: `${base}/blog` },
+          { '@type': 'ListItem', position: 2, name: title, item: pageUrl },
+        ],
+      },
+    ] : undefined;
+
+    const bodyContent = isPublic
+      ? `    <article>\n` +
+        `      <h1>${escapeHtml(title)}</h1>\n` +
+        (datePublished ? `      <time datetime="${escapeHtml(datePublished)}">${escapeHtml(fmtDate(datePublished))}</time>\n` : '') +
+        (bodyHtml ? `      ${bodyHtml}\n` : '') +
+        `    </article>\n`
+      : undefined;
+
     res.type('html').send(injectOgTags(html, {
       title: `${title} — ${projectName}`, description, imageUrl,
-      pageUrl: `${base}/blog/${postId}`,
+      pageUrl, ogType: 'article',
+      canonical: isPublic ? pageUrl : undefined,
+      noindex: !isPublic,
+      jsonLd, bodyContent,
     }));
   } catch { res.sendFile(distIndexPath); }
 });

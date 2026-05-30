@@ -1,0 +1,58 @@
+import type { DeviceTemplate } from '../types';
+
+// Per Garmin G3X Touch Install Manual 190-01115-01 Rev. AK §26.17.
+const device: DeviceTemplate = {
+  id: 'garmin-gtr-20',
+  manufacturer: 'Garmin',
+  partNumber: '011-04055-00',
+  name: 'GTR 20',
+  category: 'nav-com',
+  description: 'Remote-mount VHF comm radio with built-in 2-place intercom.',
+  width: 280,
+  height: 480,
+  manuals: [
+    { label: 'Manuals', url: 'https://support.garmin.com/en-US/?query=010-01076-11&tab=manuals' },
+  ],
+  connectors: [{
+    name: 'J2001',
+    gender: 'F',
+    connectorType: 'dsub',
+    pins: [
+      { pinNumber: '1',  name: 'AIRCRAFT POWER',     side: 'left',  role: 'power'  },
+      { pinNumber: '2',  name: 'DISC 1',             side: 'right' },
+      { pinNumber: '4',  name: 'TX INTERLOCK OUT',   side: 'right' },
+      { pinNumber: '5',  name: 'TX INTERLOCK IN',    side: 'right' },
+      { pinNumber: '6',  name: 'CAN BUS LO',         side: 'right' },
+      { pinNumber: '7',  name: 'CAN BUS HI',         side: 'right' },
+      { pinNumber: '8',  name: 'ID IN',              side: 'right' },
+      { pinNumber: '9',  name: 'AUX MONO IN 2',      side: 'right' },
+      { pinNumber: '10', name: 'RECEIVER AUDIO OUT HI', side: 'right' },
+      { pinNumber: '11', name: 'COPILOT HS RIGHT',   side: 'right' },
+      { pinNumber: '12', name: 'COPILOT HS LEFT',    side: 'right' },
+      { pinNumber: '13', name: 'PILOT HS RIGHT',     side: 'right' },
+      { pinNumber: '14', name: 'PILOT HS LEFT',      side: 'right' },
+      { pinNumber: '15', name: 'COPILOT PTT',        side: 'right' },
+      { pinNumber: '16', name: 'COPILOT MIC IN',     side: 'right' },
+      { pinNumber: '17', name: 'PILOT MIC IN',       side: 'right' },
+      { pinNumber: '18', name: 'MUSIC IN RIGHT',     side: 'right' },
+      { pinNumber: '19', name: 'MUSIC IN LEFT',      side: 'right' },
+      { pinNumber: '20', name: 'AIRCRAFT GROUND',    side: 'left',  role: 'ground' },
+      { pinNumber: '22', name: 'DISC 2',             side: 'right' },
+      { pinNumber: '25', name: 'CAN TERM B',         side: 'right' },
+      { pinNumber: '26', name: 'CAN TERM A',         side: 'right' },
+      { pinNumber: '27', name: 'ID LO',              side: 'right', role: 'ground' },
+      { pinNumber: '28', name: 'AUX 2 LO',           side: 'right', role: 'ground' },
+      { pinNumber: '29', name: 'RECEIVER AUDIO LO',  side: 'right', role: 'ground' },
+      { pinNumber: '30', name: 'COPILOT HS LO',      side: 'right', role: 'ground' },
+      { pinNumber: '31', name: 'AUX 1 LO',           side: 'right', role: 'ground' },
+      { pinNumber: '32', name: 'AUX MONO IN 1',      side: 'right' },
+      { pinNumber: '33', name: 'PILOT HS LO',        side: 'right', role: 'ground' },
+      { pinNumber: '34', name: 'COPILOT MIC LO',     side: 'right', role: 'ground' },
+      { pinNumber: '35', name: 'PILOT PTT',          side: 'right' },
+      { pinNumber: '36', name: 'PILOT MIC LO',       side: 'right', role: 'ground' },
+      { pinNumber: '37', name: 'MUSIC LO',           side: 'right', role: 'ground' },
+    ],
+  }],
+};
+
+export default device;

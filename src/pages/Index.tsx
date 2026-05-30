@@ -109,10 +109,6 @@ const Index = () => {
   }, [sessionsOffset]);
 
   useEffect(() => {
-    if (projectName) document.title = `${projectName} — Tracker`;
-  }, [projectName]);
-
-  useEffect(() => {
     loadSessions();
     fetchGeneralSettings().then(s => {
       setProjectName(s.projectName);

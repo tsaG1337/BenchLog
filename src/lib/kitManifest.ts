@@ -2,7 +2,7 @@
  * Kit manifest system: defines aircraft types, their kits, sub-kits,
  * bags, and expected parts lists for mass ingestion verification.
  *
- * Vendor data lives in src/templates/inventory/kitmanifest/<aircraft>/.
+ * Vendor data lives in src/lib/inventory/kitmanifest/<aircraft>/.
  * To add a new aircraft: create the template folder, then add one import + one array entry here.
  */
 
@@ -57,12 +57,14 @@ export interface AircraftManifest {
 }
 
 // ─── Registry ─────────────────────────────────────────────────────
+// The canonical source is `src/lib/aircraft/` (one folder per
+// manufacturer → model). This file keeps the existing public API so
+// downstream consumers don't have to change their imports.
 
-import { VANS_RV10_MANIFEST } from '@/templates/inventory/kitmanifest/vans-rv10';
+import { MANUFACTURERS } from '@/lib/aircraft';
 
-export const AIRCRAFT_MANIFESTS: AircraftManifest[] = [
-  VANS_RV10_MANIFEST,
-];
+export const AIRCRAFT_MANIFESTS: AircraftManifest[] = MANUFACTURERS
+  .flatMap(m => m.models.map(model => model.manifest));
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -337,7 +339,29 @@ export function findBagFuzzy(aircraftType: string, rawBagId: string): BagLookupR
     if (norm.replace(/\s+/g, '') === needleNoSpace) return makeBagResult(kit, bag);
   }
 
-  // 4) Substring: prefer longest match
+  // 4) Bare bag number — the physical Van's label prints only the number
+  //    (e.g. "1217-1"), without the word "BAG". Compare with a leading
+  //    "BAG " stripped from both sides. Exact / prefix only, so it stays
+  //    safe against false positives.
+  const stripBagWord = (s: string) => s.replace(/^BAG\s+/, '').trim();
+  const needleBare = stripBagWord(needle);
+  const needleBareNoSpace = needleBare.replace(/\s+/g, '');
+  if (needleBare) {
+    for (const { norm, kit, bag } of allBags) {
+      const bare = stripBagWord(norm);
+      if (!bare) continue;
+      if (
+        bare === needleBare ||
+        bare.replace(/\s+/g, '') === needleBareNoSpace ||
+        needleBare.startsWith(bare + ' ') ||
+        needleBare.startsWith(bare + '-')
+      ) {
+        return makeBagResult(kit, bag);
+      }
+    }
+  }
+
+  // 5) Substring: prefer longest match
   let bestMatch: { kit: typeof manifest.kits[number]; bag: BagDefinition; len: number } | null = null;
   for (const { norm, kit, bag } of allBags) {
     if (norm.length >= 8 && needle.includes(norm) && (!bestMatch || norm.length > bestMatch.len)) {
@@ -346,7 +370,7 @@ export function findBagFuzzy(aircraftType: string, rawBagId: string): BagLookupR
   }
   if (bestMatch) return makeBagResult(bestMatch.kit, bestMatch.bag);
 
-  // 5) No-space substring
+  // 6) No-space substring
   for (const { norm, kit, bag } of allBags) {
     const normNoSpace = norm.replace(/\s+/g, '');
     if (normNoSpace.length >= 8 && needleNoSpace.includes(normNoSpace)) return makeBagResult(kit, bag);

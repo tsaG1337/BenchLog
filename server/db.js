@@ -327,6 +327,98 @@ async function listTenants() {
   ).all();
 }
 
+/**
+ * listPublicTenants() — for the parent benchlog.build sitemap-index and llms.txt.
+ * Returns active tenants with public_blog=1 AND at least one published blog post,
+ * enriched with their most-recent blog post metadata.
+ *
+ *   [{ slug, displayName, projectName, aircraftType, createdAt,
+ *      postCount, latestPostTitle, latestPostDate, latestPostImage }]
+ *
+ * The "at least one post" filter is intentional: it keeps brand-new and empty
+ * signups out of the publicly-readable sitemap. A tenant becomes discoverable
+ * the moment they publish their first post — no batch job needed; the next
+ * request to the parent sitemap-INDEX re-runs this query and includes them.
+ *
+ * Postgres path: one query, INNER JOIN on the post-count CTE so empty tenants
+ * are excluded at the SQL level.
+ * SQLite path: single-tenant deployments — returns the single tenant only if
+ * they're public AND have at least one post.
+ */
+async function listPublicTenants() {
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query(`
+      WITH latest AS (
+        SELECT DISTINCT ON (tenant_id) tenant_id, title, published_at, image_urls
+        FROM blog_posts
+        ORDER BY tenant_id, published_at DESC
+      ),
+      counts AS (
+        SELECT tenant_id, COUNT(*)::int AS n FROM blog_posts GROUP BY tenant_id
+      )
+      SELECT t.slug, t.display_name, t.project_name, t.aircraft_type, t.created_at,
+             c.n              AS post_count,
+             l.title          AS latest_post_title,
+             l.published_at   AS latest_post_date,
+             l.image_urls     AS latest_post_image_urls
+      FROM tenants t
+      INNER JOIN counts c ON c.tenant_id = t.id AND c.n > 0
+      LEFT  JOIN latest l ON l.tenant_id = t.id
+      WHERE t.public_blog != 0 AND t.is_active != 0
+      ORDER BY l.published_at DESC NULLS LAST, t.created_at DESC
+    `);
+    return rows.map(r => ({
+      slug:             r.slug,
+      displayName:      r.display_name || '',
+      projectName:      r.project_name || 'My Build',
+      aircraftType:     r.aircraft_type || 'RV-10',
+      createdAt:        r.created_at,
+      postCount:        Number(r.post_count) || 0,
+      latestPostTitle:  r.latest_post_title || null,
+      latestPostDate:   r.latest_post_date  || null,
+      latestPostImage:  firstImageFromJson(r.latest_post_image_urls),
+    }));
+  }
+
+  // SQLite single-tenant — at most one row in master.tenants. Include only if
+  // the tenant has at least one published post.
+  const row = getMasterSqlite().prepare(
+    `SELECT id, slug, display_name, project_name, aircraft_type, created_at, public_blog, is_active
+       FROM tenants WHERE public_blog != 0 AND is_active != 0 LIMIT 1`
+  ).get();
+  if (!row) return [];
+  let postCount = 0, latestTitle = null, latestDate = null, latestImageUrls = null;
+  try {
+    const tdb = openSqlite(tenantDbPath(row.id));
+    const cnt = tdb.prepare('SELECT COUNT(*) AS n FROM blog_posts').get();
+    postCount = cnt?.n || 0;
+    if (postCount === 0) return [];
+    const latest = tdb.prepare(
+      'SELECT title, published_at, image_urls FROM blog_posts ORDER BY published_at DESC LIMIT 1'
+    ).get();
+    if (latest) { latestTitle = latest.title; latestDate = latest.published_at; latestImageUrls = latest.image_urls; }
+  } catch {}
+  return [{
+    slug:             row.slug,
+    displayName:      row.display_name || '',
+    projectName:      row.project_name || 'My Build',
+    aircraftType:     row.aircraft_type || 'RV-10',
+    createdAt:        row.created_at,
+    postCount,
+    latestPostTitle:  latestTitle,
+    latestPostDate:   latestDate,
+    latestPostImage:  firstImageFromJson(latestImageUrls),
+  }];
+}
+
+function firstImageFromJson(raw) {
+  if (!raw) return null;
+  try {
+    const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+  } catch { return null; }
+}
+
 async function getTenantById(id) {
   if (DB_BACKEND === 'postgres') {
     const { rows } = await getPool().query(
@@ -356,7 +448,46 @@ async function createTenantRow({ id, slug, display_name, email, role, password_h
 const TENANT_UPDATABLE_COLS = new Set([
   'slug', 'email', 'display_name', 'password_hash', 'is_active',
   'plan', 'role', 'project_name', 'aircraft_type', 'public_blog',
+  'indexnow_key',
 ]);
+
+/**
+ * getOrCreateIndexNowKey(tenantId) — returns the tenant's IndexNow key,
+ * generating one lazily on first call. The key is a 32-char hex string
+ * (16 random bytes), served at https://{slug}.benchlog.build/{key}.txt
+ * to prove ownership to the IndexNow API. Once issued, the key is stable
+ * for the tenant's lifetime — rotating it would invalidate any in-flight
+ * IndexNow submissions Bing has cached.
+ */
+async function getOrCreateIndexNowKey(tenantId) {
+  const crypto = require('crypto');
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query('SELECT indexnow_key FROM tenants WHERE id = $1', [tenantId]);
+    let key = rows[0]?.indexnow_key || '';
+    if (!key) {
+      key = crypto.randomBytes(16).toString('hex');
+      await getPool().query('UPDATE tenants SET indexnow_key = $1 WHERE id = $2', [key, tenantId]);
+    }
+    return key;
+  }
+  const row = getMasterSqlite().prepare('SELECT indexnow_key FROM tenants WHERE id = ?').get(tenantId);
+  let key = row?.indexnow_key || '';
+  if (!key) {
+    key = crypto.randomBytes(16).toString('hex');
+    getMasterSqlite().prepare('UPDATE tenants SET indexnow_key = ? WHERE id = ?').run(key, tenantId);
+  }
+  return key;
+}
+
+/** Look up a tenant by their IndexNow key — for serving /{key}.txt. */
+async function getTenantByIndexNowKey(key) {
+  if (!key || !/^[a-f0-9]{32}$/.test(key)) return null;
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query('SELECT id, slug, indexnow_key FROM tenants WHERE indexnow_key = $1', [key]);
+    return rows[0] || null;
+  }
+  return getMasterSqlite().prepare('SELECT id, slug, indexnow_key FROM tenants WHERE indexnow_key = ?').get(key) || null;
+}
 
 async function updateTenantRow(id, fields) {
   const entries = Object.entries(fields).filter(([k]) => TENANT_UPDATABLE_COLS.has(k));
@@ -553,6 +684,9 @@ module.exports = {
   openSqlite,
   tenantDbPath,
   listTenants,
+  listPublicTenants,
+  getOrCreateIndexNowKey,
+  getTenantByIndexNowKey,
   getTenantById,
   createTenantRow,
   updateTenantRow,

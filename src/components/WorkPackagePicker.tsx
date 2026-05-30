@@ -90,9 +90,20 @@ export function WorkPackagePicker({
     <div className="space-y-3">
       {/* Step 1: Section chips */}
       <div>
-        <label className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em] mb-2 block">
-          Assembly Section
-        </label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">
+            Assembly Section
+          </label>
+          {section && (
+            <a
+              href={`/plans?phase=${encodeURIComponent(section)}`}
+              className="text-[10px] font-medium text-primary hover:underline inline-flex items-center gap-0.5"
+              title="Open the plans library filtered to this section"
+            >
+              View plans →
+            </a>
+          )}
+        </div>
         <div className={`grid ${compact ? 'grid-cols-2 gap-1.5' : 'grid-cols-4 gap-2'}`}>
           {sections.map((s) => {
             const isActive = section === s.id;
