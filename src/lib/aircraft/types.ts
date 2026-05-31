@@ -12,6 +12,21 @@ import type { OcrVendorConfig } from '@/lib/ocrVendors';
 
 // ─── Manufacturer / model descriptors ─────────────────────────────
 
+/**
+ * Work-packages template — the tree structure shown in the build
+ * flowchart, seeded for new tenants and re-loadable from settings.
+ * Top-level keys are KitPhase IDs (`empennage`, `wings`, …); values
+ * are nested node trees of `{ id, label, children? }`. The schema is
+ * deliberately loose so JSON files authored by hand stay easy to
+ * read; the server treats them as opaque payloads.
+ */
+export interface WorkPackageNode {
+  id: string;
+  label: string;
+  children?: WorkPackageNode[];
+}
+export type WorkPackagesTemplate = Record<string, WorkPackageNode[]>;
+
 export interface AircraftModel {
   /** Slug-safe ID, e.g. 'rv10' */
   id: string;
@@ -25,6 +40,11 @@ export interface AircraftModel {
   planSections?: PlanSection[];
   /** Service bulletins applicable to this model. */
   serviceBulletins?: ServiceBulletin[];
+  /** Work-packages template (build flowchart tree). Seeded for new
+   *  tenants and re-loadable via the "Reset to default" action in
+   *  settings. Optional so a kit without a hand-curated template
+   *  simply doesn't show the reset action. */
+  workPackagesTemplate?: WorkPackagesTemplate;
 }
 
 export interface Manufacturer {

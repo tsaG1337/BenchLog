@@ -8,6 +8,12 @@
 const path = require('path');
 const fs   = require('fs');
 
+// ─── Default aircraft ────────────────────────────────────────────────
+// Flat slug (manufacturer-model) used everywhere on the wire. Drives
+// which work-packages template seeds new tenants; the user can change
+// it later from Settings → General.
+const DEFAULT_AIRCRAFT_SLUG = 'vans-rv10';
+
 // ─── General settings ────────────────────────────────────────────────
 // These are written to the `settings` table (key = 'general') on tenant creation.
 const DEFAULT_GENERAL = {
@@ -54,19 +60,46 @@ const DEFAULT_SECTIONS = [
 ];
 
 // ─── Default work-package template ───────────────────────────────────
-// File name inside /templates/work-packages/ to seed for new users.
-// Set to null or '' to skip seeding work packages.
-const DEFAULT_WP_TEMPLATE = 'work-packages-Vans-RV-10.json';
+// Templates now live alongside the aircraft taxonomy at
+//   src/lib/aircraft/<manufacturer>/<model>/work-packages.json
+// — same place the kit manifest, plan sections, and service bulletins
+// live. Each aircraft owns its own template; adding a new model is
+// just dropping a `work-packages.json` in its folder.
+//
+// The Docker image copies src/lib/aircraft alongside server code so
+// the loader works at runtime (see Dockerfile).
+const AIRCRAFT_ROOT = path.join(__dirname, '../src/lib/aircraft');
 
 /**
- * Load the default work-package template from disk.
- * Returns the parsed JSON or null if not found / not configured.
+ * Resolve the work-packages JSON path for an aircraft slug, or null
+ * if no template exists for that aircraft.
+ *
+ * Slug format: `<manufacturer>-<model>` (e.g. `vans-rv10`). Splits on
+ * the FIRST dash so model IDs that contain dashes (e.g. `rv-14a`)
+ * round-trip correctly even though we don't ship any today.
  */
-function loadDefaultWorkPackages() {
-  if (!DEFAULT_WP_TEMPLATE) return null;
+function workPackagesPath(slug) {
+  if (!slug || typeof slug !== 'string') return null;
+  const dash = slug.indexOf('-');
+  if (dash <= 0) return null;
+  const manufacturer = slug.slice(0, dash);
+  const model = slug.slice(dash + 1);
+  const candidate = path.join(AIRCRAFT_ROOT, manufacturer, model, 'work-packages.json');
+  // Guard against path-traversal — the resolved path must stay inside
+  // AIRCRAFT_ROOT even if the slug contained "../" or other tricks.
+  if (!candidate.startsWith(AIRCRAFT_ROOT)) return null;
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+/**
+ * Load the work-packages template for the given aircraft slug.
+ * Falls back to the default aircraft when no slug is provided.
+ * Returns the parsed JSON or null if the aircraft has no template.
+ */
+function loadDefaultWorkPackages(slug = DEFAULT_AIRCRAFT_SLUG) {
+  const templatePath = workPackagesPath(slug);
+  if (!templatePath) return null;
   try {
-    const templatePath = path.join(__dirname, '../templates/work-packages', DEFAULT_WP_TEMPLATE);
-    if (!fs.existsSync(templatePath)) return null;
     return JSON.parse(fs.readFileSync(templatePath, 'utf8'));
   } catch {
     return null;
@@ -76,6 +109,6 @@ function loadDefaultWorkPackages() {
 module.exports = {
   DEFAULT_GENERAL,
   DEFAULT_SECTIONS,
-  DEFAULT_WP_TEMPLATE,
+  DEFAULT_AIRCRAFT_SLUG,
   loadDefaultWorkPackages,
 };

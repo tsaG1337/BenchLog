@@ -12,6 +12,7 @@
 import type {
   AircraftModel, Manufacturer, PlanSection, ParsedPlanFilename,
   ServiceBulletin, SbPlacement, SbStatus,
+  WorkPackagesTemplate, WorkPackageNode,
 } from './types';
 import { aircraftId, splitAircraftId } from './types';
 import { VANS } from './vans';
@@ -118,6 +119,15 @@ export function findSbById(slug: string, sbId: string): ServiceBulletin | undefi
   return listAllServiceBulletins(slug).find(sb => sb.sbId.toUpperCase() === needle);
 }
 
+// ─── Work-packages template ───────────────────────────────────────
+
+/** Default work-packages tree for an aircraft, used to seed new
+ *  tenants and to back the "Reset to default" action in settings.
+ *  Returns undefined if the model has no template configured. */
+export function getWorkPackagesTemplate(slug: string): WorkPackagesTemplate | undefined {
+  return getAircraft(slug)?.model.workPackagesTemplate;
+}
+
 export { aircraftId, splitAircraftId };
 // ManufacturerOption / ModelOption are already exported at their declaration
 // sites above — re-exporting them here would conflict (TS2484).
@@ -125,4 +135,5 @@ export type {
   Manufacturer, AircraftModel,
   PlanSection, ParsedPlanFilename,
   ServiceBulletin, SbPlacement, SbStatus,
+  WorkPackagesTemplate, WorkPackageNode,
 };

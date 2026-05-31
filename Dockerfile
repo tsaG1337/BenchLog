@@ -27,8 +27,10 @@ COPY server ./server
 # frontend build
 COPY --from=builder /app/dist ./dist
 
-# work package templates
-COPY templates ./templates
+# Aircraft taxonomy — the server reads work-packages.json files out of
+# this tree at runtime (see server/tenant-defaults.js). Frontend has
+# the same data bundled into dist; this copy is server-only.
+COPY src/lib/aircraft ./src/lib/aircraft
 
 ENV PORT=3001
 

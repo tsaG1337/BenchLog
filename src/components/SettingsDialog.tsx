@@ -12,7 +12,20 @@ import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { VisitorStatsPanel } from '@/components/VisitorStatsPanel';
 import { OCR_VENDORS } from '@/lib/ocrVendors';
-import { listManufacturers, listModels, splitAircraftId, aircraftId } from '@/lib/aircraft';
+import { listManufacturers, listModels, splitAircraftId, aircraftId, getManufacturer } from '@/lib/aircraft';
+
+/** Friendly label for an aircraft slug — "Van's RV-10" rather than
+ *  "vans-rv10". Falls back to the slug itself if the model isn't in
+ *  the registry (e.g. legacy tenants on a slug that's since been
+ *  renamed). Local to this file because no other consumer needs it. */
+function aircraftLabelForSlug(slug: string): string {
+  const parts = splitAircraftId(slug);
+  if (!parts) return slug;
+  const manufacturer = getManufacturer(parts.manufacturerId);
+  const model = manufacturer?.models.find(m => m.id === parts.modelId);
+  if (!manufacturer || !model) return slug;
+  return `${manufacturer.label} ${model.label}`;
+}
 import { isElectron } from '@/lib/env';
 import { useSections } from '@/contexts/SectionsContext';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -22,7 +35,7 @@ import {
   CURRENCIES,
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
-  fetchWpTemplates, fetchWpTemplate, WpTemplate,
+  resetWorkPackagesToAircraftDefault,
   resetAllData,
 } from '@/lib/api';
 
@@ -71,15 +84,13 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [wpExporting, setWpExporting] = useState(false);
   const [wpImporting, setWpImporting] = useState(false);
   const [wpSelectedFile, setWpSelectedFile] = useState<File | null>(null);
-  const [wpTemplates, setWpTemplates] = useState<WpTemplate[]>([]);
-  const [wpSelectedTemplate, setWpSelectedTemplate] = useState('');
+  const [wpResetting, setWpResetting] = useState(false);
   const wpImportRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       fetchGeneralSettings().then(s => { setGeneral(s); if (s.theme) setTheme(s.theme); }).catch(() => {});
       fetchMqttSettings().then(setMqtt).catch(() => toast.error('Failed to load MQTT settings'));
-      fetchWpTemplates().then(setWpTemplates).catch(() => {});
     }
   }, [open]);
 
@@ -182,29 +193,43 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   };
 
   const handleWpImport = async () => {
-    if (!wpSelectedFile && !wpSelectedTemplate) return;
+    if (!wpSelectedFile) return;
     setWpImporting(true);
     try {
-      let data: PackagesMap;
-      if (wpSelectedTemplate) {
-        data = await fetchWpTemplate(wpSelectedTemplate);
-      } else {
-        const text = await wpSelectedFile!.text();
-        if (text.length > 10 * 1024 * 1024) throw new Error('File too large (max 10 MB)');
-        let parsed: unknown;
-        try { parsed = JSON.parse(text); } catch { throw new Error('Invalid JSON file'); }
-        if (!validatePackagesMap(parsed)) throw new Error('Invalid work package format. Expected { "Package Name": [{ id, label, children? }] }');
-        data = parsed;
-      }
-      await updateFlowchartPackages(data);
+      const text = await wpSelectedFile.text();
+      if (text.length > 10 * 1024 * 1024) throw new Error('File too large (max 10 MB)');
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { throw new Error('Invalid JSON file'); }
+      if (!validatePackagesMap(parsed)) throw new Error('Invalid work package format. Expected { "Package Name": [{ id, label, children? }] }');
+      await updateFlowchartPackages(parsed);
       toast.success('Work packages loaded');
       setWpSelectedFile(null);
-      setWpSelectedTemplate('');
       if (wpImportRef.current) wpImportRef.current.value = '';
     } catch (err: any) {
       toast.error('Import failed: ' + err.message);
     }
     setWpImporting(false);
+  };
+
+  // Reset the work-packages tree to the aircraft's default template.
+  // Destructive — confirm prompt first, since the user's existing tree
+  // (plus any sub-packages they hand-added) is overwritten in full.
+  const handleWpReset = async () => {
+    const aircraftLabel = general.aircraftType
+      ? aircraftLabelForSlug(general.aircraftType)
+      : 'your aircraft';
+    if (!confirm(
+      `Reset work packages to the default for ${aircraftLabel}?\n\n`
+      + `This overwrites your current work-package tree. Any sub-packages you added manually will be lost.`
+    )) return;
+    setWpResetting(true);
+    try {
+      const { aircraftSlug } = await resetWorkPackagesToAircraftDefault();
+      toast.success(`Reset to ${aircraftLabelForSlug(aircraftSlug)} default`);
+    } catch (err: any) {
+      toast.error('Reset failed: ' + (err?.message || 'unknown error'));
+    }
+    setWpResetting(false);
   };
 
   return (
@@ -688,29 +713,28 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                   </div>
                   <div className="pl-6 border-l-2 border-border space-y-3">
                     <p className="text-xs text-muted-foreground">
-                      Load a work package set to replace the current build progress structure.
-                      Useful for applying a pre-built package set for a specific aircraft type.
+                      Reset to the default tree for your configured aircraft, or load a custom set from a JSON file.
                     </p>
                     <p className="text-xs text-amber-500 dark:text-amber-400">
-                      ⚠ Loading a work package set will overwrite all custom changes you have made to your current work packages.
+                      ⚠ Both actions overwrite your current work-package tree. Sub-packages you added manually will be lost.
                     </p>
 
-                    {/* Template dropdown */}
-                    {wpTemplates.length > 0 && (
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-muted-foreground">Available templates</Label>
-                        <select
-                          value={wpSelectedTemplate}
-                          onChange={e => { setWpSelectedTemplate(e.target.value); setWpSelectedFile(null); if (wpImportRef.current) wpImportRef.current.value = ''; }}
-                          className="w-full h-9 rounded-md border border-border bg-background/50 px-3 text-sm text-foreground"
-                        >
-                          <option value="">— Select a template —</option>
-                          {wpTemplates.map(t => (
-                            <option key={t.filename} value={t.filename}>{t.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
+                    {/* Reset to aircraft default */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">
+                        Default for {general.aircraftType ? aircraftLabelForSlug(general.aircraftType) : 'your aircraft'}
+                      </Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleWpReset}
+                        disabled={wpResetting}
+                        className="gap-1.5"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        {wpResetting ? 'Resetting…' : 'Reset to default'}
+                      </Button>
+                    </div>
 
                     {/* Custom file picker */}
                     <div className="space-y-1.5">
@@ -724,11 +748,11 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                           <span className="text-xs text-muted-foreground truncate flex-1">{wpSelectedFile.name}</span>
                         )}
                       </div>
-                      <input ref={wpImportRef} type="file" accept=".json" onChange={e => { handleWpFileSelect(e); setWpSelectedTemplate(''); }} className="hidden" />
+                      <input ref={wpImportRef} type="file" accept=".json" onChange={handleWpFileSelect} className="hidden" />
                     </div>
 
-                    {/* Confirm button — shown once something is selected */}
-                    {(wpSelectedTemplate || wpSelectedFile) && (
+                    {/* Confirm button — shown once a file is selected */}
+                    {wpSelectedFile && (
                       <Button size="sm" onClick={handleWpImport} disabled={wpImporting} className="gap-1.5">
                         <Upload className="w-3.5 h-3.5" />
                         {wpImporting ? 'Loading…' : 'Load Work Packages'}

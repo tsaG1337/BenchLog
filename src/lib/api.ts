@@ -770,10 +770,17 @@ export async function updateFlowchartStatus(statuses: StatusMap): Promise<void> 
   });
 }
 
-export interface WpTemplate { filename: string; name: string; }
-
-export async function fetchWpTemplates(): Promise<WpTemplate[]> {
-  return request<WpTemplate[]>('/api/templates/work-packages');
+/**
+ * Reset the user's work-packages tree to the default template for
+ * their currently-configured aircraft. Destructive — the server
+ * overwrites `flowchart_packages` in full. The caller is responsible
+ * for prompting the user to confirm before invoking this.
+ *
+ * Returns the aircraft slug whose template was loaded, so the caller
+ * can surface a "reset to the RV-10 default" toast.
+ */
+export async function resetWorkPackagesToAircraftDefault(): Promise<{ aircraftSlug: string }> {
+  return request('/api/work-packages/reset-to-default', { method: 'POST' });
 }
 
 // ── Wiring editor (singleton project per tenant) ────────────────────
@@ -814,10 +821,6 @@ export async function saveUserLibraryTemplate(id: string, template: unknown): Pr
 
 export async function deleteUserLibraryTemplate(id: string): Promise<void> {
   await request(`/api/wiring/library/${encodeURIComponent(id)}`, { method: 'DELETE' });
-}
-
-export async function fetchWpTemplate(filename: string): Promise<PackagesMap> {
-  return request<PackagesMap>(`/api/templates/work-packages/${encodeURIComponent(filename)}`);
 }
 
 // ─── Visitor Stats ───────────────────────────────────────────────────

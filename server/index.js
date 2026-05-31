@@ -42,7 +42,7 @@ const {
   deleteTenantRow,
 } = require('./db');
 const { initMasterSchema, initTenantSchema, initPostgresSchema } = require('./schema');
-const { DEFAULT_GENERAL, DEFAULT_SECTIONS, loadDefaultWorkPackages } = require('./tenant-defaults');
+const { DEFAULT_GENERAL, DEFAULT_SECTIONS, DEFAULT_AIRCRAFT_SLUG, loadDefaultWorkPackages } = require('./tenant-defaults');
 const indexNow = require('./indexnow');
 
 // ─── Auth helpers ────────────────────────────────────────────────────
@@ -285,7 +285,6 @@ async function requireWebhookKey(req, res, next) {
 // ─── Config via environment variables ──────────────────────────────
 const PORT       = process.env.PORT || 3001;
 const DIST_PATH  = process.env.DIST_PATH || path.join(__dirname, '../dist');
-const TEMPLATES_WP_PATH = path.join(__dirname, '../templates/work-packages');
 const DEMO_MODE  = process.env.DEMO_MODE === 'true';
 if (DEMO_MODE) console.log('[demo] Demo mode enabled — all write operations are blocked');
 
@@ -4501,13 +4500,23 @@ app.put('/api/flowchart-packages', requireAuth, async (req, res) => {
   } catch (err) { serverError(res, err); }
 });
 
-app.get('/api/templates/work-packages', (_req, res) => {
+// Reset the tenant's work-packages tree back to the default template
+// for whatever aircraft they currently have configured. Destructive —
+// overwrites the existing `flowchart_packages` setting in full. The
+// frontend prompts for confirmation before calling this; we don't
+// soft-merge because the template's node IDs are stable and a merge
+// would just produce duplicate sub-trees the user then has to clean up.
+app.post('/api/work-packages/reset-to-default', requireAuth, requireNotDemo, async (req, res) => {
   try {
-    const files = fs.readdirSync(TEMPLATES_WP_PATH)
-      .filter(f => f.endsWith('.json'))
-      .map(f => ({ filename: f, name: f.replace(/\.json$/i, '').replace(/-/g, ' ') }));
-    res.json(files);
-  } catch { res.json([]); }
+    const general = (await getSetting(req.db, 'general')) || {};
+    const slug = general.aircraftType || DEFAULT_AIRCRAFT_SLUG;
+    const template = loadDefaultWorkPackages(slug);
+    if (!template) {
+      return res.status(404).json({ error: `No work-packages template configured for aircraft "${slug}"` });
+    }
+    await setSetting(req.db, 'flowchart_packages', template);
+    res.json({ ok: true, aircraftSlug: slug });
+  } catch (err) { serverError(res, err); }
 });
 
 // ─── Wiring editor (singleton project per tenant) ───────────────────
@@ -4628,14 +4637,6 @@ app.delete('/api/wiring/library/:id', requireAuth, requireNotDemo, async (req, r
   } catch (err) { serverError(res, err); }
 });
 
-app.get('/api/templates/work-packages/:filename', (req, res) => {
-  const filename = path.basename(req.params.filename);
-  const filePath = path.join(TEMPLATES_WP_PATH, filename);
-  if (!filePath.startsWith(TEMPLATES_WP_PATH) || !fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'Template not found' });
-  }
-  res.sendFile(filePath);
-});
 
 // ─── Expenses API ─────────────────────────────────────────────────────
 
