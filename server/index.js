@@ -5386,12 +5386,21 @@ app.get('/api/inventory/checks/:id', requireAuth, async (req, res) => {
       totalItems: session.total_items, verifiedItems: session.verified_items,
       missingItems: session.missing_items,
       createdAt: session.created_at, updatedAt: session.updated_at,
-      items: items.map(r => ({
-        id: r.id, partNumber: r.part_number, nomenclature: r.nomenclature,
-        subKit: r.sub_kit, bag: r.bag, qtyExpected: r.qty_expected,
-        qtyFound: r.qty_found, unit: r.unit, status: r.status,
-        notes: r.notes, scannedAt: r.scanned_at,
-      })),
+      // Legacy rows written before 'partial' existed have status='pending'
+      // even when qty_found > 0. Promote them on read so the user sees the
+      // right tab without a one-shot migration. New writes already set
+      // 'partial' directly — see verify-batch above.
+      items: items.map(r => {
+        const promoted = r.status === 'pending' && (r.qty_found || 0) > 0 && (r.qty_found || 0) < r.qty_expected
+          ? 'partial'
+          : r.status;
+        return {
+          id: r.id, partNumber: r.part_number, nomenclature: r.nomenclature,
+          subKit: r.sub_kit, bag: r.bag, qtyExpected: r.qty_expected,
+          qtyFound: r.qty_found, unit: r.unit, status: promoted,
+          notes: r.notes, scannedAt: r.scanned_at,
+        };
+      }),
     });
   } catch (err) { serverError(res, err); }
 });
@@ -5427,7 +5436,10 @@ app.put('/api/inventory/checks/:sessionId/items/:itemId', requireAuth, async (re
     if (status) { fields.push('status = ?'); params.push(status); }
     if (qtyFound != null) { fields.push('qty_found = ?'); params.push(qtyFound); }
     if (notes != null) { fields.push('notes = ?'); params.push(notes); }
-    if (status === 'verified' || status === 'missing') {
+    // Stamp scanned_at whenever the user touched the row in any meaningful
+    // way (verified / missing / partial). Plain 'pending' resets don't get
+    // a timestamp — that's how the reset-session endpoint clears it.
+    if (status === 'verified' || status === 'missing' || status === 'partial') {
       fields.push("scanned_at = ?");
       params.push(new Date().toISOString());
     }
@@ -5458,26 +5470,32 @@ app.put('/api/inventory/checks/:sessionId/items/:itemId', requireAuth, async (re
 });
 
 // Batch verify items (used by bag scanning in check mode)
-// Accepts: { items: { partNumber: string, qtyFound: number }[] }
-// Quantities ACCUMULATE across multiple scans (e.g., same rivet in multiple bags).
+// Accepts: { items: { partNumber: string, qtyFound: number, replace?: boolean }[] }
+// Default: quantities ACCUMULATE across multiple scans (e.g., same rivet in
+// multiple bags). When `replace: true` is set per item, qty_found is SET to
+// qtyFound rather than added — used by the mass-scan tap-to-edit-quantity
+// affordance where the user sets a known total in one shot instead of
+// scanning the bag of 52 spacers 52 times.
+//
 // Status logic:
 //   qty_found >= qty_expected  → 'verified'
-//   qty_found > 0 but < expected → stays 'pending' (more bags to scan)
-//   only manually marked → 'missing'
+//   qty_found > 0 but < expected → 'partial' (started, not done)
+//   isShort=true                → 'missing' (user confirmed a shortage)
+//   else                        → 'pending'
 app.post('/api/inventory/checks/:sessionId/verify-batch', requireAuth, async (req, res) => {
   try {
     const { partNumbers, items } = req.body;
-    // Normalize to { partNumber, qtyFound } array
+    // Normalize to { partNumber, qtyFound, replace } array
     const entries = items?.length
-      ? items.map(i => ({ partNumber: i.partNumber, qtyFound: i.qtyFound, isShort: !!i.isShort, bag: i.bag || '' }))
+      ? items.map(i => ({ partNumber: i.partNumber, qtyFound: i.qtyFound, isShort: !!i.isShort, bag: i.bag || '', replace: !!i.replace }))
       : partNumbers?.length
-        ? partNumbers.map(pn => ({ partNumber: pn, qtyFound: null, isShort: false, bag: '' }))  // null = use expected
+        ? partNumbers.map(pn => ({ partNumber: pn, qtyFound: null, isShort: false, bag: '', replace: false }))  // null = use expected
         : [];
     if (entries.length === 0) return res.status(400).json({ error: 'partNumbers or items required' });
     if (entries.length > 10000) return res.status(400).json({ error: 'Too many items in batch (max 10,000)' });
 
     let matched = 0;
-    for (const { partNumber, qtyFound, isShort, bag } of entries) {
+    for (const { partNumber, qtyFound, isShort, bag, replace } of entries) {
       // Match by part number + bag when bag is provided (parts can appear in multiple bags)
       let checkItem;
       if (bag) {
@@ -5497,26 +5515,31 @@ app.post('/api/inventory/checks/:sessionId/verify-batch', requireAuth, async (re
       }
       if (!checkItem) continue;
 
-      // Accumulate: add new qty to existing qty_found
+      // qty_found:
+      //   - normal scan        → accumulate (prev + new)
+      //   - replace=true       → set directly (tap-to-edit-quantity path)
       const prevQty = checkItem.qty_found || 0;
-      const addQty = qtyFound != null ? qtyFound : checkItem.qty_expected;
-      const newTotal = prevQty + addQty;
+      const addOrSet = qtyFound != null ? qtyFound : checkItem.qty_expected;
+      const newTotal = replace ? Math.max(0, addOrSet) : prevQty + addOrSet;
 
-      // Determine status:
-      // - verified: total qty meets or exceeds expected
-      // - missing: user explicitly reduced qty below bag's expected (isShort=true)
-      // - pending: normal accumulation, more bags to scan
+      // Status:
+      //   verified — total reached the expected quantity
+      //   missing  — user explicitly flagged a shortage
+      //   partial  — started, but qty_found < expected (visible as its own
+      //              tab so half-scanned bags don't hide in 'pending')
+      //   pending  — nothing scanned yet
       let newStatus;
       if (newTotal >= checkItem.qty_expected) {
         newStatus = 'verified';
       } else if (isShort) {
-        // User explicitly confirmed a shortage for this item
         newStatus = 'missing';
-      } else if (checkItem.status === 'missing') {
-        // Keep existing missing status (manually set or from previous shortage)
+      } else if (checkItem.status === 'missing' && !replace) {
+        // Preserve a previously-flagged shortage when accumulating new scans.
+        // Replace mode is an explicit reset, so it gets re-classified normally.
         newStatus = 'missing';
+      } else if (newTotal > 0) {
+        newStatus = 'partial';
       } else {
-        // Normal partial accumulation — item may appear in other bags
         newStatus = 'pending';
       }
 

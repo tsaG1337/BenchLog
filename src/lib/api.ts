@@ -1084,7 +1084,12 @@ export interface CheckItem {
   qtyExpected: number;
   qtyFound: number;
   unit: string;
-  status: 'pending' | 'verified' | 'missing';
+  /** Status state machine:
+   *  - pending  → nothing scanned yet
+   *  - partial  → some quantity scanned, but qty_found < qty_expected
+   *  - verified → qty_found >= qty_expected (complete)
+   *  - missing  → user explicitly confirmed a shortage */
+  status: 'pending' | 'partial' | 'verified' | 'missing';
   notes: string;
   scannedAt: string | null;
 }
@@ -1124,7 +1129,20 @@ export const deleteCheckSession = (id: number) =>
 export const updateCheckItem = (sessionId: number, itemId: number, data: Partial<CheckItem>) =>
   request<CheckItem>(`/api/inventory/checks/${sessionId}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(data) });
 
-export const verifyCheckBatch = (sessionId: number, items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string }[]) =>
+/**
+ * Batch-update one or more check-session items.
+ *
+ * Default behaviour (no `replace` flag): qtyFound ACCUMULATES — a scan of
+ * 3 added to an existing 5 becomes 8. Used when scanning bag-by-bag.
+ *
+ * `replace: true` per item: qtyFound is SET directly, ignoring any prior
+ * value. Used by the mass-scan "tap to edit qty" affordance so the user
+ * can set 52/52 in one tap instead of scanning a label 52 times.
+ *
+ * `isShort: true` flags the item as a confirmed shortage (server marks
+ * it 'missing').
+ */
+export const verifyCheckBatch = (sessionId: number, items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string; replace?: boolean }[]) =>
   request<{ matched: number }>(`/api/inventory/checks/${sessionId}/verify-batch`, { method: 'POST', body: JSON.stringify({ items }) });
 
 // ─── Plans API ────────────────────────────────────────────────────────

@@ -108,6 +108,10 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const [error, setError] = useState('');
   const [cameraReady, setCameraReady] = useState(false);
   const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string } | null>(null);
+  // Tap-to-edit quantity. When set, the row's qty badge becomes a number
+  // input pre-filled with `value`. Used so the user can set 52/52 in one
+  // tap instead of scanning a label of a 52-piece bag fifty-two times.
+  const [editingQty, setEditingQty] = useState<{ partNumber: string; value: string } | null>(null);
   const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[] } | null>(null);
   const [bagVerifyItems, setBagVerifyItems] = useState<BagVerifyEntry[]>([]);
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
@@ -119,11 +123,34 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   }, []);
 
   /** Mark part numbers as verified/missing in the active check session */
-  const markChecked = useCallback(async (items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string }[]) => {
+  const markChecked = useCallback(async (items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string; replace?: boolean }[]) => {
     if (!activeCheckSessionId || items.length === 0) return;
     try { await verifyCheckBatch(activeCheckSessionId, items); }
     catch { /* non-critical — session tracking is best-effort */ }
   }, [activeCheckSessionId]);
+
+  /**
+   * Commit a manually-entered quantity for a row. Updates the local
+   * scannedQty AND fires a server replace so the kit-check session's
+   * qty_found reflects the new total directly (no accumulation).
+   *
+   * Clamps to [0, …] — negative qtys never made sense here.
+   */
+  const commitQty = useCallback((partNumber: string, raw: string) => {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setEditingQty(null);
+      return;
+    }
+    const newQty = Math.max(0, parsed);
+    setItems(prev => prev.map(i => i.partNumber === partNumber ? { ...i, scannedQty: newQty } : i));
+    // Server replace so the session item's qty_found becomes exactly
+    // `newQty` instead of accumulating. The bag scope is intentionally
+    // left blank — the qty represents the user's total intent across
+    // however many bags this part appears in.
+    markChecked([{ partNumber, qtyFound: newQty, replace: true }]);
+    setEditingQty(null);
+  }, [markChecked]);
 
   /** Record a part in its OWN kit's check session. Finds a non-completed
    *  session for `kitId`, creating one (with that kit's full manifest) when
@@ -1244,17 +1271,74 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                     const fulfilled = hasManifest && item.scannedQty >= item.expectedQty;
                     const partial = hasManifest && item.scannedQty > 0 && !fulfilled;
 
+                    const isEditing = editingQty?.partNumber === item.partNumber;
                     return (
                       <div key={item.partNumber} className="flex items-center gap-3 px-4 py-3">
-                        {/* Quantity badge */}
-                        <div className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 text-xs font-bold ${
-                          fulfilled ? 'bg-emerald-500/15 text-emerald-400' :
-                          partial ? 'bg-amber-500/15 text-amber-400' :
-                          'bg-accent text-foreground/80'
-                        }`}>
-                          <span className="text-base leading-none">{item.scannedQty}</span>
-                          {hasManifest && <span className="text-[9px] opacity-60 leading-none mt-0.5">/{item.expectedQty}</span>}
-                        </div>
+                        {/* Quantity badge — tap to edit. Becomes a numeric
+                            input + "Set to expected" shortcut. Saves on
+                            Enter, the green check, or blur; cancels on
+                            Esc or the X. */}
+                        {isEditing ? (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              value={editingQty!.value}
+                              onChange={e => setEditingQty({ partNumber: item.partNumber, value: e.target.value })}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') commitQty(item.partNumber, editingQty!.value);
+                                else if (e.key === 'Escape') setEditingQty(null);
+                              }}
+                              onBlur={() => {
+                                // Tolerate clicks on the action buttons next
+                                // to the input — defer the close to the next
+                                // tick so onClick can fire first.
+                                setTimeout(() => {
+                                  setEditingQty(curr => curr?.partNumber === item.partNumber ? curr : null);
+                                }, 150);
+                              }}
+                              autoFocus
+                              className="w-14 px-1 py-1 rounded bg-card border border-emerald-500/60 text-center text-sm font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                            />
+                            <button
+                              onClick={() => commitQty(item.partNumber, editingQty!.value)}
+                              className="p-1 rounded hover:bg-emerald-500/20 text-emerald-500"
+                              title="Save"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            {hasManifest && Number(editingQty!.value) !== item.expectedQty && (
+                              <button
+                                onClick={() => commitQty(item.partNumber, String(item.expectedQty))}
+                                className="px-1.5 py-0.5 rounded bg-accent hover:bg-accent/80 text-[10px] font-bold text-foreground/80 whitespace-nowrap"
+                                title={`Set to expected qty (${item.expectedQty})`}
+                              >
+                                {item.expectedQty}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setEditingQty(null)}
+                              className="p-1 rounded hover:bg-muted text-muted-foreground"
+                              title="Cancel"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setEditingQty({ partNumber: item.partNumber, value: String(item.scannedQty) })}
+                            className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 text-xs font-bold transition hover:ring-1 hover:ring-foreground/20 ${
+                              fulfilled ? 'bg-emerald-500/15 text-emerald-400' :
+                              partial ? 'bg-amber-500/15 text-amber-400' :
+                              'bg-accent text-foreground/80'
+                            }`}
+                            title="Tap to set quantity"
+                          >
+                            <span className="text-base leading-none">{item.scannedQty}</span>
+                            {hasManifest && <span className="text-[9px] opacity-60 leading-none mt-0.5">/{item.expectedQty}</span>}
+                          </button>
+                        )}
 
                         {/* Part info */}
                         <div className="flex-1 min-w-0">
