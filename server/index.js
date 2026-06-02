@@ -42,7 +42,7 @@ const {
   deleteTenantRow,
 } = require('./db');
 const { initMasterSchema, initTenantSchema, initPostgresSchema } = require('./schema');
-const { DEFAULT_GENERAL, DEFAULT_SECTIONS, DEFAULT_AIRCRAFT_SLUG, loadDefaultWorkPackages } = require('./tenant-defaults');
+const { DEFAULT_GENERAL, DEFAULT_SECTIONS, DEFAULT_AIRCRAFT_SLUG, DEFAULT_ONBOARDING, loadDefaultWorkPackages } = require('./tenant-defaults');
 const indexNow = require('./indexnow');
 
 // ─── Auth helpers ────────────────────────────────────────────────────
@@ -1280,16 +1280,17 @@ async function setSetting(db, key, value) {
 }
 
 // ─── Seed default settings for new tenants ──────────────────────────
+// flowchart_packages is intentionally NOT seeded here — the onboarding
+// wizard captures the aircraft type and writes the matching template
+// atomically when the user finishes setup. Seeding RV-10 packages by
+// default would lock in an assumption the user hasn't confirmed yet
+// (and is why people have ended up with RV-10 trees on -7 builds).
 async function seedTenantDefaults(tenantId) {
   try {
     const db = getTenantDb(tenantId);
-    // Seed general settings
     await setSetting(db, 'general', { ...DEFAULT_GENERAL });
-    // Seed sections
     await setSetting(db, 'sections', [...DEFAULT_SECTIONS]);
-    // Seed work packages from template
-    const packages = loadDefaultWorkPackages();
-    if (packages) await setSetting(db, 'flowchart_packages', packages);
+    await setSetting(db, 'onboarding', { ...DEFAULT_ONBOARDING });
     console.log(`[init] Seeded default settings for tenant ${tenantId}`);
   } catch (err) {
     console.warn(`[init] Failed to seed defaults for tenant ${tenantId}:`, err.message);
@@ -3752,6 +3753,35 @@ app.put('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
   } catch (err) { serverError(res, err); }
 });
 
+// Admin tool: force the onboarding wizard (and tour) to re-run for a
+// specific tenant. Writes `onboarding = { wizardCompleted: false,
+// tourStatus: 'pending' }`. The target user sees the wizard on their
+// next page load (no live push — they need to refresh).
+//
+// Optional `clearAircraft: true` in the body also unsets the tenant's
+// general.aircraftType, which simulates a brand-new signup more
+// faithfully. Without that flag, the wizard pre-fills with whatever
+// the tenant already has and they can confirm or change.
+app.post('/api/admin/users/:id/reset-onboarding', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clearAircraft } = req.body || {};
+    const tdb = getTenantDb(id);
+    // setSetting requires a db object whose `tenantId` matches the
+    // target. The getTenantDb helper already scopes by tenantId — but
+    // the wrapper expects it on the db object itself for the WHERE
+    // clause, so we stamp it in case any backend (Postgres) needs it.
+    tdb.tenantId = id;
+    await setSetting(tdb, 'onboarding', { wizardCompleted: false, tourStatus: 'pending' });
+    if (clearAircraft) {
+      const general = (await getSetting(tdb, 'general')) || { ...DEFAULT_GENERAL };
+      const { aircraftType: _drop, ...rest } = general;
+      await setSetting(tdb, 'general', rest);
+    }
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
 app.post('/api/admin/users/:id/purge', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -4516,6 +4546,93 @@ app.post('/api/work-packages/reset-to-default', requireAuth, requireNotDemo, asy
     }
     await setSetting(req.db, 'flowchart_packages', template);
     res.json({ ok: true, aircraftSlug: slug });
+  } catch (err) { serverError(res, err); }
+});
+
+// ─── Onboarding ─────────────────────────────────────────────────────
+// Two-state per tenant; see DEFAULT_ONBOARDING in tenant-defaults.js
+// for the shape. The wizard is mandatory (we need an aircraft); the
+// tour is optional and re-launchable from Settings.
+
+/** Resolve the tenant's onboarding status, with a one-time fallback
+ *  for tenants who existed before this feature shipped. If the
+ *  setting is missing AND they already have an aircraft configured,
+ *  treat them as fully-onboarded — they finished setup the old way
+ *  and shouldn't be forced through a wizard now. New tenants land
+ *  with `wizardCompleted: false` and see the modal on first login. */
+async function getOnboardingStatus(db) {
+  const stored = await getSetting(db, 'onboarding', null);
+  if (stored) return stored;
+  // No row → infer from general settings. An aircraft that's been
+  // chosen at any point in the past = they've effectively onboarded.
+  const general = (await getSetting(db, 'general')) || {};
+  if (general.aircraftType) {
+    return { wizardCompleted: true, tourStatus: 'skipped' };
+  }
+  return { ...DEFAULT_ONBOARDING };
+}
+
+app.get('/api/onboarding', requireAuth, async (req, res) => {
+  try {
+    const status = await getOnboardingStatus(req.db);
+    res.json(status);
+  } catch (err) { serverError(res, err); }
+});
+
+// Finish the wizard: atomically write the captured settings, seed
+// the matching work-packages template, and mark wizardCompleted.
+// The frontend has already prompted the user — we just persist.
+app.post('/api/onboarding/wizard', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const { projectName, aircraftType, targetHours, homeCurrency, timeFormat } = req.body ?? {};
+    // Minimal validation — the UI enforces these, but never trust the wire.
+    if (!aircraftType || typeof aircraftType !== 'string') {
+      return res.status(400).json({ error: 'aircraftType is required' });
+    }
+    const template = loadDefaultWorkPackages(aircraftType);
+    if (!template) {
+      return res.status(400).json({ error: `Unknown aircraft "${aircraftType}"` });
+    }
+    const general = (await getSetting(req.db, 'general')) || { ...DEFAULT_GENERAL };
+    const next = {
+      ...general,
+      ...(typeof projectName === 'string' && projectName.trim() ? { projectName: projectName.trim() } : {}),
+      aircraftType,
+      ...(Number.isFinite(Number(targetHours)) && Number(targetHours) > 0 ? { targetHours: Number(targetHours) } : {}),
+      ...(typeof homeCurrency === 'string' && homeCurrency ? { homeCurrency } : {}),
+      ...(timeFormat === '12h' || timeFormat === '24h' ? { timeFormat } : {}),
+    };
+    await setSetting(req.db, 'general', next);
+    await setSetting(req.db, 'flowchart_packages', template);
+    const status = await getOnboardingStatus(req.db);
+    await setSetting(req.db, 'onboarding', { ...status, wizardCompleted: true });
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+app.post('/api/onboarding/tour/complete', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const status = await getOnboardingStatus(req.db);
+    await setSetting(req.db, 'onboarding', { ...status, tourStatus: 'completed' });
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+app.post('/api/onboarding/tour/skip', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const status = await getOnboardingStatus(req.db);
+    await setSetting(req.db, 'onboarding', { ...status, tourStatus: 'skipped' });
+    res.json({ ok: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// Used by Settings → "Show the welcome tour again". Pops tourStatus
+// back to 'pending' so the next page load shows it.
+app.post('/api/onboarding/tour/reset', requireAuth, requireNotDemo, async (req, res) => {
+  try {
+    const status = await getOnboardingStatus(req.db);
+    await setSetting(req.db, 'onboarding', { ...status, tourStatus: 'pending' });
+    res.json({ ok: true });
   } catch (err) { serverError(res, err); }
 });
 

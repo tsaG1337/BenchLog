@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchAdminUsers, fetchAdminDbStats, createAdminUser, updateAdminUser, purgeAdminUserData, fetchAdminTableRows, deleteAdminTableRow, fetchAdminJobs, runAdminJob, fetchGeneralSettings, updateGeneralSettings, AdminUser, DbStat, AdminTableResult, JobInfo } from '@/lib/api';
+import { fetchAdminUsers, fetchAdminDbStats, createAdminUser, updateAdminUser, purgeAdminUserData, resetUserOnboarding, fetchAdminTableRows, deleteAdminTableRow, fetchAdminJobs, runAdminJob, fetchGeneralSettings, updateGeneralSettings, AdminUser, DbStat, AdminTableResult, JobInfo } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
-import { ArrowLeft, Plus, Pencil, Trash2, ShieldCheck, User, Database, RefreshCw, Search, ChevronLeft, ChevronRight, Eye, Activity, CheckCircle2, XCircle, Clock, Play, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, ShieldCheck, User, Database, RefreshCw, Search, ChevronLeft, ChevronRight, Eye, Activity, CheckCircle2, XCircle, Clock, Play, AlertTriangle, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 const TABLE_LABELS: Record<string, string> = {
@@ -243,6 +243,37 @@ export default function AdminPage() {
     setDialogMode('edit');
   };
 
+  // Force the onboarding wizard + tour to re-run for a specific user.
+  // Confirm prompt asks whether to ALSO clear their current aircraft
+  // selection — useful when testing the "true new signup" path, but
+  // omitted by default so we don't silently drop someone's aircraft
+  // (and the work-packages tied to it).
+  const handleResetOnboarding = async (u: AdminUser) => {
+    const clearAircraft = confirm(
+      `Force the onboarding wizard to re-run for "${u.displayName || u.slug}"?\n\n`
+      + `They'll see it on their next page load.\n\n`
+      + `Click OK to ALSO clear their current aircraft selection (closer to a fresh signup — discards their existing work packages on the next wizard finish).\n\n`
+      + `Click Cancel to keep their aircraft, just trigger the wizard with their current values pre-filled.`
+    );
+    // The confirm() above intentionally has inverted semantics: OK =
+    // the harder option (also clear aircraft). If they pick Cancel we
+    // still want the soft reset to run — separate confirm.
+    if (!clearAircraft) {
+      const softConfirm = confirm(`Trigger the wizard for "${u.displayName || u.slug}" without clearing their aircraft?`);
+      if (!softConfirm) return;
+    }
+    try {
+      await resetUserOnboarding(u.id, { clearAircraft });
+      toast.success(
+        clearAircraft
+          ? `Wizard reset (aircraft cleared) for ${u.displayName || u.slug}`
+          : `Wizard reset for ${u.displayName || u.slug}`,
+      );
+    } catch (err: any) {
+      toast.error('Could not reset: ' + (err?.message || 'unknown error'));
+    }
+  };
+
   const openPurge = (u: AdminUser) => {
     setPurgeTarget(u);
     setPurgeOptions(defaultPurgeOptions);
@@ -436,10 +467,18 @@ export default function AdminPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button variant="ghost" size="icon" onClick={() => openEdit(u)}>
+                            <Button variant="ghost" size="icon" onClick={() => openEdit(u)} title="Edit user">
                               <Pencil className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => openPurge(u)}>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleResetOnboarding(u)}
+                              title="Force welcome wizard / tour to re-run"
+                            >
+                              <Sparkles className="w-4 h-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => openPurge(u)} title="Purge user data…">
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>

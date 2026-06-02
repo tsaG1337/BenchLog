@@ -783,6 +783,55 @@ export async function resetWorkPackagesToAircraftDefault(): Promise<{ aircraftSl
   return request('/api/work-packages/reset-to-default', { method: 'POST' });
 }
 
+// ── Onboarding ─────────────────────────────────────────────────────
+// Two-state per tenant. `wizardCompleted` gates the app shell; until
+// it flips true, OnboardingProvider keeps the welcome modal mounted
+// over the route tree. `tourStatus` controls the spotlight tour (ships
+// in PR #2; the api shape is stable so we don't have to revisit).
+
+export type TourStatus = 'pending' | 'completed' | 'skipped';
+
+export interface OnboardingStatus {
+  wizardCompleted: boolean;
+  tourStatus: TourStatus;
+}
+
+export interface WizardSubmission {
+  projectName: string;
+  aircraftType: string;       // flat slug, e.g. 'vans-rv10'
+  targetHours: number;
+  homeCurrency: string;
+  timeFormat: '12h' | '24h';
+}
+
+export async function fetchOnboardingStatus(): Promise<OnboardingStatus> {
+  return request<OnboardingStatus>('/api/onboarding');
+}
+
+/** Atomic: writes general settings, seeds the work-packages template
+ *  for the picked aircraft, and marks wizardCompleted: true.
+ *  Server returns 400 if aircraftType is unknown. */
+export async function submitOnboardingWizard(payload: WizardSubmission): Promise<void> {
+  await request('/api/onboarding/wizard', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function markTourCompleted(): Promise<void> {
+  await request('/api/onboarding/tour/complete', { method: 'POST' });
+}
+
+export async function markTourSkipped(): Promise<void> {
+  await request('/api/onboarding/tour/skip', { method: 'POST' });
+}
+
+/** Used by Settings → "Show the welcome tour again". Pops tourStatus
+ *  back to 'pending' so the next page load shows it. */
+export async function resetTour(): Promise<void> {
+  await request('/api/onboarding/tour/reset', { method: 'POST' });
+}
+
 // ── Wiring editor (singleton project per tenant) ────────────────────
 export interface WiringProjectPayload {
   name: string;
@@ -890,6 +939,18 @@ export async function updateAdminUser(id: string, data: { displayName?: string; 
 
 export async function purgeAdminUserData(id: string, options?: { deleteSessions?: boolean; deleteBlogPosts?: boolean; deleteSignOffs?: boolean; deleteExpenses?: boolean; deleteInventory?: boolean; deleteVisitorStats?: boolean }): Promise<void> {
   await request(`/api/admin/users/${id}/purge`, { method: 'POST', body: JSON.stringify(options || {}) });
+}
+
+/** Admin testing tool: forces the onboarding wizard (and tour) to re-run
+ *  for a specific tenant. They see it on their next page load.
+ *  `clearAircraft: true` also unsets their general.aircraftType so the
+ *  wizard starts from defaults instead of pre-filling their current
+ *  selection — closer to a true new-signup simulation. */
+export async function resetUserOnboarding(id: string, options?: { clearAircraft?: boolean }): Promise<void> {
+  await request(`/api/admin/users/${id}/reset-onboarding`, {
+    method: 'POST',
+    body: JSON.stringify(options || {}),
+  });
 }
 
 export interface AdminTableResult {

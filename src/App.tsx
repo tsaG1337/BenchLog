@@ -6,6 +6,8 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import { SectionsProvider } from "@/contexts/SectionsContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { OnboardingProvider, useOnboardingStatus } from "@/contexts/OnboardingContext";
+import { OnboardingWizard } from "@/components/onboarding/OnboardingWizard";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { fetchGeneralSettings } from "@/lib/api";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -155,6 +157,30 @@ function FeatureRoute({ feature, children }: { feature: FeatureKey; children: Re
   return <>{children}</>;
 }
 
+/**
+ * Mounts the onboarding wizard whenever an authenticated user lands
+ * on a tenant-protected route without having completed setup. Quietly
+ * does nothing on public surfaces (login, blog, auth callback) and
+ * while the initial status fetch is in flight — better to flash the
+ * destination page for a moment than flash the wizard to someone who
+ * already finished it.
+ */
+function OnboardingGate() {
+  const { isAuthenticated, demoMode } = useAuth();
+  const { status } = useOnboardingStatus();
+  const location = useLocation();
+  // Public routes: never gate. (The blog is reachable while logged out,
+  // and a public-facing visitor should not see a "set up your build"
+  // dialog while reading someone else's posts.)
+  const onPublicRoute = location.pathname === '/login'
+    || location.pathname === '/auth-callback'
+    || location.pathname.startsWith('/blog');
+  if (onPublicRoute) return null;
+  if (!isAuthenticated || demoMode) return null;
+  if (!status || status.wizardCompleted) return null;
+  return <OnboardingWizard />;
+}
+
 function LoginRoute() {
   const { isAuthenticated, isLoading, demoMode } = useAuth();
   const location = useLocation();
@@ -204,12 +230,17 @@ const App = () => (
       <TooltipProvider>
         <SectionsProvider>
           <AuthProvider>
+            <OnboardingProvider>
             <TenantGuard>
             <SubdomainGuard />
             <ThemeSyncer />
             <Toaster />
             <Sonner />
             <BrowserRouter>
+              {/* The wizard renders itself as a Dialog overlay; the gate
+                  decides whether to mount it based on auth + onboarding
+                  state + current route. */}
+              <OnboardingGate />
               <Suspense fallback={<div className="min-h-screen bg-background" />}>
                 <Routes>
                   <Route path="/login" element={<LoginRoute />} />
@@ -231,6 +262,7 @@ const App = () => (
               </Suspense>
             </BrowserRouter>
             </TenantGuard>
+            </OnboardingProvider>
           </AuthProvider>
         </SectionsProvider>
       </TooltipProvider>

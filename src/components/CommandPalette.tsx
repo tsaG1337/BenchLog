@@ -22,9 +22,9 @@ import {
   FileSearch,
   ScanSearch,
 } from 'lucide-react';
-import { fetchSessions, fetchBlogPosts, fetchInvParts, fetchInvLocations, listPlans, searchPlanPartRefs } from '@/lib/api';
+import { fetchSessions, fetchBlogPosts, fetchInvParts, fetchInvLocations, fetchExpenses, listPlans, searchPlanPartRefs } from '@/lib/api';
 import type { WorkSession } from '@/lib/types';
-import type { BlogPost, InvPart, InvLocation, PlanFile, PlanPartRef } from '@/lib/api';
+import type { BlogPost, InvPart, InvLocation, PlanFile, PlanPartRef, Expense } from '@/lib/api';
 import { useActivePdf } from '@/components/plans/pdfSearchBridge';
 import { searchPdfDocument, type PdfSearchMatch, MIN_QUERY_LENGTH } from '@/lib/plans/pdfSearch';
 
@@ -49,11 +49,33 @@ interface PaletteData {
   posts: BlogPost[];
   parts: InvPart[];
   locations: InvLocation[];
+  expenses: Expense[];
   plans: PlanFile[];
   partRefs: PlanPartRef[];
 }
 
-const EMPTY_DATA: PaletteData = { sessions: [], posts: [], parts: [], locations: [], plans: [], partRefs: [] };
+const EMPTY_DATA: PaletteData = { sessions: [], posts: [], parts: [], locations: [], expenses: [], plans: [], partRefs: [] };
+
+// ─── Scope filter ───────────────────────────────────────────────────
+// Pill row under the input. Single-select. 'all' is the default and
+// shows every group. Picking a specific scope hides everything else,
+// the same way the PDF-scope toggle works for in-PDF results.
+//
+// The order here drives the visual order of the pills — left to right
+// matches the order Builders reach for them in practice: pages first
+// (cheapest navigation), then tracker/blog (most-visited features),
+// then the data-heavy stuff.
+type Scope = 'all' | 'pages' | 'tracker' | 'blog' | 'inventory' | 'expenses' | 'plans';
+
+const SCOPE_PILLS: Array<{ id: Scope; label: string; Icon: typeof LayoutDashboard }> = [
+  { id: 'all',       label: 'All',       Icon: LayoutDashboard },
+  { id: 'pages',     label: 'Pages',     Icon: LayoutDashboard },
+  { id: 'tracker',   label: 'Tracker',   Icon: Timer },
+  { id: 'blog',      label: 'Blog',      Icon: FileText },
+  { id: 'inventory', label: 'Inventory', Icon: Box },
+  { id: 'expenses',  label: 'Expenses',  Icon: Wallet },
+  { id: 'plans',     label: 'Plans',     Icon: FileSearch },
+];
 
 /**
  * Global command palette — opens with Cmd/Ctrl+K from anywhere in the app.
@@ -67,6 +89,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [data, setData] = useState<PaletteData>(EMPTY_DATA);
   const [loaded, setLoaded] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+  // Currently-selected scope pill. 'all' is the default and shows
+  // every category; the others hide everything except their own
+  // group. Resets to 'all' when the dialog closes so each open
+  // starts fresh; if the user wants a remembered scope they can
+  // pick it again, but persisting it would surprise people who
+  // expect Ctrl+K to always show the same thing.
+  const [scope, setScope] = useState<Scope>('all');
   // Server-returned part refs for the active query. Bypasses the
   // alphabetical preload cap so any indexed part can be found.
   const [queryPartRefs, setQueryPartRefs] = useState<PlanPartRef[]>([]);
@@ -119,11 +148,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     if (!open || loaded) return;
     let cancelled = false;
     (async () => {
-      const [sessionsRes, postsRes, parts, locations, plans, refs] = await Promise.allSettled([
+      const [sessionsRes, postsRes, parts, locations, expenses, plans, refs] = await Promise.allSettled([
         fetchSessions({ limit: 50 }),
         fetchBlogPosts({ limit: 25 }),
         fetchInvParts(),
         fetchInvLocations(),
+        fetchExpenses(),
         listPlans(),
         searchPlanPartRefs('', 200),
       ]);
@@ -133,6 +163,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         posts:     postsRes.status   === 'fulfilled' ? postsRes.value.posts        : [],
         parts:     parts.status      === 'fulfilled' ? parts.value.slice(0, 200)   : [],
         locations: locations.status  === 'fulfilled' ? locations.value             : [],
+        expenses:  expenses.status   === 'fulfilled' ? expenses.value.slice(0, 200) : [],
         plans:     plans.status      === 'fulfilled' ? plans.value                 : [],
         partRefs:  refs.status       === 'fulfilled' ? refs.value.refs             : [],
       });
@@ -169,9 +200,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       setSearchValue('');
       setQueryPartRefs([]);
       setPdfMatches([]);
+      setScope('all');
       // PDF scope is intentionally NOT reset on close — the user toggled
       // it deliberately, so it should still be on next time they hit
-      // Ctrl+K on the same PDF.
+      // Ctrl+K on the same PDF. The category scope IS reset because
+      // it's a per-search filter, not a persistent preference.
     }
   }, [open]);
 
@@ -187,10 +220,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     navigate(`/plans/${activePdf.fileId}?page=${match.page}&search=${q}`);
   };
 
-  const sessionResults = useMemo(() => data.sessions.slice(0, 8), [data.sessions]);
-  const postResults    = useMemo(() => data.posts.slice(0, 8),    [data.posts]);
-  const partResults    = useMemo(() => data.parts.slice(0, 12),   [data.parts]);
+  const sessionResults  = useMemo(() => data.sessions.slice(0, 8),  [data.sessions]);
+  const postResults     = useMemo(() => data.posts.slice(0, 8),     [data.posts]);
+  const partResults     = useMemo(() => data.parts.slice(0, 12),    [data.parts]);
   const locationResults = useMemo(() => data.locations.slice(0, 8), [data.locations]);
+  const expenseResults  = useMemo(() => data.expenses.slice(0, 20), [data.expenses]);
   const planResults     = useMemo(() => data.plans.slice(0, 40),    [data.plans]);
   // Prefer server results when the user is actively searching; otherwise
   // show the alphabetical preload as a browse aid. Cap at 50 either way
@@ -228,11 +262,39 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </button>
         </div>
       )}
+      {/* Scope pills — hidden when in-PDF scope is active (the two
+          filters would fight each other). Picking a non-'all' scope
+          narrows the result groups; clicking the active pill again
+          goes back to 'all'. */}
+      {!pdfScopeActive && (
+        <div className="px-2 py-1.5 border-b border-border flex items-center gap-1 overflow-x-auto">
+          {SCOPE_PILLS.map(({ id, label, Icon }) => {
+            const active = scope === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setScope(active && id !== 'all' ? 'all' : id)}
+                aria-pressed={active}
+                className={`shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition ${
+                  active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                <Icon className="h-3 w-3" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <CommandList>
         <CommandEmpty>
           {pdfScopeActive && searchValue.trim().length < MIN_QUERY_LENGTH
             ? `Type at least ${MIN_QUERY_LENGTH} characters to search the PDF.`
-            : 'No results found.'}
+            : scope !== 'all'
+              ? `No ${SCOPE_PILLS.find(p => p.id === scope)?.label.toLowerCase() ?? ''} results — try clearing the filter or another scope.`
+              : 'No results found.'}
         </CommandEmpty>
 
         {pdfScopeActive && (
@@ -262,6 +324,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         )}
 
         {!pdfScopeActive && (<>
+        {(scope === 'all' || scope === 'pages') && (
         <CommandGroup heading="Navigation">
           {NAV_TARGETS.map(({ id, label, to, Icon }) => (
             <CommandItem
@@ -275,8 +338,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             </CommandItem>
           ))}
         </CommandGroup>
+        )}
 
-        {sessionResults.length > 0 && (
+        {(scope === 'all' || scope === 'tracker') && sessionResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Sessions">
@@ -300,7 +364,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </>
         )}
 
-        {postResults.length > 0 && (
+        {(scope === 'all' || scope === 'blog') && postResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Build log">
@@ -322,7 +386,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </>
         )}
 
-        {partResults.length > 0 && (
+        {(scope === 'all' || scope === 'inventory') && partResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Parts">
@@ -343,7 +407,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </>
         )}
 
-        {locationResults.length > 0 && (
+        {(scope === 'all' || scope === 'inventory') && locationResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Locations">
@@ -363,7 +427,40 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </>
         )}
 
-        {planResults.length > 0 && (
+        {(scope === 'all' || scope === 'expenses') && expenseResults.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Expenses">
+              {expenseResults.map(e => {
+                // Build a label that surfaces the things builders
+                // actually scan for: date + vendor + amount in their
+                // home currency, with description as the searchable
+                // body. cmdk's filter uses the `value` prop for the
+                // match, so cram every queryable field into it.
+                const date = e.date ? new Date(e.date).toLocaleDateString() : '';
+                const amt  = `${e.amountHome.toFixed(2)} ${e.currency || ''}`.trim();
+                return (
+                  <CommandItem
+                    key={e.id}
+                    value={`expense ${e.vendor} ${e.description} ${e.category} ${e.partNumber} ${e.notes ?? ''} ${(e.tags ?? []).join(' ')}`}
+                    onSelect={() => go(`/expenses?expense=${encodeURIComponent(e.id)}`)}
+                  >
+                    <Wallet className="mr-2 h-4 w-4 text-muted-foreground" />
+                    <span className="truncate flex-1">
+                      <span className="text-xs text-muted-foreground mr-2">{date}</span>
+                      {e.vendor && <span className="font-medium mr-2">{e.vendor}</span>}
+                      <span className="text-muted-foreground">{e.description}</span>
+                    </span>
+                    <span className="ml-2 font-mono text-xs tabular-nums">{amt}</span>
+                    <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground font-mono">exp</span>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </>
+        )}
+
+        {(scope === 'all' || scope === 'plans') && planResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Plans">
@@ -383,7 +480,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           </>
         )}
 
-        {partRefResults.length > 0 && (
+        {(scope === 'all' || scope === 'plans') && partRefResults.length > 0 && (
           <>
             <CommandSeparator />
             <CommandGroup heading="Parts in plans">

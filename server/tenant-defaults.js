@@ -16,6 +16,13 @@ const DEFAULT_AIRCRAFT_SLUG = 'vans-rv10';
 
 // ─── General settings ────────────────────────────────────────────────
 // These are written to the `settings` table (key = 'general') on tenant creation.
+//
+// Notably absent: `aircraftType`. The onboarding wizard captures it on
+// first login, then writes it via POST /api/onboarding/wizard along with
+// the seeded work-packages template. Leaving it unset here is what
+// triggers the wizard for new tenants — the read-side fallback in
+// GET /api/onboarding treats a present `aircraftType` as proof that an
+// older tenant already finished setup.
 const DEFAULT_GENERAL = {
   projectName:          'Build Tracker',
   // Optional explicit byline for the public blog. When set, overrides the
@@ -106,9 +113,22 @@ function loadDefaultWorkPackages(slug = DEFAULT_AIRCRAFT_SLUG) {
   }
 }
 
+// ─── Onboarding ──────────────────────────────────────────────────────
+// Two-state per tenant:
+//   wizardCompleted — the mandatory aircraft / preferences modal. Gates
+//     access to the app shell entirely. New tenants start at `false`.
+//   tourStatus — the optional spotlight walkthrough. `pending` shows it
+//     on next page load; `completed` and `skipped` both suppress it
+//     until the user explicitly resets from Settings.
+const DEFAULT_ONBOARDING = {
+  wizardCompleted: false,
+  tourStatus: 'pending', // 'pending' | 'completed' | 'skipped'
+};
+
 module.exports = {
   DEFAULT_GENERAL,
   DEFAULT_SECTIONS,
   DEFAULT_AIRCRAFT_SLUG,
+  DEFAULT_ONBOARDING,
   loadDefaultWorkPackages,
 };

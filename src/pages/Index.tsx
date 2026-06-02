@@ -212,7 +212,7 @@ const Index = () => {
           <div className="lg:col-span-8 space-y-6">
 
             {/* Timer Card */}
-            <div className="bg-card rounded-lg p-6 sm:p-8">
+            <div className="bg-card rounded-lg p-6 sm:p-8" data-tour-id="tracker-timer">
               <Timer
                 isRunning={isRunning}
                 onStart={handleStart}
@@ -224,7 +224,7 @@ const Index = () => {
             </div>
 
             {/* Assembly Section & Work Package Picker */}
-            <div className="bg-muted/40 rounded-lg p-4">
+            <div className="bg-muted/40 rounded-lg p-4" data-tour-id="tracker-section">
               <WorkPackagePicker
                 section={section}
                 onSectionChange={setSection}
@@ -234,7 +234,7 @@ const Index = () => {
             </div>
 
             {/* Build Notes */}
-            <div className="bg-card rounded-lg p-6 space-y-3">
+            <div className="bg-card rounded-lg p-6 space-y-3" data-tour-id="tracker-notes">
               <div className="flex items-center justify-between">
                 <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">Build Notes & Observations</h3>
                 {SpeechRecognitionAPI && (
@@ -313,7 +313,7 @@ const Index = () => {
             </div>
 
             {/* Session Images */}
-            <div className="bg-card rounded-lg p-6 space-y-3">
+            <div className="bg-card rounded-lg p-6 space-y-3" data-tour-id="tracker-images">
               <h3 className="font-label text-[10px] font-bold uppercase text-muted-foreground tracking-[0.15em]">Session Visuals</h3>
               <SessionImages
                 sessionId="pending"

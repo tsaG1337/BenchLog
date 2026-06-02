@@ -6,6 +6,7 @@ import { AboutDialog } from '@/components/AboutDialog';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { ExportDialog } from '@/components/ExportDialog';
 import { CommandPalette, useCommandPalette } from '@/components/CommandPalette';
+import { TourController } from '@/components/onboarding/TourController';
 import { fetchSessions, fetchGeneralSettings } from '@/lib/api';
 import type { WorkSession } from '@/lib/types';
 import type { GeneralSettings } from '@/lib/api';
@@ -147,6 +148,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
         <button
           onClick={() => setSidebarOpen(true)}
           aria-label="Open navigation"
+          data-tour-id="nav-menu"
           className="w-10 h-10 mt-3 mb-3 flex items-center justify-center rounded hover:bg-accent transition-colors text-foreground"
         >
           <MIcon name="menu" />
@@ -160,6 +162,12 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                 to={item.to}
                 aria-label={item.label}
                 title={item.label}
+                // data-tour-id targets used by the spotlight tour to
+                // highlight rail items by their nav id (`tracker`,
+                // `plans`, etc.). Keeping the attribute mirror the
+                // NAV_ITEMS id means new entries automatically pick
+                // up a stable selector — no extra wiring.
+                data-tour-id={`nav-${item.id}`}
                 className={`w-10 h-10 flex items-center justify-center rounded transition-colors ${
                   isActive
                     ? 'bg-primary/[0.12] text-primary'
@@ -175,6 +183,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
           onClick={() => palette.setOpen(true)}
           aria-label="Search (Ctrl+K)"
           title="Search (Ctrl+K)"
+          data-tour-id="nav-search"
           className="w-10 h-10 mb-3 flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
         >
           <Search className="h-4 w-4" />
@@ -385,6 +394,11 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
       <AboutDialog open={showAbout} onOpenChange={setShowAbout} />
       <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
       <ExportDialog sessions={exportSessions} open={showExport} onOpenChange={setShowExport} />
+      {/* Drives the spotlight tour when the user is post-wizard but
+          tourStatus is still 'pending'. Renders nothing; manages a
+          driver.js instance internally. Safe to mount everywhere
+          AppShell is mounted — the controller gates itself. */}
+      <TourController />
     </div>
   );
 }

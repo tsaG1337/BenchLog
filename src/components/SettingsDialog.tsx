@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Wifi, Send, Type, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload, AlertTriangle, ExternalLink, Package } from 'lucide-react';
+import { Settings, Wifi, Send, Type, Plus, Trash2, Sun, Moon, Monitor, Clock, ImageDown, Wallet, Database, Bug, Smartphone, Copy, RefreshCw, CheckCheck, BarChart3, Download, Upload, AlertTriangle, ExternalLink, Package, HelpCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { ImportExportSection } from '@/components/ImportExportSection';
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel';
@@ -36,8 +36,10 @@ import {
   fetchWebhookKey, regenerateWebhookKey,
   fetchFlowchartPackages, updateFlowchartPackages, PackagesMap,
   resetWorkPackagesToAircraftDefault,
+  resetTour,
   resetAllData,
 } from '@/lib/api';
+import { useOnboardingStatus } from '@/contexts/OnboardingContext';
 
 interface SettingsDialogProps {
   onProjectNameChange?: (name: string) => void;
@@ -85,6 +87,7 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
   const [wpImporting, setWpImporting] = useState(false);
   const [wpSelectedFile, setWpSelectedFile] = useState<File | null>(null);
   const [wpResetting, setWpResetting] = useState(false);
+  const [tourResetting, setTourResetting] = useState(false);
   const wpImportRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -209,6 +212,27 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
       toast.error('Import failed: ' + err.message);
     }
     setWpImporting(false);
+  };
+
+  // Pull setTourStatus from the onboarding context so the tour
+  // re-launches immediately when the user dismisses this dialog —
+  // the TourController watches that state and acts on the next tick.
+  const { setTourStatus } = useOnboardingStatus();
+
+  // Drop tourStatus back to 'pending' and close the Settings dialog.
+  // The TourController is already mounted in AppShell; it picks up
+  // the state change and starts driver.js on the next effect run.
+  const handleTourRestart = async () => {
+    setTourResetting(true);
+    try {
+      await resetTour();
+      setTourStatus('pending');
+      setOpen(false);
+      toast.success('Tour will start in a moment');
+    } catch (err: any) {
+      toast.error('Could not reset the tour: ' + (err?.message || 'unknown error'));
+    }
+    setTourResetting(false);
   };
 
   // Reset the work-packages tree to the aircraft's default template.
@@ -758,6 +782,29 @@ export function SettingsDialog({ onProjectNameChange, onTargetHoursChange, onSet
                         {wpImporting ? 'Loading…' : 'Load Work Packages'}
                       </Button>
                     )}
+                  </div>
+                </div>
+                <Separator />
+                {/* ── Welcome tour ── */}
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <HelpCircle className="w-4 h-4 text-muted-foreground" />
+                    <Label className="text-sm font-medium">Welcome Tour</Label>
+                  </div>
+                  <div className="pl-6 border-l-2 border-border space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      A short spotlight tour of the rail — Tracker, Plans, Build Log, Dashboard. Skips on mobile. Closes Settings and starts in a moment.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleTourRestart}
+                      disabled={tourResetting}
+                      className="gap-1.5"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                      {tourResetting ? 'Starting…' : 'Show the tour again'}
+                    </Button>
                   </div>
                 </div>
                 <Separator />
