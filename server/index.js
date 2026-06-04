@@ -3911,14 +3911,11 @@ app.delete('/api/admin/table/:table', requireAuth, requireAdmin, async (req, res
   const { pk, tenantId } = req.body || {};
   if (!pk) return res.status(400).json({ error: 'pk is required' });
   const pkCol = ADMIN_TABLE_PK[table];
+  if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
   try {
     if (DB_BACKEND === 'postgres') {
-      if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
-      if (tenantId !== req.tenantId) return res.status(403).json({ error: 'Forbidden' });
       await req.db.run(`DELETE FROM ${table} WHERE ${pkCol} = $1 AND tenant_id = $2`, [pk, tenantId]);
     } else {
-      if (!tenantId) return res.status(400).json({ error: 'tenantId required' });
-      if (tenantId !== req.tenantId) return res.status(403).json({ error: 'Forbidden' });
       const tdb = getTenantDb(tenantId);
       await tdb.run(`DELETE FROM ${table} WHERE ${pkCol} = ? AND tenant_id = ?`, [String(pk), tenantId]);
     }
