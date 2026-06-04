@@ -87,7 +87,6 @@ const SCOPE_PILLS: Array<{ id: Scope; label: string; Icon: typeof LayoutDashboar
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
   const [data, setData] = useState<PaletteData>(EMPTY_DATA);
-  const [loaded, setLoaded] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   // Currently-selected scope pill. 'all' is the default and shows
   // every category; the others hide everything except their own
@@ -138,14 +137,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     if (!activePdf && pdfScopeActive) setPdfScopeActive(false);
   }, [activePdf, pdfScopeActive]);
 
-  // Lazy-load the corpus on first open. The palette caches results for the
-  // session — this is fine because the corpus changes slowly and the lists
-  // we use are bounded (sessions: 50, posts: 25, parts: 200, locations: all).
-  // For part refs we only preload 200 as a browse aid for the no-query
-  // case — once the user types ≥2 chars we hit the server (see below) so
-  // alphabetical cutoff doesn't matter.
+  // Refetch the corpus on every open. Inventory/sessions/expenses change
+  // throughout a session (mass scan, timer stops, expense logging) and we
+  // don't want stale results — most-common symptom is "I just added X and
+  // search can't find it." The 7 calls run in parallel and the existing
+  // `data` stays visible until the new fetch resolves, so there's no flash
+  // of empty state.
   useEffect(() => {
-    if (!open || loaded) return;
+    if (!open) return;
     let cancelled = false;
     (async () => {
       const [sessionsRes, postsRes, parts, locations, expenses, plans, refs] = await Promise.allSettled([
@@ -167,10 +166,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         plans:     plans.status      === 'fulfilled' ? plans.value                 : [],
         partRefs:  refs.status       === 'fulfilled' ? refs.value.refs             : [],
       });
-      setLoaded(true);
     })();
     return () => { cancelled = true; };
-  }, [open, loaded]);
+  }, [open]);
 
   // Server-side part-ref search, debounced. Triggers when the input has
   // at least 2 chars (avoids querying on every keystroke and on noisy

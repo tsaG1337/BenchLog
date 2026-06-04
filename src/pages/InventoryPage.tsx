@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Plus, Pencil, Trash2, Search, ChevronRight, ChevronDown, Package, MapPin, Boxes, BarChart3, X, Camera, ShoppingCart, ExternalLink } from 'lucide-react';
+import { Plus, Pencil, Trash2, Search, ChevronRight, ChevronDown, Package, MapPin, Boxes, BarChart3, X, Camera, ShoppingCart, ExternalLink, ClipboardCheck } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   fetchInvLocations, createInvLocation, updateInvLocation, deleteInvLocation,
@@ -13,7 +13,8 @@ import { AppShell, MIcon } from '@/components/AppShell';
 import { LabelScanner, type ScanResult } from '@/components/inventory/LabelScanner';
 import { MassIngestion } from '@/components/inventory/MassIngestion';
 import { getVendorConfig } from '@/lib/ocrVendors';
-import { findBagFuzzy, isBagLabel, getAllEntries, type ManifestEntry, type BagDefinition } from '@/lib/kitManifest';
+import { findBagFuzzy, isBagLabel, getAllEntries, getAircraftManifest, getKitEntriesPerBag, type ManifestEntry, type BagDefinition } from '@/lib/kitManifest';
+import { verifyCheckBatch } from '@/lib/api';
 import { ingestInvPart } from '@/lib/api';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -153,7 +154,7 @@ export default function InventoryPage() {
         <>
           {tab === 'dashboard' && <DashboardTab stats={stats} stock={stock} locations={locations} checkSessions={checkSessions} aircraftType={aircraftType} onRefresh={loadAll} />}
           {tab === 'locations' && <LocationsTab locations={locations} stock={stock} parts={parts} readOnly={readOnly} onRefresh={loadAll} onViewLocationStock={(locId) => { setFilterLocationId(locId); setTab('parts'); }} />}
-          {tab === 'parts' && <PartsTab parts={parts} stock={stock} locations={locations} readOnly={readOnly} onRefresh={loadAll} ocrEnabled={ocrEnabled} ocrVendor={ocrVendor} aircraftType={aircraftType} initialLocationFilter={filterLocationId} onClearLocationFilter={() => setFilterLocationId(null)} onGoToLocations={() => setTab('locations')} />}
+          {tab === 'parts' && <PartsTab parts={parts} stock={stock} locations={locations} checkSessions={checkSessions} readOnly={readOnly} onRefresh={loadAll} ocrEnabled={ocrEnabled} ocrVendor={ocrVendor} aircraftType={aircraftType} initialLocationFilter={filterLocationId} onClearLocationFilter={() => setFilterLocationId(null)} onGoToLocations={() => setTab('locations')} />}
         </>
       )}
     </AppShell>
@@ -186,6 +187,54 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
   const [sessionItems, setSessionItems] = useState<CheckItem[]>([]);
   const [sessionItemsLoading, setSessionItemsLoading] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<'all' | 'pending' | 'partial' | 'verified' | 'missing'>('all');
+
+  // ─── Start kit check picker ─────────────────────────────────────
+  // Opens a dialog listing the aircraft's kits that DON'T already have
+  // a non-completed session. Selecting one creates the session with the
+  // kit's full manifest and refreshes the dashboard. Mirrors the same
+  // createCheckSession call mass-scan uses, just driven by a click
+  // instead of a camera flow — gives desktop users a way in.
+  const [showStartKitDialog, setShowStartKitDialog] = useState(false);
+  const [startingKitId, setStartingKitId] = useState<string | null>(null);
+
+  const aircraftManifest = useMemo(() => getAircraftManifest(aircraftType), [aircraftType]);
+  // Kits without an active or paused session — those are the ones the
+  // user can still start. A kit with an existing session shouldn't be
+  // a second-session candidate (would split tracking unhelpfully).
+  const startableKits = useMemo(() => {
+    if (!aircraftManifest) return [];
+    const taken = new Set(checkSessions.filter(s => s.status !== 'completed').map(s => s.kitId));
+    return aircraftManifest.kits.filter(k => !taken.has(k.id));
+  }, [aircraftManifest, checkSessions]);
+
+  const handleStartKitCheck = async (kitId: string) => {
+    const kit = aircraftManifest?.kits.find(k => k.id === kitId);
+    if (!kit) return;
+    setStartingKitId(kitId);
+    try {
+      const perBagEntries = getKitEntriesPerBag(aircraftType, kitId);
+      await createCheckSession({
+        aircraftType,
+        kitId: kit.id,
+        kitLabel: kit.label,
+        items: perBagEntries.map(e => ({
+          partNumber: e.partNumber,
+          nomenclature: e.nomenclature,
+          subKit: e.subKit,
+          bag: e.bag,
+          qtyExpected: e.qtyRequired,
+          unit: e.unit,
+        })),
+      });
+      toast.success(`${kit.label} check session started`);
+      setShowStartKitDialog(false);
+      onRefresh();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not start session');
+    } finally {
+      setStartingKitId(null);
+    }
+  };
 
   // "Mark as Received" state
   const [receivingItem, setReceivingItem] = useState<{ sessionId: number; item: CheckItem } | null>(null);
@@ -384,10 +433,29 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
         <StatCard icon="local_shipping" label="Backordered" value={String(stats?.backordered ?? 0)} accent="red" />
       </div>
 
-      {/* Kit Check Sessions */}
-      {(activeSessions.length > 0 || completedSessions.length > 0) && (
-        <div className="space-y-3">
+      {/* Kit Check Sessions — header is always shown so the "Start" button
+          is discoverable even before the first session exists. */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
           <p className="font-label text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">Kit Check Sessions</p>
+          <button
+            onClick={() => setShowStartKitDialog(true)}
+            disabled={startableKits.length === 0}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[11px] font-medium hover:bg-primary/25 transition disabled:opacity-40 disabled:cursor-not-allowed"
+            title={startableKits.length === 0
+              ? 'All kits already have an active session'
+              : 'Start a new kit check session'}
+          >
+            <Plus className="w-3 h-3" /> Start kit check
+          </button>
+        </div>
+        {activeSessions.length === 0 && completedSessions.length === 0 && (
+          <p className="text-xs text-muted-foreground italic px-1">
+            No kit check sessions yet. Pick a kit above to start one — or use Mass Scan to start one by scanning a label.
+          </p>
+        )}
+        {(activeSessions.length > 0 || completedSessions.length > 0) && (
+        <>
           {activeSessions.map(session => {
             const pct = session.totalItems > 0 ? Math.round(((session.verifiedItems + session.missingItems) / session.totalItems) * 100) : 0;
             const remaining = session.totalItems - session.verifiedItems - session.missingItems;
@@ -616,6 +684,72 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
               </div>
             </details>
           )}
+        </>
+        )}
+      </div>
+
+      {/* Start kit check dialog — lists kits without an active session.
+          Multiple kits selectable separately if the user wants several
+          ongoing checks (e.g., empennage closing out while fuselage
+          opens up). One session per kit at a time. */}
+      {showStartKitDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={() => !startingKitId && setShowStartKitDialog(false)}
+        >
+          <div
+            className="bg-card rounded-xl max-w-md w-full max-h-[80vh] flex flex-col border border-border shadow-xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-border">
+              <h3 className="text-base font-semibold">Start a kit check session</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Pick a kit to start tracking against. The session seeds with the kit's full manifest.
+              </p>
+            </div>
+            <div className="overflow-y-auto flex-1 divide-y divide-border/60">
+              {startableKits.length === 0 ? (
+                <p className="p-5 text-sm text-muted-foreground text-center">
+                  Every kit already has an active session. Complete or delete one first to start another.
+                </p>
+              ) : (
+                startableKits.map(kit => {
+                  const entryCount = (() => {
+                    try { return getKitEntriesPerBag(aircraftType, kit.id).length; }
+                    catch { return 0; }
+                  })();
+                  const isStarting = startingKitId === kit.id;
+                  return (
+                    <button
+                      key={kit.id}
+                      onClick={() => handleStartKitCheck(kit.id)}
+                      disabled={!!startingKitId}
+                      className="w-full text-left px-5 py-3 hover:bg-muted/40 transition flex items-center justify-between gap-3 disabled:opacity-40 disabled:cursor-wait"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{kit.label}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {entryCount} item{entryCount === 1 ? '' : 's'} in manifest
+                        </p>
+                      </div>
+                      <span className="text-[11px] text-primary font-medium shrink-0">
+                        {isStarting ? 'Starting…' : 'Start →'}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="p-4 border-t border-border flex justify-end">
+              <button
+                onClick={() => setShowStartKitDialog(false)}
+                disabled={!!startingKitId}
+                className="px-3 py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:bg-muted/50 transition disabled:opacity-40"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1031,8 +1165,10 @@ function LocationForm({ location, locations, onSave, onCancel }: {
 //  PARTS TAB
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, ocrVendor, aircraftType, initialLocationFilter, onClearLocationFilter, onGoToLocations }: {
-  parts: InvPart[]; stock: InvStock[]; locations: InvLocation[]; readOnly: boolean; onRefresh: () => void;
+function PartsTab({ parts, stock, locations, checkSessions, readOnly, onRefresh, ocrEnabled, ocrVendor, aircraftType, initialLocationFilter, onClearLocationFilter, onGoToLocations }: {
+  parts: InvPart[]; stock: InvStock[]; locations: InvLocation[];
+  checkSessions: CheckSession[];
+  readOnly: boolean; onRefresh: () => void;
   ocrEnabled?: boolean; ocrVendor?: string; aircraftType?: string;
   initialLocationFilter?: number | null; onClearLocationFilter?: () => void;
   onGoToLocations?: () => void;
@@ -1139,6 +1275,49 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
     });
   };
 
+  /**
+   * Roll a freshly-added stock quantity into an EXISTING active kit-check
+   * session for this part's home kit. Closes the loop between the
+   * regular Add/Stock UI and the Inventory Check feature so a desktop
+   * user without a camera can still drive a check session purely from
+   * form input.
+   *
+   *   1. Find which kit this part belongs to (aircraft manifest lookup).
+   *      Parts not in any kit → silently skip.
+   *   2. Look for a non-completed session for that kit. If none exists,
+   *      silently skip — we explicitly DON'T auto-create a session here,
+   *      because starting a check session is a user-initiated action
+   *      (Mass Scan / "Start Kit Check"), not a side-effect of inventory
+   *      bookkeeping. Auto-creating would surprise users who just want
+   *      to log a part.
+   *   3. Fire verifyCheckBatch with the added qty — server accumulates
+   *      and rolls the row's status forward (pending → partial → verified).
+   *
+   * Best-effort: any failure is swallowed, because adding stock shouldn't
+   * fail just because a side-channel update went wrong.
+   */
+  const syncStockToKitCheck = useCallback(async (partNumber: string, qtyAdded: number) => {
+    if (qtyAdded <= 0) return;
+    const slug = aircraftType || 'vans-rv10';
+    const manifest = getAircraftManifest(slug);
+    if (!manifest) return;
+    const normPN = (s: string) => s.replace(/["″'']/g, '').toUpperCase().trim();
+    const homeKit = manifest.kits.find(k =>
+      k.entries.some(e => normPN(e.partNumber) === normPN(partNumber)),
+    );
+    if (!homeKit) return; // not in any kit — nothing to sync
+    try {
+      const sessions = await fetchCheckSessions();
+      const session = sessions.find(s => s.kitId === homeKit.id && s.status !== 'completed');
+      if (!session) return; // no active session for this kit — leave it alone
+      await verifyCheckBatch(session.id, [{ partNumber, qtyFound: qtyAdded }]);
+      toast.success(`${homeKit.label} kit check: +${qtyAdded} ${partNumber}`);
+    } catch {
+      // Silent — the stock entry itself was saved fine. User can still
+      // manually update the kit-check session if they need to.
+    }
+  }, [aircraftType]);
+
   const handleSave = async (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string } }) => {
     try {
       const { _stock, ...partData } = data;
@@ -1154,6 +1333,12 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
             status: _stock.status as any, condition: _stock.condition as any,
             mfgDate: _stock.mfgDate,
           });
+          // Forward the new stock to any active kit-check session for this
+          // part's home kit. Only fired when status is in_stock — a
+          // backordered or scrapped entry doesn't count as "received".
+          if (_stock.status === 'in_stock' && _stock.quantity > 0) {
+            syncStockToKitCheck(savedPart.partNumber, _stock.quantity);
+          }
         }
       }
       setShowForm(false); setEditing(null); onRefresh();
@@ -1171,6 +1356,37 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
     try {
       if (editingStock) await updateInvStock(editingStock.id, data);
       else await createInvStock(data);
+
+      // For BRAND-NEW in-stock entries, push the qty into the active
+      // kit-check session for this part's home kit. Mirrors what the
+      // mass-scan flow does for camera users — without this, a desktop
+      // user adding stock manually would never advance their kit
+      // progress unless they happened to be in the backordered → in_stock
+      // path below.
+      if (!editingStock && data.status === 'in_stock' && (data.quantity || 0) > 0 && data.partId) {
+        const part = parts.find(p => p.id === Number(data.partId));
+        if (part) syncStockToKitCheck(part.partNumber, data.quantity || 0);
+      }
+
+      // For EDITS that bump the quantity on a still-in_stock row, sync
+      // the delta. Covers the common "I found 22 more of these on the
+      // shelf" case where the user edits the stock row to bump it from
+      // 1 → 23 instead of creating a second entry. Only forward the
+      // increase — going DOWN in quantity (taking stock away) doesn't
+      // unwind a verified check, that's a user action they'd reverse
+      // manually if needed. Backordered → in_stock keeps its own
+      // separate handler below (set-not-accumulate semantics there).
+      if (editingStock
+          && editingStock.status === 'in_stock'
+          && data.status === 'in_stock'
+          && (data.quantity || 0) > (editingStock.quantity || 0)
+          && data.partId) {
+        const part = parts.find(p => p.id === Number(data.partId));
+        if (part) {
+          const delta = (data.quantity || 0) - (editingStock.quantity || 0);
+          syncStockToKitCheck(part.partNumber, delta);
+        }
+      }
 
       // Option B: detect backordered → in_stock transition and offer to update check items
       if (editingStock && editingStock.status === 'backordered' && data.status === 'in_stock') {
@@ -1352,9 +1568,16 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
       )}
 
       {showForm && (
-        <PartForm part={editing} locations={locations} existingParts={parts} onSave={handleSave} onAddStock={async (data) => {
+        <PartForm part={editing} locations={locations} existingParts={parts} checkSessions={checkSessions} onSave={handleSave} onAddStock={async (data) => {
           try {
             await createInvStock(data);
+            // Same kit-check sync we apply on the "Add stock entry"
+            // path — keep the two routes in step so the user gets the
+            // same advance regardless of which button they reached for.
+            if (data.status === 'in_stock' && (data.quantity || 0) > 0) {
+              const part = parts.find(p => p.id === Number(data.partId));
+              if (part) syncStockToKitCheck(part.partNumber, data.quantity || 0);
+            }
             setShowForm(false); setEditing(null); onRefresh();
             toast.success('Stock added to existing part');
           } catch (err: any) { toast.error(err.message); }
@@ -1560,9 +1783,11 @@ function PartsTab({ parts, stock, locations, readOnly, onRefresh, ocrEnabled, oc
   );
 }
 
-function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel, ocrEnabled, ocrVendor, aircraftType, onBagIngest }: {
+function PartForm({ part, locations, existingParts, checkSessions, onSave, onAddStock, onCancel, ocrEnabled, ocrVendor, aircraftType, onBagIngest }: {
   part: InvPart | null; locations: InvLocation[];
   existingParts: InvPart[];
+  /** Used to surface "this part will join active <kit> check" hint. */
+  checkSessions: CheckSession[];
   onSave: (data: Partial<InvPart> & { _stock?: { locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string } }) => void;
   onAddStock: (data: { partId: number; locationId: number; quantity: number; unit: string; status: string; condition: string; mfgDate: string }) => void;
   onCancel: () => void;
@@ -1588,6 +1813,48 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
 
   // Autocomplete from manifest + existing inventory parts
   const allManifestEntries = useMemo(() => getAllEntries(aircraftType || 'vans-rv10'), [aircraftType]);
+
+  // ─── Kit-check session affinity ─────────────────────────────────
+  // Detect the kit this part belongs to (per the aircraft manifest)
+  // so the form can:
+  //   • surface a banner telling the user the save will advance an
+  //     active check session — they should know that BEFORE they save,
+  //     not be surprised by the toast after
+  //   • pre-fill the `Kit` field with the kit's label the first time
+  //     they enter a recognised part number — the user can still
+  //     override it, but the common case is "yes that's the right kit"
+  //
+  // No active session → no banner, no toast on save. Sessions are
+  // user-initiated; we never auto-create one from this form.
+  const homeKit = useMemo(() => {
+    const pn = partNumber.trim();
+    if (!pn || pn.length < 2) return null;
+    const manifest = getAircraftManifest(aircraftType || 'vans-rv10');
+    if (!manifest) return null;
+    const norm = (s: string) => s.replace(/["″'']/g, '').toUpperCase().trim();
+    const needle = norm(pn);
+    return manifest.kits.find(k =>
+      k.entries.some(e => norm(e.partNumber) === needle),
+    ) ?? null;
+  }, [partNumber, aircraftType]);
+
+  const activeSessionForKit = useMemo(() => {
+    if (!homeKit) return null;
+    return checkSessions.find(s => s.kitId === homeKit.id && s.status !== 'completed') ?? null;
+  }, [homeKit, checkSessions]);
+
+  // Auto-fill the Kit field once per recognised part number. We track
+  // the last partNumber we filled so a user who clears the Kit field
+  // after our suggestion doesn't get steamrolled on the next keystroke.
+  const autoFilledKitForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (part) return; // editing existing — don't touch user data
+    if (!homeKit) return;
+    if (autoFilledKitForRef.current === partNumber) return;
+    if (!kit) setKit(homeKit.label);
+    autoFilledKitForRef.current = partNumber;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [homeKit, partNumber, part]);
   type Suggestion = { partNumber: string; name: string; subKit?: string; source: 'manifest' | 'inventory' };
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!partNumber || partNumber.length < 2 || !showSuggestions) return [];
@@ -1879,6 +2146,26 @@ function PartForm({ part, locations, existingParts, onSave, onAddStock, onCancel
           )}
         </div>
       </div>
+
+      {/* Active kit-check session banner — only when there IS one. We
+          deliberately don't show a "no active session" message; that's
+          noise. */}
+      {homeKit && activeSessionForKit && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 flex items-start gap-2">
+          <ClipboardCheck className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+          <div className="text-xs leading-relaxed">
+            <span className="font-medium text-emerald-700 dark:text-emerald-300">
+              {homeKit.label} check session is active
+            </span>
+            <span className="text-muted-foreground ml-1">
+              ({activeSessionForKit.verifiedItems}/{activeSessionForKit.totalItems} verified)
+            </span>
+            <p className="text-muted-foreground mt-0.5">
+              Saving with in-stock quantity will advance this session — {partNumber || 'part'} will be marked verified or partial depending on the qty.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Existing part found — add stock mode */}
       {matchedExisting && isNew ? (
