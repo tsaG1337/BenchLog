@@ -178,16 +178,22 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
   // Live search across BOTH the kit manifest and the actual inventory so users
   // can find parts they haven't ingested yet (e.g. typing "1177" surfaces every
   // part in BAG 1177 even if the bag hasn't been scanned). Substring match,
-  // case-insensitive, against partNumber / nomenclature / sub-kit / bag — same
-  // fields the user would see on a label.
+  // case-insensitive, against partNumber / nomenclature / sub-kit / bag / kit
+  // label — same fields the user would see on a label or in the build log.
+  //
+  // NOTE: we deliberately do NOT use getAllEntries() here because it dedupes
+  // by part number, which loses bag membership for parts shipped in multiple
+  // bags across multiple kits (RIVET MSP-42 is in BAG 1127 / 1177 / 1326).
+  // Searching "1177" must find the wing entry, not just the first occurrence.
   type LookupResult = {
     partNumber: string;
     name: string;
     subKit?: string;
     bag?: string;
+    kitLabel?: string;
     /** From the manifest. 0 when the part isn't in any manifest. */
     qtyRequired: number;
-    /** All stock rows we have for this part, regardless of which field matched. */
+    /** Stock rows for this exact (partNumber, bag) pair. */
     stockEntries: InvStock[];
   };
 
@@ -198,51 +204,64 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
     const upper = (s?: string) => (s || '').toUpperCase();
     const hit = (...fields: (string | undefined)[]) => fields.some(f => upper(f).includes(q));
 
-    const allManifest = getAllEntries(aircraftType);
-    const matchedManifest = allManifest.filter(e => hit(e.partNumber, e.nomenclature, e.subKit, e.bag));
-    const matchedStock    = stock.filter(s => hit(s.partNumber, s.partName, s.batch));
-
-    const byPN = new Map<string, LookupResult>();
-    for (const e of matchedManifest) {
-      byPN.set(upper(e.partNumber), {
-        partNumber:  e.partNumber,
-        name:        e.nomenclature,
-        subKit:      e.subKit,
-        bag:         e.bag,
-        qtyRequired: e.qtyRequired,
-        stockEntries: [],
-      });
-    }
-    for (const s of matchedStock) {
-      const key = upper(s.partNumber);
-      const existing = byPN.get(key);
-      if (existing) {
-        existing.stockEntries.push(s);
-      } else {
-        byPN.set(key, {
-          partNumber:  s.partNumber,
-          name:        s.partName || '',
-          subKit:      undefined,
-          bag:         s.batch || undefined,
-          qtyRequired: 0,
-          stockEntries: [s],
-        });
-      }
-    }
-    // For results that matched only via the manifest, also pull in all stock
-    // rows for that part — the user wants the full picture, not just rows that
-    // matched the query.
-    for (const r of byPN.values()) {
-      if (r.stockEntries.length === 0) {
-        for (const s of stock) {
-          if (upper(s.partNumber) === upper(r.partNumber)) r.stockEntries.push(s);
+    // Walk the full manifest WITHOUT per-part dedup — preserves each (kit, bag)
+    // home a part lives in. Dedupe at the (partNumber, kitId, bag) granularity
+    // so a duplicate definition inside the same kit+bag (rare) collapses.
+    const manifest = getAircraftManifest(aircraftType);
+    const byKey = new Map<string, LookupResult>();
+    if (manifest) {
+      for (const kit of manifest.kits) {
+        for (const entry of kit.entries) {
+          if (!hit(entry.partNumber, entry.nomenclature, entry.subKit, entry.bag, kit.label)) continue;
+          const key = `${upper(entry.partNumber)}|${kit.id}|${upper(entry.bag)}`;
+          if (byKey.has(key)) continue;
+          // Stock for this (partNumber, bag) pair. If the entry has no bag,
+          // accept any batch — the part doesn't ship in a specific bag here.
+          const stockForRow = stock.filter(s => {
+            if (upper(s.partNumber) !== upper(entry.partNumber)) return false;
+            if (!entry.bag) return true;
+            return upper(s.batch) === upper(entry.bag);
+          });
+          byKey.set(key, {
+            partNumber:  entry.partNumber,
+            name:        entry.nomenclature,
+            subKit:      entry.subKit,
+            bag:         entry.bag,
+            kitLabel:    kit.label,
+            qtyRequired: entry.qtyRequired,
+            stockEntries: stockForRow,
+          });
         }
       }
     }
-    // Sort: manifest items first (most relevant for the build), then by PN
-    return [...byPN.values()].sort((a, b) => {
+
+    // Stock-only matches: rows that hit on partNumber/partName/batch but don't
+    // correspond to any manifest entry already in the results. Index manifest
+    // results by (partNumber, batch) so we don't double-list.
+    const represented = new Set<string>();
+    for (const r of byKey.values()) represented.add(`${upper(r.partNumber)}|${upper(r.bag)}`);
+    for (const s of stock) {
+      if (!hit(s.partNumber, s.partName, s.batch)) continue;
+      const key = `${upper(s.partNumber)}|${upper(s.batch)}`;
+      if (represented.has(key)) continue;
+      represented.add(key);
+      byKey.set(`stock|${key}`, {
+        partNumber:  s.partNumber,
+        name:        s.partName || '',
+        subKit:      undefined,
+        bag:         s.batch || undefined,
+        kitLabel:    undefined,
+        qtyRequired: 0,
+        stockEntries: [s],
+      });
+    }
+
+    // Sort: manifest items first (relevant for the build), then by PN, then by bag
+    return [...byKey.values()].sort((a, b) => {
       if ((a.qtyRequired > 0) !== (b.qtyRequired > 0)) return a.qtyRequired > 0 ? -1 : 1;
-      return a.partNumber.localeCompare(b.partNumber);
+      const pn = a.partNumber.localeCompare(b.partNumber);
+      if (pn !== 0) return pn;
+      return (a.bag || '').localeCompare(b.bag || '');
     });
   }, [lookupQuery, stock, aircraftType]);
 
@@ -483,8 +502,9 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-muted-foreground">
-                        {r.subKit && <span className="text-emerald-400/70">[{r.subKit}]</span>}
-                        {r.bag    && <span className="text-primary/70">[{r.bag}]</span>}
+                        {r.kitLabel && <span className="text-amber-400/80">{r.kitLabel}</span>}
+                        {r.subKit   && <span className="text-emerald-400/70">[{r.subKit}]</span>}
+                        {r.bag      && <span className="text-primary/70">[{r.bag}]</span>}
                         {r.qtyRequired > 0 && (
                           <span>Need <span className="text-foreground/80 font-medium">{r.qtyRequired}</span></span>
                         )}
