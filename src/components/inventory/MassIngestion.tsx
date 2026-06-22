@@ -234,43 +234,53 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     }
   }, [items, existingSessions, markChecked]);
 
-  /** Record a part in its OWN kit's check session. Finds a non-completed
-   *  session for `kitId`, creating one (with that kit's full manifest) when
-   *  none exists yet, then marks `partNumber` verified in it. Returns `ok`
-   *  (whether the part was successfully recorded) and `createdSession`
-   *  (whether a new session had to be created). On any error `ok` is false —
-   *  the caller surfaces that so a scan is never silently left untracked. */
-  const checkPartInOwnKit = useCallback(async (kitId: string, partNumber: string): Promise<{ ok: boolean; createdSession: boolean }> => {
+  /** Get or create the check session for `kitId`. Returns its ID, or null
+   *  when the kit isn't in this aircraft's manifest (shouldn't normally
+   *  happen — callers pass kitIds that came from the manifest lookup).
+   *  Used by both the single-part flow (checkPartInOwnKit) and the bag
+   *  flows so they write into the same session as one another and as any
+   *  in-progress kit check the user started manually. */
+  const ensureKitSession = useCallback(async (kitId: string): Promise<{ sessionId: number | null; created: boolean }> => {
     const kit = aircraft?.kits.find(k => k.id === kitId);
-    if (!kit) return { ok: false, createdSession: false };
+    if (!kit) return { sessionId: null, created: false };
+    const existing = existingSessions.find(s => s.kitId === kitId && s.status !== 'completed');
+    if (existing) return { sessionId: existing.id, created: false };
     try {
-      let session = existingSessions.find(s => s.kitId === kitId && s.status !== 'completed');
-      let createdSession = false;
-      if (!session) {
-        const perBagEntries = getKitEntriesPerBag(aircraftType, kitId);
-        const newSession = await createCheckSession({
-          aircraftType,
-          kitId,
-          kitLabel: kit.label,
-          items: perBagEntries.map(e => ({
-            partNumber: e.partNumber,
-            nomenclature: e.nomenclature,
-            subKit: e.subKit,
-            bag: e.bag,
-            qtyExpected: e.qtyRequired,
-            unit: e.unit,
-          })),
-        });
-        setExistingSessions(prev => [...prev, newSession]);
-        session = newSession;
-        createdSession = true;
-      }
-      await verifyCheckBatch(session.id, [{ partNumber, qtyFound: 1 }]);
-      return { ok: true, createdSession };
+      const perBagEntries = getKitEntriesPerBag(aircraftType, kitId);
+      const newSession = await createCheckSession({
+        aircraftType,
+        kitId,
+        kitLabel: kit.label,
+        items: perBagEntries.map(e => ({
+          partNumber:   e.partNumber,
+          nomenclature: e.nomenclature,
+          subKit:       e.subKit,
+          bag:          e.bag,
+          qtyExpected:  e.qtyRequired,
+          unit:         e.unit,
+        })),
+      });
+      setExistingSessions(prev => [...prev, newSession]);
+      return { sessionId: newSession.id, created: true };
     } catch {
-      return { ok: false, createdSession: false };
+      return { sessionId: null, created: false };
     }
   }, [aircraft, aircraftType, existingSessions]);
+
+  /** Record a part in its OWN kit's check session. Returns `ok` (whether the
+   *  part was successfully recorded) and `createdSession` (whether a new
+   *  session had to be created). On any error `ok` is false — the caller
+   *  surfaces that so a scan is never silently left untracked. */
+  const checkPartInOwnKit = useCallback(async (kitId: string, partNumber: string): Promise<{ ok: boolean; createdSession: boolean }> => {
+    const { sessionId, created } = await ensureKitSession(kitId);
+    if (sessionId == null) return { ok: false, createdSession: false };
+    try {
+      await verifyCheckBatch(sessionId, [{ partNumber, qtyFound: 1 }]);
+      return { ok: true, createdSession: created };
+    } catch {
+      return { ok: false, createdSession: created };
+    }
+  }, [ensureKitSession]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -778,12 +788,25 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         count++;
       }
       toast.success(`${pendingBag.bagId}: ${count} items added (not verified)`);
-      markChecked(pendingBag.entries.map(e => ({ partNumber: e.partNumber, qtyFound: e.qtyRequired || 1, bag: pendingBag.bagId })));
+      // Verify the bag's contents in its own kit's check session — NOT
+      // activeCheckSessionId, which is null in Auto-Sort mode and could be
+      // the wrong kit in cross-kit-check mode. Bags only belong to one kit
+      // (pendingBag.kitId), so we always know the right destination.
+      const { sessionId } = await ensureKitSession(pendingBag.kitId);
+      if (sessionId != null) {
+        try {
+          await verifyCheckBatch(sessionId, pendingBag.entries.map(e => ({
+            partNumber: e.partNumber,
+            qtyFound:   e.qtyRequired || 1,
+            bag:        pendingBag.bagId,
+          })));
+        } catch { /* best-effort */ }
+      }
     } catch (err: any) { toast.error(err.message || 'Bag ingest failed'); }
     setPendingBag(null);
     setBagVerifyItems([]);
     setStage('camera');
-  }, [pendingBag, selectedKit, markChecked, selectedLocationId]);
+  }, [pendingBag, selectedKit, ensureKitSession, selectedLocationId]);
 
   // ─── Bag workflow: "Yes" → enter bag-verify mode ────────────
   const bagStartVerify = useCallback(() => {
@@ -897,9 +920,11 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         count++;
       }
       toast.success(`${pendingBag.bagId}: ${count} items added${boCount > 0 ? ` (${boCount} backordered)` : ''}`);
-      // Mark items in check session with actual quantities
-      // Items left as 'pending' (not verified) are skipped — they stay pending in the session
-      // For each item, flag whether the user explicitly reduced qty below the bag's expected qty
+      // Mark items in the bag's kit-check session — NOT activeCheckSessionId,
+      // which is null in Auto-Sort mode. The bag belongs unambiguously to
+      // pendingBag.kitId, so that's the only session that matters here.
+      // Items left as 'pending' (not verified) are skipped — they stay
+      // pending in the session.
       const checkItems = bagVerifyItems
         .filter(i => i.status !== 'pending')
         .map(i => {
@@ -907,17 +932,23 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
           const qty = i.status === 'backordered' ? 0 : i.actualQty;
           return {
             partNumber: i.entry.partNumber,
-            qtyFound: qty,
-            isShort: qty < bagExpected,
-            bag: pendingBag.bagId,  // match the correct bag entry in check session
+            qtyFound:   qty,
+            isShort:    qty < bagExpected,
+            bag:        pendingBag.bagId,  // match the correct bag entry in the session
           };
         });
-      markChecked(checkItems);
+      if (checkItems.length > 0) {
+        const { sessionId } = await ensureKitSession(pendingBag.kitId);
+        if (sessionId != null) {
+          try { await verifyCheckBatch(sessionId, checkItems); }
+          catch { /* best-effort */ }
+        }
+      }
     } catch (err: any) { toast.error(err.message || 'Bag ingest failed'); }
     setPendingBag(null);
     setBagVerifyItems([]);
     setStage('camera');
-  }, [pendingBag, bagVerifyItems, selectedKit, manifestEntries, markChecked, selectedLocationId]);
+  }, [pendingBag, bagVerifyItems, selectedKit, manifestEntries, ensureKitSession, selectedLocationId]);
 
   const skipScan = useCallback(() => {
     setPendingScan(null);
