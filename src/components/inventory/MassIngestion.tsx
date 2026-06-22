@@ -122,7 +122,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   // Tap-to-edit quantity. When set, the row's qty badge becomes a number
   // input pre-filled with `value`. Used so the user can set 52/52 in one
   // tap instead of scanning a label of a 52-piece bag fifty-two times.
-  const [editingQty, setEditingQty] = useState<{ partNumber: string; value: string } | null>(null);
+  // Item identity in the local list is (partNumber, bag) — the same part can
+  // be scanned in multiple bags during one session and each bag's count must
+  // be tracked independently against its own manifest qtyRequired. So
+  // editingQty carries the bag too, otherwise tap-to-edit would update every
+  // matching row.
+  const [editingQty, setEditingQty] = useState<{ partNumber: string; bag?: string; value: string } | null>(null);
   const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[] } | null>(null);
   const [bagVerifyItems, setBagVerifyItems] = useState<BagVerifyEntry[]>([]);
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
@@ -179,7 +184,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
    *
    * Clamps to [0, …] — negative qtys never made sense here.
    */
-  const commitQty = useCallback(async (partNumber: string, raw: string) => {
+  const commitQty = useCallback(async (partNumber: string, bag: string | undefined, raw: string) => {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
       setEditingQty(null);
@@ -187,7 +192,11 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     }
     const newQty = Math.max(0, parsed);
 
-    const item = items.find(i => normPN(i.partNumber) === normPN(partNumber));
+    // Find the exact (partNumber, bag) row — different bags hold the same
+    // part as independent rows now.
+    const sameRow = (i: IngestedItem) =>
+      normPN(i.partNumber) === normPN(partNumber) && (i.bag || '') === (bag || '');
+    const item = items.find(sameRow);
     if (!item) {
       setEditingQty(null);
       return;
@@ -195,7 +204,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     const delta = newQty - item.scannedQty;
 
     // Optimistic UI update first so the tap feels instant
-    setItems(prev => prev.map(i => i.partNumber === partNumber ? { ...i, scannedQty: newQty } : i));
+    setItems(prev => prev.map(i => sameRow(i) ? { ...i, scannedQty: newQty } : i));
     setEditingQty(null);
 
     // Top up inventory if the user increased the quantity. We don't reduce
@@ -728,7 +737,10 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       }
 
       setItems(prev => {
-        const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(pendingScan.partNumber));
+        // Single-part scan has no bag context — match only against other
+        // loose (no-bag) rows so we never collide with bag-scanned rows of
+        // the same part.
+        const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(pendingScan.partNumber) && !i.bag);
         if (idx >= 0) {
           const updated = [...prev];
           updated[idx] = { ...updated[idx], scannedQty: updated[idx].scannedQty + 1, sessionStatus };
@@ -781,7 +793,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
           ...(selectedLocationId ? { locationId: selectedLocationId } : {}),
         });
         setItems(prev => {
-          const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber));
+          // Match within the same bag — different bags carry their own row.
+          const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber) && i.bag === pendingBag.bagId);
           if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + (entry.qtyRequired || 1) }; return u; }
           return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: entry.qtyRequired || 1, part, wasCreated: created, expectedQty: entry.qtyRequired || 1, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
         });
@@ -913,7 +926,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         }
 
         setItems(prev => {
-          const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber));
+          // Match within the same bag — different bags carry their own row.
+          const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber) && i.bag === pendingBag.bagId);
           if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + qty }; return u; }
           return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: qty, part, wasCreated: created, expectedQty: expected, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
         });
@@ -1482,9 +1496,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                     const fulfilled = hasManifest && item.scannedQty >= item.expectedQty;
                     const partial = hasManifest && item.scannedQty > 0 && !fulfilled;
 
-                    const isEditing = editingQty?.partNumber === item.partNumber;
+                    // (partNumber, bag) is the row identity — the same part
+                    // scanned in multiple bags renders as separate rows.
+                    const rowKey = `${item.partNumber}|${item.bag || ''}`;
+                    const isEditing = editingQty?.partNumber === item.partNumber && (editingQty?.bag || '') === (item.bag || '');
                     return (
-                      <div key={item.partNumber} className="flex items-center gap-3 px-4 py-3">
+                      <div key={rowKey} className="flex items-center gap-3 px-4 py-3">
                         {/* Quantity badge — tap to edit. Becomes a numeric
                             input + "Set to expected" shortcut. Saves on
                             Enter, the green check, or blur; cancels on
@@ -1496,9 +1513,9 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                               inputMode="numeric"
                               min={0}
                               value={editingQty!.value}
-                              onChange={e => setEditingQty({ partNumber: item.partNumber, value: e.target.value })}
+                              onChange={e => setEditingQty({ partNumber: item.partNumber, bag: item.bag, value: e.target.value })}
                               onKeyDown={e => {
-                                if (e.key === 'Enter') commitQty(item.partNumber, editingQty!.value);
+                                if (e.key === 'Enter') commitQty(item.partNumber, item.bag, editingQty!.value);
                                 else if (e.key === 'Escape') setEditingQty(null);
                               }}
                               onBlur={() => {
@@ -1506,14 +1523,16 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                                 // to the input — defer the close to the next
                                 // tick so onClick can fire first.
                                 setTimeout(() => {
-                                  setEditingQty(curr => curr?.partNumber === item.partNumber ? curr : null);
+                                  setEditingQty(curr =>
+                                    curr?.partNumber === item.partNumber && (curr?.bag || '') === (item.bag || '') ? curr : null
+                                  );
                                 }, 150);
                               }}
                               autoFocus
                               className="w-14 px-1 py-1 rounded bg-card border border-emerald-500/60 text-center text-sm font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500"
                             />
                             <button
-                              onClick={() => commitQty(item.partNumber, editingQty!.value)}
+                              onClick={() => commitQty(item.partNumber, item.bag, editingQty!.value)}
                               className="p-1 rounded hover:bg-emerald-500/20 text-emerald-500"
                               title="Save"
                             >
@@ -1521,7 +1540,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                             </button>
                             {hasManifest && Number(editingQty!.value) !== item.expectedQty && (
                               <button
-                                onClick={() => commitQty(item.partNumber, String(item.expectedQty))}
+                                onClick={() => commitQty(item.partNumber, item.bag, String(item.expectedQty))}
                                 className="px-1.5 py-0.5 rounded bg-accent hover:bg-accent/80 text-[10px] font-bold text-foreground/80 whitespace-nowrap"
                                 title={`Set to expected qty (${item.expectedQty})`}
                               >
@@ -1538,7 +1557,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                           </div>
                         ) : (
                           <button
-                            onClick={() => setEditingQty({ partNumber: item.partNumber, value: String(item.scannedQty) })}
+                            onClick={() => setEditingQty({ partNumber: item.partNumber, bag: item.bag, value: String(item.scannedQty) })}
                             className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 text-xs font-bold transition hover:ring-1 hover:ring-foreground/20 ${
                               fulfilled ? 'bg-emerald-500/15 text-emerald-400' :
                               partial ? 'bg-amber-500/15 text-amber-400' :
