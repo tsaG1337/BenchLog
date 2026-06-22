@@ -128,6 +128,27 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
   const [existingSessions, setExistingSessions] = useState<CheckSession[]>([]);
 
+  // Lock the viewport while Mass Ingestion is open: no pinch-zoom (the
+  // camera view + scan UI doesn't accommodate it and accidental zoom on
+  // the camera frame really tears the layout), and best-effort orientation
+  // lock to portrait (Chromium-based mobile and Firefox honour it; iOS
+  // Safari ignores it silently and the CSS landscape overlay takes over).
+  // Both are reverted on close so the rest of the app keeps the user's
+  // normal viewport behaviour.
+  useEffect(() => {
+    const meta = document.querySelector('meta[name="viewport"]');
+    const originalViewport = meta?.getAttribute('content') ?? null;
+    if (meta) {
+      meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+    }
+    const orientation = (screen as { orientation?: { lock?: (o: string) => Promise<void>; unlock?: () => void } }).orientation;
+    try { orientation?.lock?.('portrait')?.catch(() => {}); } catch {}
+    return () => {
+      if (meta && originalViewport != null) meta.setAttribute('content', originalViewport);
+      try { orientation?.unlock?.(); } catch {}
+    };
+  }, []);
+
   // Load existing check sessions for the kit-select screen
   useEffect(() => {
     fetchCheckSessions().then(setExistingSessions).catch(() => {});
@@ -917,7 +938,18 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+    <div className="fixed inset-0 z-50 bg-black flex flex-col" style={{ touchAction: 'pan-x pan-y' }}>
+      {/* Landscape-orientation overlay — Mass Ingestion is portrait-only.
+          On browsers that honour screen.orientation.lock() this never shows
+          because the device is held in portrait. iOS Safari ignores the lock
+          API entirely, so the CSS @media (orientation: landscape) takes over
+          and prompts the user to rotate back. */}
+      <div className="hidden landscape:flex absolute inset-0 z-[60] bg-black flex-col items-center justify-center text-foreground p-8 text-center">
+        <MIcon name="screen_rotation" className="text-emerald-400 mb-4" style={{ fontSize: '4rem' }} />
+        <p className="text-lg font-bold mb-1">Rotate to portrait</p>
+        <p className="text-sm text-muted-foreground">Mass Ingestion is designed for portrait mode.</p>
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-black/80 backdrop-blur-sm shrink-0 z-10">
         <div className="flex items-center gap-2">
