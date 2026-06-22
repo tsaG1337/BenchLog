@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { X, Check, Loader2, RotateCcw, Package, AlertTriangle, CheckCircle2, ClipboardCheck, MapPin } from 'lucide-react';
+import { X, Check, Loader2, RotateCcw, Package, AlertTriangle, CheckCircle2, ClipboardCheck, MapPin, ArrowLeft } from 'lucide-react';
 import { MIcon } from '@/components/AppShell';
 import { runOcr, ingestInvPart, verifyCheckBatch, createCheckSession, fetchCheckSessions, type InvPart, type InvLocation, type CheckSession } from '@/lib/api';
 import { getVendorConfig, detectSubKit } from '@/lib/ocrVendors';
@@ -813,7 +813,14 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-black/80 backdrop-blur-sm shrink-0 z-10">
         <div className="flex items-center gap-2">
-          <MIcon name="inventory_2" className="text-lg text-emerald-400" />
+          {/* Back button — always visible, conventional top-left position so
+              users can exit even before they've scanned anything */}
+          <button onClick={handleClose} aria-label="Close mass ingestion"
+            className="flex items-center gap-1 -ml-1 px-2 py-1.5 rounded-md hover:bg-white/10 transition-colors">
+            <ArrowLeft className="w-4 h-4 text-foreground" />
+            <span className="font-label text-[10px] font-bold uppercase tracking-wider text-foreground">Back</span>
+          </button>
+          <MIcon name="inventory_2" className="text-lg text-emerald-400 ml-1" />
           <span className="font-label text-sm font-bold uppercase tracking-wider text-foreground">Mass Ingestion</span>
           {selectedKit && <span className="text-xs text-emerald-400/80 ml-1">— {selectedKit.label}</span>}
           {activeCheckSessionId && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-bold ml-2">CHECK</span>}
@@ -831,7 +838,6 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
               <Check className="w-3.5 h-3.5" /> Done ({totalScanned})
             </button>
           )}
-          <button onClick={handleClose} aria-label="Close mass ingestion" className="p-1 rounded hover:bg-white/10"><X className="w-5 h-5 text-foreground" /></button>
         </div>
       </div>
 

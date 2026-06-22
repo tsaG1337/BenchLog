@@ -437,7 +437,7 @@ interface WiringState extends Snapshot {
   /** Set every selected `component` harness node's orientation so its
    *  connectors face the left edge (`dir === 'left'`, orientation 0°) or
    *  the right edge (`dir === 'right'`, orientation 180°). One undo step. */
-  rotateHarnessNode: (sheetId: string, dir: 'left' | 'right') => void;
+  mirrorHarnessNode: (sheetId: string) => void;
   /** Set the active sheet's harness drawing scale (mm of cable per canvas
    *  unit). Ignores non-finite / non-positive input. Undoable. */
   setHarnessScale: (sheetId: string, mmPerUnit: number) => void;
@@ -1852,20 +1852,26 @@ export const useWiring = create<WiringState>((set, get) => {
         return { bundleNames };
       })),
 
-    rotateHarnessNode: (sheetId, dir) => mutate((s) => {
-      // Set orientation on the selected devices. In the harness view a device
-      // block selects into `selectedDeviceIds` (the shared device-selection
-      // set), not `selectedHarnessNodeIds` (which only splice / branch-point
-      // markers use). Splices / branch points have no orientation, so the
-      // device set is exactly the target.
+    mirrorHarnessNode: (sheetId) => mutate((s) => {
+      // Flip the orientation of every selected device between 0° and 180°.
+      // In the harness view a device block selects into `selectedDeviceIds`
+      // (the shared device-selection set), not `selectedHarnessNodeIds`
+      // (which only splice / branch-point markers use). Splices / branch
+      // points have no orientation, so the device set is exactly the target.
+      //
+      // Each device flips independently — if the selection is mixed
+      // (some 0°, some 180°) they all swap, which matches the user
+      // expectation of "mirror each one" rather than "force them all the
+      // same way".
       const componentIds = Array.from(s.selectedDeviceIds).filter(id =>
         s.placements.some(p => p.id === id));
       if (componentIds.length === 0) return {};
       return patchHarnessOverrides(s, sheetId, (o) => {
         const nodeOrientations: Record<string, Orientation> = { ...o.nodeOrientations };
         for (const id of componentIds) {
-          if (dir === 'left') delete nodeOrientations[id];   // 0° — the identity, drop the entry
-          else nodeOrientations[id] = 180;
+          const current = nodeOrientations[id] ?? 0;
+          if (current === 0) nodeOrientations[id] = 180;
+          else delete nodeOrientations[id]; // back to 0° — the identity, drop the entry
         }
         return { nodeOrientations };
       });
