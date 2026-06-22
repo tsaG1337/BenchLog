@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { X, Check, Loader2, RotateCcw, Package, AlertTriangle, CheckCircle2, ClipboardCheck, MapPin, ArrowLeft, Trash2 } from 'lucide-react';
 import { MIcon } from '@/components/AppShell';
-import { runOcr, ingestInvPart, verifyCheckBatch, createCheckSession, fetchCheckSessions, deleteInvStock, type InvPart, type InvLocation, type CheckSession } from '@/lib/api';
+import { runOcr, ingestInvPart, verifyCheckBatch, createCheckSession, fetchCheckSessions, deleteInvStock, updateInvStock, type InvPart, type InvLocation, type CheckSession } from '@/lib/api';
 import { getVendorConfig, detectSubKit } from '@/lib/ocrVendors';
 import { getAircraftManifest, getKitEntries, getAllEntries, getKitEntriesPerBag, findBagFuzzy, isBagLabel, type KitDefinition, type ManifestEntry, type BagDefinition, type BagEntryGroup } from '@/lib/kitManifest';
 import { toast } from 'sonner';
@@ -1690,13 +1690,36 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                           {item.sessionStatus === 'no-kit' && (
                             <p className="text-[10px] text-muted-foreground/70 mt-0.5">Inventory only — not in a kit</p>
                           )}
-                          {/* Per-item location */}
+                          {/* Per-item location — also pushes the new location
+                              to every inventory_stock row this scan created,
+                              not just the local list. Without the API call
+                              the visual changes but the real stock row stays
+                              at its original location. */}
                           {locations.length > 0 && (
                             <select
                               value={item.locationId ?? ''}
-                              onChange={e => {
+                              onChange={async e => {
                                 const newLocId = e.target.value ? Number(e.target.value) : undefined;
-                                setItems(prev => prev.map(i => i.partNumber === item.partNumber ? { ...i, locationId: newLocId } : i));
+                                // Optimistic local update — match by (partNumber, bag) so
+                                // a sibling row for the same part in a different bag isn't
+                                // touched.
+                                setItems(prev => prev.map(i =>
+                                  normPN(i.partNumber) === normPN(item.partNumber) && (i.bag || '') === (item.bag || '')
+                                    ? { ...i, locationId: newLocId }
+                                    : i
+                                ));
+                                // Push to the backend for every stock row this scan created.
+                                // Skip when "Incoming" is selected (no explicit location) —
+                                // there's no neutral location id we can write back, so the
+                                // local label just becomes informational.
+                                if (newLocId != null && item.stockIds && item.stockIds.length > 0) {
+                                  for (const sid of item.stockIds) {
+                                    try { await updateInvStock(sid, { locationId: newLocId }); }
+                                    catch (err: any) {
+                                      toast.error(`Could not move ${item.partNumber}: ${err.message || 'unknown error'}`);
+                                    }
+                                  }
+                                }
                               }}
                               onClick={e => e.stopPropagation()}
                               className="mt-1 px-1.5 py-0.5 rounded bg-accent/50 border border-border/50 text-[10px] text-muted-foreground focus:outline-none focus:border-emerald-500/50 max-w-[180px]"
