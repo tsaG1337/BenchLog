@@ -113,6 +113,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const [error, setError] = useState('');
   const [cameraReady, setCameraReady] = useState(false);
   const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string } | null>(null);
+  // Confirm-screen autocomplete: shown when the user manually corrects a
+  // misread part number. Suggestions come from the aircraft's full manifest
+  // (across all kits), matching the same pattern as the "Add part" form in
+  // the inventory tab.
+  const [showPnSuggestions, setShowPnSuggestions] = useState(false);
+  const pnSuggestionsRef = useRef<HTMLDivElement>(null);
   // Tap-to-edit quantity. When set, the row's qty badge becomes a number
   // input pre-filled with `value`. Used so the user can set 52/52 in one
   // tap instead of scanning a label of a 52-piece bag fifty-two times.
@@ -279,6 +285,52 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       belongsToKit: !inSelectedKit && selectedKit && homeKit ? homeKit.label : undefined,
     };
   }, [aircraft, selectedKit, manifestEntries]);
+
+  // ─── Confirm-screen part-number autocomplete ─────────────────
+  // Manifest-only — the user is correcting an OCR misread for a kit part,
+  // so suggestions outside the manifest would be noise. Capped at 8 for
+  // tap-friendly UI on mobile, deduped by part number across kits.
+  const pnSuggestions = useMemo<ManifestEntry[]>(() => {
+    if (!pendingScan || !showPnSuggestions) return [];
+    const q = pendingScan.partNumber.toUpperCase().trim();
+    if (q.length < 2) return [];
+    const seen = new Set<string>();
+    const out: ManifestEntry[] = [];
+    for (const e of allManifestEntries) {
+      if (out.length >= 8) break;
+      const key = e.partNumber.toUpperCase();
+      if (seen.has(key)) continue;
+      if (key.includes(q)) {
+        seen.add(key);
+        out.push(e);
+      }
+    }
+    return out;
+  }, [pendingScan?.partNumber, showPnSuggestions, allManifestEntries]);
+
+  const selectPnSuggestion = useCallback((entry: ManifestEntry) => {
+    if (!pendingScan) return;
+    const c = classifyAgainstKit(entry.partNumber);
+    setPendingScan({
+      ...pendingScan,
+      partNumber: entry.partNumber,
+      name:       entry.nomenclature || pendingScan.name,
+      subKit:     entry.subKit || pendingScan.subKit,
+      ...c,
+    });
+    setShowPnSuggestions(false);
+  }, [pendingScan, classifyAgainstKit]);
+
+  // Close the autocomplete on outside click — same pattern as PartsTab.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (pnSuggestionsRef.current && !pnSuggestionsRef.current.contains(e.target as Node)) {
+        setShowPnSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   // ─── Camera ──────────────────────────────────────────────────
 
@@ -1036,12 +1088,46 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                       </p>
                     </div>
                   )}
-                  <input value={pendingScan.partNumber}
-                    onChange={e => {
-                      const pn = e.target.value;
-                      setPendingScan({ ...pendingScan, partNumber: pn, ...classifyAgainstKit(pn) });
-                    }}
-                    className="w-full px-3 py-2 rounded bg-accent border border-border text-foreground text-lg font-mono font-bold" />
+                  <div className="relative" ref={pnSuggestionsRef}>
+                    <input value={pendingScan.partNumber}
+                      onChange={e => {
+                        const pn = e.target.value;
+                        const c = classifyAgainstKit(pn);
+                        // Look up the corrected PN in the manifest so a manual
+                        // edit also fills in the canonical description + sub-kit
+                        // (matching what the OCR path does at the initial scan).
+                        const m = allManifestEntries.find(en => normPN(en.partNumber) === normPN(pn));
+                        setPendingScan({
+                          ...pendingScan,
+                          partNumber: pn,
+                          ...c,
+                          ...(m?.nomenclature ? { name: m.nomenclature } : {}),
+                          ...(m?.subKit ? { subKit: m.subKit } : {}),
+                        });
+                        setShowPnSuggestions(true);
+                      }}
+                      onFocus={() => setShowPnSuggestions(true)}
+                      autoComplete="off"
+                      className="w-full px-3 py-2 rounded bg-accent border border-border text-foreground text-lg font-mono font-bold" />
+                    {pnSuggestions.length > 0 && (
+                      <div className="absolute top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto bg-card border border-border rounded-md shadow-lg z-50">
+                        {pnSuggestions.map(s => (
+                          <button
+                            key={s.partNumber}
+                            type="button"
+                            onClick={() => selectPnSuggestion(s)}
+                            className="w-full text-left px-3 py-2 hover:bg-accent transition-colors border-b border-border/30 last:border-b-0"
+                          >
+                            <p className="text-sm font-mono font-bold text-foreground">{s.partNumber}</p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {s.nomenclature}
+                              {s.subKit && <span className="ml-1.5 text-emerald-400/70">[{s.subKit}]</span>}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <input value={pendingScan.name}
                       onChange={e => setPendingScan({ ...pendingScan, name: e.target.value })}
