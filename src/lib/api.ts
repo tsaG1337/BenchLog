@@ -1058,7 +1058,7 @@ export const fetchInvParts       = (params?: Record<string, string>)     => { co
 export const createInvPart       = (data: Partial<InvPart>)              => request<InvPart>('/api/inventory/parts', { method: 'POST', body: JSON.stringify(data) });
 export const updateInvPart       = (id: number, data: Partial<InvPart>)  => request<InvPart>(`/api/inventory/parts/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 export const deleteInvPart       = (id: number)                          => request<{ ok: boolean }>(`/api/inventory/parts/${id}`, { method: 'DELETE' });
-export const ingestInvPart       = (data: Partial<InvPart> & { quantity?: number; unit?: string; status?: string; locationId?: number; mfgDate?: string }) => request<{ part: InvPart; created: boolean }>('/api/inventory/parts/ingest', { method: 'POST', body: JSON.stringify(data) });
+export const ingestInvPart       = (data: Partial<InvPart> & { quantity?: number; unit?: string; status?: string; locationId?: number; mfgDate?: string }) => request<{ part: InvPart; created: boolean; stockId: number | null }>('/api/inventory/parts/ingest', { method: 'POST', body: JSON.stringify(data) });
 
 // Stock
 export const fetchInvStock       = (params?: Record<string, string>)     => { const q = params ? '?' + new URLSearchParams(params).toString() : ''; return request<InvStock[]>(`/api/inventory/stock${q}`); };

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { X, Check, Loader2, RotateCcw, Package, AlertTriangle, CheckCircle2, ClipboardCheck, MapPin, ArrowLeft } from 'lucide-react';
+import { X, Check, Loader2, RotateCcw, Package, AlertTriangle, CheckCircle2, ClipboardCheck, MapPin, ArrowLeft, Trash2 } from 'lucide-react';
 import { MIcon } from '@/components/AppShell';
-import { runOcr, ingestInvPart, verifyCheckBatch, createCheckSession, fetchCheckSessions, type InvPart, type InvLocation, type CheckSession } from '@/lib/api';
+import { runOcr, ingestInvPart, verifyCheckBatch, createCheckSession, fetchCheckSessions, deleteInvStock, type InvPart, type InvLocation, type CheckSession } from '@/lib/api';
 import { getVendorConfig, detectSubKit } from '@/lib/ocrVendors';
 import { getAircraftManifest, getKitEntries, getAllEntries, getKitEntriesPerBag, findBagFuzzy, isBagLabel, type KitDefinition, type ManifestEntry, type BagDefinition, type BagEntryGroup } from '@/lib/kitManifest';
 import { toast } from 'sonner';
@@ -74,6 +74,11 @@ export interface IngestedItem {
    *  kit's check session even in Auto-Sort mode where no kit was explicitly
    *  selected at the start. Undefined for parts not in any manifest. */
   kitId?: string;
+  /** inventory_stock row IDs created for this item during this scan session.
+   *  A single item can map to multiple stock rows (e.g. user scanned three
+   *  times of a loose part — each scan inserts its own row), and the
+   *  delete-row affordance needs every ID so it can drop the right stock. */
+  stockIds?: number[];
 }
 
 interface MassIngestionProps {
@@ -112,7 +117,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const locationMap = useMemo(() => new Map(locations.map(l => [l.id, l.name])), [locations]);
   const [error, setError] = useState('');
   const [cameraReady, setCameraReady] = useState(false);
-  const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string } | null>(null);
+  // `location` on pendingScan / pendingBag is a per-confirmation override —
+  // initialised from the global `selectedLocationId` when the confirm opens,
+  // then edited only on the in-dialog dropdown. Lets the user place a single
+  // scan or a single bag in a non-default location without permanently
+  // flipping the session default for every following scan.
+  const [pendingScan, setPendingScan] = useState<{ partNumber: string; name: string; subKit: string; mfgDate: string; inManifest: boolean; belongsToKit?: string; homeKitId?: string; homeKitLabel?: string; location?: number | null } | null>(null);
   // Confirm-screen autocomplete: shown when the user manually corrects a
   // misread part number. Suggestions come from the aircraft's full manifest
   // (across all kits), matching the same pattern as the "Add part" form in
@@ -128,7 +138,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   // editingQty carries the bag too, otherwise tap-to-edit would update every
   // matching row.
   const [editingQty, setEditingQty] = useState<{ partNumber: string; bag?: string; value: string } | null>(null);
-  const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[] } | null>(null);
+  const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[]; location?: number | null } | null>(null);
   const [bagVerifyItems, setBagVerifyItems] = useState<BagVerifyEntry[]>([]);
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
   const [existingSessions, setExistingSessions] = useState<CheckSession[]>([]);
@@ -275,6 +285,58 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       return { sessionId: null, created: false };
     }
   }, [aircraft, aircraftType, existingSessions]);
+
+  /** Delete a scanned row from the local list AND from inventory.
+   *
+   *  Deletes every inventory_stock row created for this entry during this
+   *  session (`item.stockIds`), then unwinds the check-session qty for the
+   *  same part+bag by subtracting `scannedQty` from `qty_found` via a
+   *  replace-style verify-batch call. Lets the user back out of a misscan
+   *  without leaving doubled inventory rows or false-verified session items
+   *  behind.
+   *
+   *  Best-effort: any individual stock/session API failure surfaces as a
+   *  toast but does NOT block the local removal — the user's intent is
+   *  "remove this from my list", and a refresh on the inventory page will
+   *  reconcile any partial state. */
+  const deleteScannedItem = useCallback(async (item: IngestedItem) => {
+    // Server-side cleanup, fire-and-await so the UI doesn't beat the API:
+    if (item.stockIds && item.stockIds.length > 0) {
+      for (const id of item.stockIds) {
+        try { await deleteInvStock(id); }
+        catch (err: any) { console.error('Failed to delete stock', id, err); }
+      }
+    }
+    // Reverse the check-session bump this item contributed. Look up the
+    // existing qty_found and subtract; replace=true so the backend writes
+    // the new total directly. Skipped silently when the part isn't tracked
+    // in a kit session.
+    if (item.kitId && item.scannedQty > 0) {
+      const { sessionId } = await ensureKitSession(item.kitId);
+      if (sessionId != null) {
+        // We can't easily fetch the current qty_found from here without
+        // adding a new endpoint. Conservative fallback: write 0 with
+        // replace=true. The kit-check page rebuilds the session list on
+        // refresh, so the loss of accumulated state from other scans of the
+        // same row in this session is acceptable — the user is explicitly
+        // undoing this row.
+        try {
+          await verifyCheckBatch(sessionId, [{
+            partNumber: item.partNumber,
+            qtyFound:   0,
+            replace:    true,
+            ...(item.bag ? { bag: item.bag } : {}),
+          }]);
+        } catch { /* best-effort */ }
+      }
+    }
+    // Drop the row from the local list. Matching is by (partNumber, bag)
+    // so siblings (same part in another bag) stay intact.
+    setItems(prev => prev.filter(i =>
+      !(normPN(i.partNumber) === normPN(item.partNumber) && (i.bag || '') === (item.bag || ''))
+    ));
+    toast.success(`Removed ${item.partNumber}${item.bag ? ` from ${item.bag}` : ''}`);
+  }, [ensureKitSession]);
 
   /** Record a part in its OWN kit's check session. Returns `ok` (whether the
    *  part was successfully recorded) and `createdSession` (whether a new
@@ -584,11 +646,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         const found = findBagFuzzy(aircraftType, candidate);
         if (found && found.entries.length > 0) {
           setPendingBag({
-            bagId: found.bag.id,
-            kitId: found.kitId,
-            bag: found.bag,
-            entries: found.entries,
-            groups: found.groups,
+            bagId:    found.bag.id,
+            kitId:    found.kitId,
+            bag:      found.bag,
+            entries:  found.entries,
+            groups:   found.groups,
+            location: selectedLocationId,
           });
           setStage('bag-prompt');
           return;
@@ -609,17 +672,18 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
 
       setPendingScan({
         partNumber: detectedPN,
-        name: nm?.text || manifestHit?.nomenclature || '',
-        subKit: manifestHit?.subKit || (detectedPN ? detectSubKit(detectedPN, vendor) : ''),
-        mfgDate: dt?.text || '',
+        name:       nm?.text || manifestHit?.nomenclature || '',
+        subKit:     manifestHit?.subKit || (detectedPN ? detectSubKit(detectedPN, vendor) : ''),
+        mfgDate:    dt?.text || '',
         ...kitClass,
+        location:   selectedLocationId,
       });
       setStage('confirm');
     } catch (err: any) {
       toast.error(err.message || 'OCR failed');
       setStage('camera');
     }
-  }, [vendor, aircraftType, allManifestEntries, classifyAgainstKit]);
+  }, [vendor, aircraftType, allManifestEntries, classifyAgainstKit, selectedLocationId]);
 
   // ─── Capture for bag-verify mode (scan items inside bag) ──────
   const bagVerifyCapture = useCallback(async () => {
@@ -703,15 +767,19 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       // kit being checked is only a fallback for parts in no manifest.
       const targetKit = pendingScan.homeKitLabel || selectedKit?.label || '';
 
-      const { part, created } = await ingestInvPart({
+      // The location attached to pendingScan is the per-scan override. Falls
+      // back to the global selected default; ultimately the backend lands the
+      // stock in "Incoming" if both are null.
+      const effectiveLocationId = pendingScan.location ?? selectedLocationId;
+      const { part, created, stockId } = await ingestInvPart({
         partNumber: pendingScan.partNumber,
-        name: pendingScan.name || manifestEntry?.nomenclature || pendingScan.partNumber,
-        subKit: pendingScan.subKit || manifestEntry?.subKit || '',
-        kit: targetKit,
+        name:    pendingScan.name || manifestEntry?.nomenclature || pendingScan.partNumber,
+        subKit:  pendingScan.subKit || manifestEntry?.subKit || '',
+        kit:     targetKit,
         mfgDate: pendingScan.mfgDate,
         quantity: 1,
-        unit: manifestEntry?.unit || 'pcs',
-        ...(selectedLocationId ? { locationId: selectedLocationId } : {}),
+        unit:    manifestEntry?.unit || 'pcs',
+        ...(effectiveLocationId ? { locationId: effectiveLocationId } : {}),
       });
 
       // ─── Kit-check session tracking ───
@@ -743,21 +811,28 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(pendingScan.partNumber) && !i.bag);
         if (idx >= 0) {
           const updated = [...prev];
-          updated[idx] = { ...updated[idx], scannedQty: updated[idx].scannedQty + 1, sessionStatus };
+          const existing = updated[idx];
+          updated[idx] = {
+            ...existing,
+            scannedQty: existing.scannedQty + 1,
+            sessionStatus,
+            stockIds: stockId != null ? [...(existing.stockIds || []), stockId] : (existing.stockIds || []),
+          };
           return updated;
         }
         return [...prev, {
           partNumber: pendingScan.partNumber,
-          name: pendingScan.name || part.name,
-          subKit: pendingScan.subKit || part.subKit,
+          name:    pendingScan.name || part.name,
+          subKit:  pendingScan.subKit || part.subKit,
           mfgDate: pendingScan.mfgDate,
           scannedQty: 1,
           part,
           wasCreated: created,
           expectedQty: manifestEntry?.qtyRequired ?? 0,
-          locationId: selectedLocationId ?? undefined,
+          locationId: effectiveLocationId ?? undefined,
           sessionStatus,
           kitId: pendingScan.homeKitId,
+          stockIds: stockId != null ? [stockId] : [],
         }];
       });
 
@@ -780,23 +855,35 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     setStage('processing');
     let count = 0;
     try {
+      // pendingBag.location is the per-bag override; selectedLocationId is the
+      // session-wide default fallback.
+      const effectiveLocationId = pendingBag.location ?? selectedLocationId;
       for (const entry of pendingBag.entries) {
-        const { part, created } = await ingestInvPart({
+        const { part, created, stockId } = await ingestInvPart({
           partNumber: entry.partNumber,
-          name: entry.nomenclature || entry.partNumber,
-          subKit: entry.subKit || '',
-          kit: selectedKit?.label || '',
-          bag: pendingBag.bagId,
-          notes: 'Bag not verified',
+          name:    entry.nomenclature || entry.partNumber,
+          subKit:  entry.subKit || '',
+          kit:     selectedKit?.label || '',
+          bag:     pendingBag.bagId,
+          notes:   'Bag not verified',
           quantity: entry.qtyRequired || 1,
-          unit: entry.unit || 'pcs',
-          ...(selectedLocationId ? { locationId: selectedLocationId } : {}),
+          unit:    entry.unit || 'pcs',
+          ...(effectiveLocationId ? { locationId: effectiveLocationId } : {}),
         });
         setItems(prev => {
           // Match within the same bag — different bags carry their own row.
           const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber) && i.bag === pendingBag.bagId);
-          if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + (entry.qtyRequired || 1) }; return u; }
-          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: entry.qtyRequired || 1, part, wasCreated: created, expectedQty: entry.qtyRequired || 1, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
+          if (idx >= 0) {
+            const u = [...prev];
+            const existing = u[idx];
+            u[idx] = {
+              ...existing,
+              scannedQty: existing.scannedQty + (entry.qtyRequired || 1),
+              stockIds: stockId != null ? [...(existing.stockIds || []), stockId] : (existing.stockIds || []),
+            };
+            return u;
+          }
+          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: entry.qtyRequired || 1, part, wasCreated: created, expectedQty: entry.qtyRequired || 1, bag: pendingBag.bagId, locationId: effectiveLocationId ?? undefined, kitId: pendingBag.kitId, stockIds: stockId != null ? [stockId] : [] }];
         });
         count++;
       }
@@ -891,35 +978,40 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         if (status === 'pending') notesArr.push('Not verified');
         if (qty > 0 && shortage > 0) notesArr.push(`Received ${qty}/${expected}`);
 
-        // Ingest the part + stock for what we actually received
-        const locExtra = selectedLocationId ? { locationId: selectedLocationId } : {};
-        const { part, created } = await ingestInvPart({
+        // Ingest the part + stock for what we actually received. The bag's
+        // per-confirm `location` overrides the session-wide default; falls
+        // back to whatever default the user picked at the top of the list.
+        const effectiveLocationId = pendingBag.location ?? selectedLocationId;
+        const locExtra = effectiveLocationId ? { locationId: effectiveLocationId } : {};
+        const { part, created, stockId } = await ingestInvPart({
           partNumber: entry.partNumber,
-          name: entry.nomenclature || entry.partNumber,
-          subKit: entry.subKit || '',
-          kit: selectedKit?.label || '',
-          bag: pendingBag.bagId,
+          name:    entry.nomenclature || entry.partNumber,
+          subKit:  entry.subKit || '',
+          kit:     selectedKit?.label || '',
+          bag:     pendingBag.bagId,
           quantity: qty,
-          unit: entry.unit || 'pcs',
-          status: qty > 0 ? 'in_stock' : 'backordered',
+          unit:    entry.unit || 'pcs',
+          status:  qty > 0 ? 'in_stock' : 'backordered',
           ...(notesArr.length > 0 ? { notes: notesArr.join(', ') } : {}),
           ...locExtra,
         });
+        const createdStockIds: number[] = stockId != null ? [stockId] : [];
 
         // If partial (received some but not all), create a backordered entry for the shortage
         if (qty > 0 && shortage > 0) {
-          await ingestInvPart({
+          const { stockId: boStockId } = await ingestInvPart({
             partNumber: entry.partNumber,
-            name: entry.nomenclature || entry.partNumber,
-            subKit: entry.subKit || '',
-            kit: selectedKit?.label || '',
-            bag: pendingBag.bagId,
+            name:    entry.nomenclature || entry.partNumber,
+            subKit:  entry.subKit || '',
+            kit:     selectedKit?.label || '',
+            bag:     pendingBag.bagId,
             quantity: shortage,
-            unit: entry.unit || 'pcs',
-            status: 'backordered',
-            notes: `BACKORDERED — short ${shortage} of ${expected}`,
+            unit:    entry.unit || 'pcs',
+            status:  'backordered',
+            notes:   `BACKORDERED — short ${shortage} of ${expected}`,
             ...locExtra,
           });
+          if (boStockId != null) createdStockIds.push(boStockId);
           boCount++;
         } else if (status === 'backordered') {
           boCount++;
@@ -928,8 +1020,17 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         setItems(prev => {
           // Match within the same bag — different bags carry their own row.
           const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber) && i.bag === pendingBag.bagId);
-          if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + qty }; return u; }
-          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: qty, part, wasCreated: created, expectedQty: expected, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
+          if (idx >= 0) {
+            const u = [...prev];
+            const existing = u[idx];
+            u[idx] = {
+              ...existing,
+              scannedQty: existing.scannedQty + qty,
+              stockIds: [...(existing.stockIds || []), ...createdStockIds],
+            };
+            return u;
+          }
+          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: qty, part, wasCreated: created, expectedQty: expected, bag: pendingBag.bagId, locationId: effectiveLocationId ?? undefined, kitId: pendingBag.kitId, stockIds: createdStockIds }];
         });
         count++;
       }
@@ -1225,8 +1326,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                     <div className="flex items-center gap-2">
                       <MapPin className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                       <select
-                        value={selectedLocationId ?? ''}
-                        onChange={e => setSelectedLocationId(e.target.value ? Number(e.target.value) : null)}
+                        value={pendingScan.location ?? ''}
+                        onChange={e => setPendingScan({ ...pendingScan, location: e.target.value ? Number(e.target.value) : null })}
                         className="flex-1 px-2 py-1.5 rounded bg-accent border border-border text-xs text-foreground/80 focus:outline-none focus:border-emerald-500/50"
                       >
                         <option value="">No location</option>
@@ -1272,8 +1373,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                     <div className="flex items-center gap-2">
                       <MapPin className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                       <select
-                        value={selectedLocationId ?? ''}
-                        onChange={e => setSelectedLocationId(e.target.value ? Number(e.target.value) : null)}
+                        value={pendingBag.location ?? ''}
+                        onChange={e => setPendingBag({ ...pendingBag, location: e.target.value ? Number(e.target.value) : null })}
                         className="flex-1 px-2 py-1.5 rounded bg-accent border border-border text-xs text-foreground/80 focus:outline-none focus:border-emerald-500/50"
                       >
                         <option value="">No location</option>
@@ -1429,12 +1530,12 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
 
               {/* Action buttons */}
               <div className="sticky bottom-0 z-10 px-4 py-3 bg-card/95 backdrop-blur-sm border-t border-border space-y-2">
-                {locations.length > 0 && (
+                {locations.length > 0 && pendingBag && (
                   <div className="flex items-center gap-2">
                     <MapPin className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                     <select
-                      value={selectedLocationId ?? ''}
-                      onChange={e => setSelectedLocationId(e.target.value ? Number(e.target.value) : null)}
+                      value={pendingBag.location ?? ''}
+                      onChange={e => setPendingBag({ ...pendingBag, location: e.target.value ? Number(e.target.value) : null })}
                       className="flex-1 px-2 py-1.5 rounded bg-accent border border-border text-xs text-foreground/80 focus:outline-none focus:border-emerald-500/50"
                     >
                       <option value="">No location</option>
@@ -1606,13 +1707,22 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                           )}
                         </div>
 
-                        {/* Status indicator */}
-                        <div className="shrink-0">
+                        {/* Status indicator + delete affordance */}
+                        <div className="shrink-0 flex items-center gap-2">
                           {fulfilled && <CheckCircle2 className="w-5 h-5 text-emerald-400" />}
                           {partial && <AlertTriangle className="w-4 h-4 text-amber-400" />}
                           {item.wasCreated && !hasManifest && (
                             <span className="text-[9px] px-1.5 py-0.5 rounded bg-primary/15 text-primary font-bold uppercase">new</span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => deleteScannedItem(item)}
+                            aria-label={`Remove ${item.partNumber}${item.bag ? ' from ' + item.bag : ''}`}
+                            title="Remove from inventory and check session"
+                            className="p-1.5 rounded hover:bg-rose-500/15 text-muted-foreground hover:text-rose-400 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     );

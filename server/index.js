@@ -5130,17 +5130,22 @@ app.post('/api/inventory/parts/ingest', requireAuth, async (req, res) => {
       }
 
       if (locId) {
-        await req.db.run(
+        const insertResult = await req.db.run(
           `INSERT INTO inventory_stock (tenant_id, part_id, location_id, quantity, unit, status, condition, batch, source_kit, mfg_date, notes)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [req.tenantId, row.id, locId, qty, unit || 'pcs', stockStatus || 'in_stock', 'new', bag || '', kit || '', mfgDate || '', notes || '']
         );
+        // Return the new stock row's id so the client can undo (delete) this
+        // specific row later — supports the mass-ingestion "delete scanned
+        // item" affordance without ambiguity when the same part has multiple
+        // stock entries across bags/locations.
+        return res.json({ part: partRow(row), created, stockId: insertResult?.lastID ?? null });
       } else {
         console.warn('[ingest] Could not find or create location for tenant', req.tenantId);
       }
     }
 
-    res.json({ part: partRow(row), created });
+    res.json({ part: partRow(row), created, stockId: null });
   } catch (err) { serverError(res, err); }
 });
 
