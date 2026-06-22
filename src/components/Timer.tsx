@@ -78,17 +78,33 @@ export function Timer({ onStop, isRunning, onStart, onPause, serverStartedAt, de
     }
   }, []);
 
+  // Track the previous serverStartTime so we can distinguish "null on initial
+  // mount, server poll hasn't reported yet" from "null because the server has
+  // confirmed the timer stopped". On every remount serverStartTime begins as
+  // null (and the polling effect needs up to 2 s to overwrite it), so the
+  // old unconditional cleanup was racing the localStorage restore effect —
+  // wiping isPaused and the persisted pause keys before the user's actual
+  // pause state could be applied. Hence: "I paused, navigated away, came
+  // back, the timer is running again."
+  const prevServerStartTimeRef = useRef<string | null>(null);
   useEffect(() => {
     if (!serverStartTime) {
       setElapsed(0);
-      setIsPaused(false);
-      totalPausedSecsRef.current = 0;
-      pausedAtRef.current = null;
-      localStorage.removeItem('timer_paused');
-      localStorage.removeItem('timer_paused_secs');
-      localStorage.removeItem('timer_paused_at');
+      // Only treat this as "the timer actually stopped" if it was previously
+      // running in this component instance. Initial mount keeps the restored
+      // pause state intact.
+      if (prevServerStartTimeRef.current) {
+        setIsPaused(false);
+        totalPausedSecsRef.current = 0;
+        pausedAtRef.current = null;
+        localStorage.removeItem('timer_paused');
+        localStorage.removeItem('timer_paused_secs');
+        localStorage.removeItem('timer_paused_at');
+      }
+      prevServerStartTimeRef.current = null;
       return;
     }
+    prevServerStartTimeRef.current = serverStartTime;
     const updateElapsed = () => {
       if (isPaused) return;
       const startTime = new Date(serverStartTime);
