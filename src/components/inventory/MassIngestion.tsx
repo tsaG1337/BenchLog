@@ -69,6 +69,11 @@ export interface IngestedItem {
    *  'no-kit'  — part is in no kit manifest, so no session applies.
    *  Undefined when not applicable (free-scan mode, or the bag flow). */
   sessionStatus?: 'tracked' | 'failed' | 'no-kit';
+  /** Home kit ID this part lives in (manifest-derived). Used by the tap-to-edit
+   *  quantity affordance so a manual qty change is recorded in the correct
+   *  kit's check session even in Auto-Sort mode where no kit was explicitly
+   *  selected at the start. Undefined for parts not in any manifest. */
+  kitId?: string;
 }
 
 interface MassIngestionProps {
@@ -130,27 +135,77 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   }, [activeCheckSessionId]);
 
   /**
-   * Commit a manually-entered quantity for a row. Updates the local
-   * scannedQty AND fires a server replace so the kit-check session's
-   * qty_found reflects the new total directly (no accumulation).
+   * Commit a manually-entered quantity for a row. Three things must stay in
+   * sync: the local `scannedQty` (display), the actual inventory_stock (the
+   * physical count), and the kit-check session's qty_found (verification
+   * status). Earlier this only updated display + session and silently left
+   * inventory at its scan-time value of 1, so users who scanned once and
+   * tapped "set to expected = 4" ended up with Partial 1/4 on the check
+   * even though the tool showed 4/4 fulfilled.
+   *
+   *   - Display: optimistic local update first.
+   *   - Inventory: top up by the positive delta only (never auto-reduce —
+   *     deleting stock rows is destructive and belongs in the inventory UI).
+   *   - Session: write `replace: true` to the part's HOME kit session so the
+   *     update lands in the same session the original scan was recorded
+   *     against, regardless of Auto-Sort vs explicit-kit-check mode.
    *
    * Clamps to [0, …] — negative qtys never made sense here.
    */
-  const commitQty = useCallback((partNumber: string, raw: string) => {
+  const commitQty = useCallback(async (partNumber: string, raw: string) => {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
       setEditingQty(null);
       return;
     }
     const newQty = Math.max(0, parsed);
+
+    const item = items.find(i => normPN(i.partNumber) === normPN(partNumber));
+    if (!item) {
+      setEditingQty(null);
+      return;
+    }
+    const delta = newQty - item.scannedQty;
+
+    // Optimistic UI update first so the tap feels instant
     setItems(prev => prev.map(i => i.partNumber === partNumber ? { ...i, scannedQty: newQty } : i));
-    // Server replace so the session item's qty_found becomes exactly
-    // `newQty` instead of accumulating. The bag scope is intentionally
-    // left blank — the qty represents the user's total intent across
-    // however many bags this part appears in.
-    markChecked([{ partNumber, qtyFound: newQty, replace: true }]);
     setEditingQty(null);
-  }, [markChecked]);
+
+    // Top up inventory if the user increased the quantity. We don't reduce
+    // automatically — if the user dialled down because of an over-scan, the
+    // excess rows stay in inventory_stock until they delete them explicitly.
+    if (delta > 0) {
+      try {
+        await ingestInvPart({
+          partNumber: item.partNumber,
+          name:    item.name || item.part.name,
+          subKit:  item.subKit || item.part.subKit || '',
+          kit:     item.part.kit || '',
+          mfgDate: item.mfgDate || '',
+          quantity: delta,
+          ...(item.locationId ? { locationId: item.locationId } : {}),
+        });
+      } catch (err: any) {
+        toast.error(`Failed to update inventory for ${partNumber}: ${err.message || 'unknown error'}`);
+      }
+    } else if (delta < 0) {
+      toast.info(`${partNumber}: count set to ${newQty}, but ${Math.abs(delta)} unit${Math.abs(delta) === 1 ? '' : 's'} already in inventory — remove the excess manually if needed`);
+    }
+
+    // Update the kit-check session — prefer the part's home-kit session
+    // because that's where confirmAndIngest() recorded the initial scan.
+    // Fall back to whichever session is currently active for non-manifest
+    // parts so the tap still has *some* effect.
+    const homeSession = item.kitId
+      ? existingSessions.find(s => s.kitId === item.kitId && s.status !== 'completed')
+      : null;
+    if (homeSession) {
+      try { await verifyCheckBatch(homeSession.id, [{ partNumber, qtyFound: newQty, replace: true }]); }
+      catch { /* best-effort — inventory is the source of truth */ }
+    } else {
+      markChecked([{ partNumber, qtyFound: newQty, replace: true }]);
+    }
+  }, [items, existingSessions, markChecked]);
 
   /** Record a part in its OWN kit's check session. Finds a non-completed
    *  session for `kitId`, creating one (with that kit's full manifest) when
@@ -607,6 +662,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
           expectedQty: manifestEntry?.qtyRequired ?? 0,
           locationId: selectedLocationId ?? undefined,
           sessionStatus,
+          kitId: pendingScan.homeKitId,
         }];
       });
 
@@ -644,7 +700,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         setItems(prev => {
           const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber));
           if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + (entry.qtyRequired || 1) }; return u; }
-          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: entry.qtyRequired || 1, part, wasCreated: created, expectedQty: entry.qtyRequired || 1, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined }];
+          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: entry.qtyRequired || 1, part, wasCreated: created, expectedQty: entry.qtyRequired || 1, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
         });
         count++;
       }
@@ -763,7 +819,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         setItems(prev => {
           const idx = prev.findIndex(i => normPN(i.partNumber) === normPN(entry.partNumber));
           if (idx >= 0) { const u = [...prev]; u[idx] = { ...u[idx], scannedQty: u[idx].scannedQty + qty }; return u; }
-          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: qty, part, wasCreated: created, expectedQty: expected, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined }];
+          return [...prev, { partNumber: entry.partNumber, name: entry.nomenclature || part.name, subKit: entry.subKit || part.subKit, mfgDate: '', scannedQty: qty, part, wasCreated: created, expectedQty: expected, bag: pendingBag.bagId, locationId: selectedLocationId ?? undefined, kitId: pendingBag.kitId }];
         });
         count++;
       }
