@@ -117,8 +117,12 @@ export default function InventoryPage() {
   const [ocrVendor, setOcrVendor] = useState('vans');
   const [aircraftType, setAircraftType] = useState('vans-rv10');
 
+  // Don't flip `loading` to true on subsequent calls — the initial useState(true)
+  // covers the first-mount spinner. Re-toggling it on every onRefresh() unmounts
+  // DashboardTab/PartsTab/etc and wipes their local UI state (expanded session
+  // panel, active filter tab, scroll position). The data swap re-renders the
+  // tabs in place with the new props instead.
   const loadAll = useCallback(async () => {
-    setLoading(true);
     try {
       const [l, p, s, st, cs] = await Promise.all([fetchInvLocations(), fetchInvParts(), fetchInvStock(), fetchInvStats(), fetchCheckSessions()]);
       setLocations(l); setParts(p); setStock(s); setStats(st); setCheckSessions(cs);
