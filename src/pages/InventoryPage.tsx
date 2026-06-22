@@ -5,7 +5,7 @@ import {
   fetchInvLocations, createInvLocation, updateInvLocation, deleteInvLocation,
   fetchInvParts, createInvPart, updateInvPart, deleteInvPart,
   fetchInvStock, createInvStock, updateInvStock, deleteInvStock,
-  fetchInvStats, lookupInvPart, fetchGeneralSettings,
+  fetchInvStats, fetchGeneralSettings,
   fetchCheckSessions, createCheckSession, updateCheckSession, deleteCheckSession, fetchCheckSession, updateCheckItem,
   type InvLocation, type InvPart, type InvStock, type InvStats, type CheckSession, type CheckItem,
 } from '@/lib/api';
@@ -174,18 +174,77 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
   checkSessions: CheckSession[]; aircraftType: string; onRefresh: () => void;
 }) {
   const [lookupQuery, setLookupQuery] = useState('');
-  const [lookupResults, setLookupResults] = useState<InvStock[] | null>(null);
-  const [lookupLoading, setLookupLoading] = useState(false);
 
-  const handleLookup = async () => {
-    if (!lookupQuery.trim()) return;
-    setLookupLoading(true);
-    try {
-      const results = await lookupInvPart(lookupQuery.trim());
-      setLookupResults(results);
-    } catch { toast.error('Lookup failed'); }
-    setLookupLoading(false);
+  // Live search across BOTH the kit manifest and the actual inventory so users
+  // can find parts they haven't ingested yet (e.g. typing "1177" surfaces every
+  // part in BAG 1177 even if the bag hasn't been scanned). Substring match,
+  // case-insensitive, against partNumber / nomenclature / sub-kit / bag — same
+  // fields the user would see on a label.
+  type LookupResult = {
+    partNumber: string;
+    name: string;
+    subKit?: string;
+    bag?: string;
+    /** From the manifest. 0 when the part isn't in any manifest. */
+    qtyRequired: number;
+    /** All stock rows we have for this part, regardless of which field matched. */
+    stockEntries: InvStock[];
   };
+
+  const lookupResults: LookupResult[] | null = useMemo(() => {
+    const q = lookupQuery.trim().toUpperCase();
+    if (q.length < 2) return null;
+
+    const upper = (s?: string) => (s || '').toUpperCase();
+    const hit = (...fields: (string | undefined)[]) => fields.some(f => upper(f).includes(q));
+
+    const allManifest = getAllEntries(aircraftType);
+    const matchedManifest = allManifest.filter(e => hit(e.partNumber, e.nomenclature, e.subKit, e.bag));
+    const matchedStock    = stock.filter(s => hit(s.partNumber, s.partName, s.batch));
+
+    const byPN = new Map<string, LookupResult>();
+    for (const e of matchedManifest) {
+      byPN.set(upper(e.partNumber), {
+        partNumber:  e.partNumber,
+        name:        e.nomenclature,
+        subKit:      e.subKit,
+        bag:         e.bag,
+        qtyRequired: e.qtyRequired,
+        stockEntries: [],
+      });
+    }
+    for (const s of matchedStock) {
+      const key = upper(s.partNumber);
+      const existing = byPN.get(key);
+      if (existing) {
+        existing.stockEntries.push(s);
+      } else {
+        byPN.set(key, {
+          partNumber:  s.partNumber,
+          name:        s.partName || '',
+          subKit:      undefined,
+          bag:         s.batch || undefined,
+          qtyRequired: 0,
+          stockEntries: [s],
+        });
+      }
+    }
+    // For results that matched only via the manifest, also pull in all stock
+    // rows for that part — the user wants the full picture, not just rows that
+    // matched the query.
+    for (const r of byPN.values()) {
+      if (r.stockEntries.length === 0) {
+        for (const s of stock) {
+          if (upper(s.partNumber) === upper(r.partNumber)) r.stockEntries.push(s);
+        }
+      }
+    }
+    // Sort: manifest items first (most relevant for the build), then by PN
+    return [...byPN.values()].sort((a, b) => {
+      if ((a.qtyRequired > 0) !== (b.qtyRequired > 0)) return a.qtyRequired > 0 ? -1 : 1;
+      return a.partNumber.localeCompare(b.partNumber);
+    });
+  }, [lookupQuery, stock, aircraftType]);
 
   const [expandedSessionId, setExpandedSessionId] = useState<number | null>(null);
   const [sessionItems, setSessionItems] = useState<CheckItem[]>([]);
@@ -378,52 +437,82 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
       {/* Quick Lookup */}
       <div className="bg-card rounded-lg p-4 sm:p-5">
         <h2 className="font-label text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground mb-3">Quick Part Lookup</h2>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              value={lookupQuery}
-              onChange={e => setLookupQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLookup()}
-              placeholder="Part number (e.g. AN3-5A)"
-              className="w-full pl-10 pr-4 py-2.5 rounded-md bg-muted/50 border border-border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
-          </div>
-          <button
-            onClick={handleLookup}
-            disabled={lookupLoading}
-            className="px-4 sm:px-5 py-2.5 rounded-md bg-primary text-primary-foreground font-label text-xs font-bold uppercase tracking-wider hover:opacity-90 transition-opacity"
-          >
-            {lookupLoading ? '...' : 'Find'}
-          </button>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <input
+            value={lookupQuery}
+            onChange={e => setLookupQuery(e.target.value)}
+            placeholder="Part number, name, or bag (e.g. W-1006, doubler, 1177)"
+            className="w-full pl-10 pr-9 py-2.5 rounded-md bg-muted/50 border border-border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+          {lookupQuery && (
+            <button onClick={() => setLookupQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted/50"
+              aria-label="Clear search">
+              <X className="w-4 h-4 text-muted-foreground" />
+            </button>
+          )}
         </div>
         {lookupResults !== null && (
           <div className="mt-3">
             {lookupResults.length === 0 ? (
               <p className="text-sm text-muted-foreground">No results for "{lookupQuery}"</p>
             ) : (
-              <div className="space-y-2">
-                {lookupResults.map(r => (
-                  <div key={r.id} className="p-3 rounded-md bg-muted/30 text-sm">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="font-mono font-medium">{r.partNumber}</span>
-                        <span className="text-muted-foreground ml-2 hidden sm:inline">{r.partName}</span>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {lookupResults.map(r => {
+                  const totalStock = r.stockEntries.reduce((sum, s) => sum + s.quantity, 0);
+                  const status: 'in-stock' | 'partial' | 'missing' =
+                    totalStock === 0 ? 'missing' :
+                    r.qtyRequired > 0 && totalStock < r.qtyRequired ? 'partial' :
+                    'in-stock';
+                  return (
+                    <div key={r.partNumber} className="p-3 rounded-md bg-muted/30 text-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-mono font-bold truncate">{r.partNumber}</p>
+                          <p className="text-xs text-muted-foreground truncate">{r.name}</p>
+                        </div>
+                        <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${
+                          status === 'in-stock' ? 'bg-emerald-500/20 text-emerald-400' :
+                          status === 'partial'  ? 'bg-amber-500/20 text-amber-400' :
+                                                  'bg-muted text-muted-foreground'
+                        }`}>
+                          {status === 'in-stock' ? (r.qtyRequired > 0 ? 'In stock' : 'In inventory') :
+                           status === 'partial'  ? `Short ${r.qtyRequired - totalStock}` :
+                                                   'Not ingested'}
+                        </span>
                       </div>
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[r.status]}`}>
-                        {r.status.replace('_', ' ')}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-muted-foreground">
+                        {r.subKit && <span className="text-emerald-400/70">[{r.subKit}]</span>}
+                        {r.bag    && <span className="text-primary/70">[{r.bag}]</span>}
+                        {r.qtyRequired > 0 && (
+                          <span>Need <span className="text-foreground/80 font-medium">{r.qtyRequired}</span></span>
+                        )}
+                        {totalStock > 0 && (
+                          <span>· In inventory <span className="text-foreground/80 font-medium">×{totalStock}</span></span>
+                        )}
+                      </div>
+                      {r.stockEntries.length > 0 && (
+                        <div className="mt-2 space-y-1 pt-2 border-t border-border/30">
+                          {r.stockEntries.map(s => (
+                            <div key={s.id} className="flex items-center justify-between text-xs">
+                              <span className="flex items-center gap-1 text-muted-foreground min-w-0">
+                                <MapPin className="w-3 h-3 shrink-0" />
+                                <span className="truncate">{s.locationPath || s.locationName}</span>
+                              </span>
+                              <span className="flex items-center gap-1.5 shrink-0">
+                                <span className="font-mono text-foreground/80">×{s.quantity} {s.unit !== 'pcs' ? s.unit : ''}</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${STATUS_COLORS[s.status]}`}>
+                                  {s.status.replace('_', ' ')}
+                                </span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <p className="text-muted-foreground text-xs sm:hidden mt-0.5">{r.partName}</p>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                      <span className="font-mono">×{r.quantity} {r.unit}</span>
-                      <span className="flex items-center gap-1">
-                        <MapPin className="w-3 h-3" />
-                        {r.locationPath || r.locationName}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
