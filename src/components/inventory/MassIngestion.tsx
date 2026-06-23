@@ -92,7 +92,16 @@ interface MassIngestionProps {
   locations?: InvLocation[];
 }
 
-type Stage = 'kit-select' | 'camera' | 'processing' | 'confirm' | 'bag-prompt' | 'bag-verify' | 'no-match';
+type Stage = 'kit-select' | 'camera' | 'processing' | 'confirm' | 'bag-prompt' | 'bag-verify' | 'no-match' | 'kit-disambiguate';
+
+/** Matches `s` against `q` with relaxed whitespace + quotes/feet/inch marks.
+ *  Lets OCR misreads like `RUBBER DOORSEAL X 25` find the manifest's
+ *  `RUBBER DOOR SEALX25'`, or `AEX TIE DOWN X 7.5` find `AEX TIE DOWN X7.5`. */
+const fuzzyNorm = (s: string) => (s || '')
+  .toUpperCase()
+  .replace(/['"’′″]/g, '')
+  .replace(/[\s.]/g, '')
+  .trim();
 
 type BagItemStatus = 'pending' | 'scanned' | 'checked' | 'backordered';
 interface BagVerifyEntry {
@@ -140,6 +149,15 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
   const [editingQty, setEditingQty] = useState<{ partNumber: string; bag?: string; value: string } | null>(null);
   const [pendingBag, setPendingBag] = useState<{ bagId: string; kitId: string; bag: BagDefinition; entries: ManifestEntry[]; groups: BagEntryGroup[]; location?: number | null } | null>(null);
   const [bagVerifyItems, setBagVerifyItems] = useState<BagVerifyEntry[]>([]);
+  // Multi-kit disambiguation: holds the OCR-resolved part number plus the
+  // (kit, entry) pairs it matches across the aircraft manifest. The UI shows
+  // one card per candidate kit with its qtyRequired; tapping a card resolves
+  // the choice and continues to the normal confirm stage.
+  const [pendingKitChoice, setPendingKitChoice] = useState<{
+    partNumber: string;
+    candidates: Array<{ kitId: string; kitLabel: string; entry: ManifestEntry }>;
+    scanContext: { name: string; mfgDate: string };
+  } | null>(null);
   const [activeCheckSessionId, setActiveCheckSessionId] = useState<number | null>(initialCheckSessionId ?? null);
   const [existingSessions, setExistingSessions] = useState<CheckSession[]>([]);
 
@@ -658,10 +676,62 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         }
       }
 
-      const detectedPN = pn?.text || bagDet?.text || '';
+      let detectedPN = pn?.text || bagDet?.text || '';
+
+      // Manifest fallback for parts whose names don't fit the vendor's regex
+      // (e.g. `AEX TIE DOWN X7.5`, `RUBBER DOOR SEALX25'` — no dash, spaces in
+      // the part number). Walk every manifest entry and check if its part
+      // number appears in any raw OCR line (or vice versa for OCR truncation).
+      if (!detectedPN) {
+        const candidates = [...new Set([...rawLines, ...combinedRawLines].map(fuzzyNorm))];
+        // First pass: candidate text contains the full manifest PN
+        outer: for (const entry of allManifestEntries) {
+          const np = fuzzyNorm(entry.partNumber);
+          if (!np) continue;
+          for (const cand of candidates) {
+            if (cand && cand.includes(np)) { detectedPN = entry.partNumber; break outer; }
+          }
+        }
+        // Second pass: a substantial candidate is contained in a manifest PN
+        // (covers OCR missing a trailing dimension like "X7.5")
+        if (!detectedPN) {
+          outer2: for (const entry of allManifestEntries) {
+            const np = fuzzyNorm(entry.partNumber);
+            if (np.length < 8) continue;  // too short to be confident
+            for (const cand of candidates) {
+              if (cand.length >= 6 && np.includes(cand)) { detectedPN = entry.partNumber; break outer2; }
+            }
+          }
+        }
+      }
 
       if (!detectedPN) {
         setStage('no-match');
+        return;
+      }
+
+      // Multi-kit disambiguation — a part can live in more than one kit's
+      // manifest with different qtyRequired (e.g. AEX TIE DOWN is 1 in
+      // Empennage and 2 in Wing). Surface the choice to the user before
+      // ingestion so the right kit's check session advances and the right
+      // expectedQty drives the row's display.
+      const kitMatches: Array<{ kitId: string; kitLabel: string; entry: ManifestEntry }> = [];
+      if (aircraft) {
+        for (const kit of aircraft.kits) {
+          for (const entry of kit.entries) {
+            if (normPN(entry.partNumber) === normPN(detectedPN)) {
+              kitMatches.push({ kitId: kit.id, kitLabel: kit.label, entry });
+            }
+          }
+        }
+      }
+      if (kitMatches.length > 1) {
+        setPendingKitChoice({
+          partNumber: detectedPN,
+          candidates: kitMatches,
+          scanContext: { name: nm?.text || '', mfgDate: dt?.text || '' },
+        });
+        setStage('kit-disambiguate');
         return;
       }
 
@@ -683,7 +753,7 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
       toast.error(err.message || 'OCR failed');
       setStage('camera');
     }
-  }, [vendor, aircraftType, allManifestEntries, classifyAgainstKit, selectedLocationId]);
+  }, [vendor, aircraftType, allManifestEntries, classifyAgainstKit, selectedLocationId, aircraft]);
 
   // ─── Capture for bag-verify mode (scan items inside bag) ──────
   const bagVerifyCapture = useCallback(async () => {
@@ -1065,6 +1135,30 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     setStage('camera');
   }, [pendingBag, bagVerifyItems, selectedKit, manifestEntries, ensureKitSession, selectedLocationId]);
 
+  /** User picked a kit from the multi-kit disambiguation screen. We synthesise
+   *  the same pendingScan shape captureAndProcess would have produced if the
+   *  part lived in exactly one kit, and jump to the confirm stage so the
+   *  normal flow (qty, sub-kit, location, "Add to Wing Kit" button) all keeps
+   *  working unchanged. */
+  const resolveKitChoice = useCallback((candidate: { kitId: string; kitLabel: string; entry: ManifestEntry }) => {
+    if (!pendingKitChoice) return;
+    const { partNumber, scanContext } = pendingKitChoice;
+    setPendingScan({
+      partNumber,
+      name:          scanContext.name || candidate.entry.nomenclature || '',
+      subKit:        candidate.entry.subKit || (partNumber ? detectSubKit(partNumber, vendor) : ''),
+      mfgDate:       scanContext.mfgDate,
+      // The picked kit becomes the part's home kit for session routing.
+      inManifest:    selectedKit ? selectedKit.id === candidate.kitId : true,
+      homeKitId:     candidate.kitId,
+      homeKitLabel:  candidate.kitLabel,
+      belongsToKit:  selectedKit && selectedKit.id !== candidate.kitId ? candidate.kitLabel : undefined,
+      location:      selectedLocationId,
+    });
+    setPendingKitChoice(null);
+    setStage('confirm');
+  }, [pendingKitChoice, selectedKit, vendor, selectedLocationId]);
+
   const skipScan = useCallback(() => {
     setPendingScan(null);
     setPendingBag(null);
@@ -1211,8 +1305,8 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         </div>
       )}
 
-      {/* ─── Camera / Processing / Confirm / Bag ─── */}
-      {(stage === 'camera' || stage === 'processing' || stage === 'confirm' || stage === 'no-match' || stage === 'bag-prompt' || stage === 'bag-verify') && (
+      {/* ─── Camera / Processing / Confirm / Bag / Kit picker ─── */}
+      {(stage === 'camera' || stage === 'processing' || stage === 'confirm' || stage === 'no-match' || stage === 'bag-prompt' || stage === 'bag-verify' || stage === 'kit-disambiguate') && (
         <>
           {/* Camera view */}
           <div className="relative overflow-hidden shrink-0" style={{ height: 'min(40vh, 280px)' }}>
@@ -1245,6 +1339,49 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
                     className="w-full px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-bold"
                   >
                     Try Again
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {stage === 'kit-disambiguate' && pendingKitChoice && (
+              <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/70 p-4">
+                <div className="bg-card/95 backdrop-blur-sm rounded-xl p-5 mx-2 max-w-sm w-full space-y-3 max-h-full overflow-y-auto">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Found in multiple kits</p>
+                  <div className="px-3 py-2 rounded-md bg-accent/40 border border-border">
+                    <p className="text-base font-mono font-bold text-foreground">{pendingKitChoice.partNumber}</p>
+                    {pendingKitChoice.candidates[0]?.entry.nomenclature && (
+                      <p className="text-xs text-muted-foreground mt-0.5">{pendingKitChoice.candidates[0].entry.nomenclature}</p>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Pick the kit this scan should advance:</p>
+                  <div className="space-y-2">
+                    {pendingKitChoice.candidates.map(c => (
+                      <button
+                        key={c.kitId}
+                        onClick={() => resolveKitChoice(c)}
+                        className="w-full flex items-center justify-between gap-3 px-3 py-3 rounded-lg bg-emerald-600/15 border border-emerald-500/30 text-foreground hover:bg-emerald-600/25 transition-colors text-left"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold truncate">{c.kitLabel}</p>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {c.entry.subKit && <span className="mr-1.5 text-emerald-400/80">[{c.entry.subKit}]</span>}
+                            {c.entry.bag    && <span className="mr-1.5 text-primary/80">[{c.entry.bag}]</span>}
+                            {!c.entry.subKit && !c.entry.bag && <span className="text-muted-foreground/70">no bag / loose</span>}
+                          </p>
+                        </div>
+                        <div className="shrink-0 flex flex-col items-end">
+                          <span className="text-xs text-muted-foreground">need</span>
+                          <span className="text-lg font-bold text-emerald-400 leading-none">{c.entry.qtyRequired}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => { setPendingKitChoice(null); setStage('camera'); }}
+                    className="w-full px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-accent transition-colors"
+                  >
+                    Cancel — Retake Photo
                   </button>
                 </div>
               </div>

@@ -4,9 +4,10 @@ import { wingKit } from './wing';
 import { fuselageKit } from './fuselage';
 import { finishKit } from './finish';
 import { extrasKit } from './extras';
+import { sharedVansKits } from '../../shared-kits';
 
 export const VANS_RV10_MANIFEST: AircraftManifest = {
   id: 'vans-rv10',
   label: "Van's RV-10",
-  kits: [empennageKit, wingKit, fuselageKit, finishKit, extrasKit],
+  kits: [empennageKit, wingKit, fuselageKit, finishKit, extrasKit, ...sharedVansKits],
 };
