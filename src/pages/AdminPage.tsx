@@ -25,6 +25,8 @@ const TABLE_LABELS: Record<string, string> = {
   inventory_parts: 'Inventory Parts',
   inventory_stock: 'Inventory Stock',
   inventory_locations: 'Inventory Locations',
+  inventory_check_sessions: 'Kit Check Sessions',
+  inventory_check_items: 'Kit Check Items',
 };
 
 // Primary key column per table (must match server ADMIN_TABLE_PK)
@@ -32,6 +34,7 @@ const TABLE_PK: Record<string, string> = {
   sessions: 'id', blog_posts: 'id', expenses: 'id', expense_budgets: 'category',
   sign_offs: 'id', visitor_stats: 'id', pending_uploads: 'url',
   inventory_parts: 'id', inventory_stock: 'id', inventory_locations: 'id',
+  inventory_check_sessions: 'id', inventory_check_items: 'id',
 };
 
 // Columns to show as summary in the browser (first = "title" column)
@@ -46,6 +49,8 @@ const TABLE_COLS: Record<string, string[]> = {
   inventory_parts:       ['part_number', 'name', 'category', 'manufacturer'],
   inventory_stock:       ['part_id', 'quantity', 'location_id', 'condition', 'status'],
   inventory_locations:   ['name', 'parent_id'],
+  inventory_check_sessions: ['kit_label', 'aircraft_type', 'status', 'total_items', 'verified_items', 'missing_items'],
+  inventory_check_items:    ['session_id', 'part_number', 'nomenclature', 'sub_kit', 'bag', 'qty_expected', 'qty_found', 'status'],
 };
 
 const PAGE_SIZE = 50;
@@ -135,6 +140,9 @@ export default function AdminPage() {
   const [browserData, setBrowserData] = useState<AdminTableResult | null>(null);
   const [browserLoading, setBrowserLoading] = useState(false);
   const [browserPage, setBrowserPage] = useState(0);
+  const [browserSearch, setBrowserSearch] = useState('');     // raw input value
+  const [appliedSearch, setAppliedSearch] = useState('');     // debounced, what we actually query with
+  const [browserRefresh, setBrowserRefresh] = useState(0);    // bump to force re-fetch (e.g. after delete)
   const [deletingRow, setDeletingRow] = useState<string | null>(null);
   const [confirmDeleteRow, setConfirmDeleteRow] = useState<{ pk: string; tenantId?: string } | null>(null);
 
@@ -205,20 +213,51 @@ export default function AdminPage() {
 
   useEffect(() => { loadUsers(); loadStats(); loadJobs(); loadMaintenance(); }, [loadUsers, loadStats, loadJobs, loadMaintenance]);
 
-  const openTableBrowser = useCallback(async (table: string, page = 0) => {
+  // Opens a fresh table: resets paging + search; the fetch effect below
+  // observes the state change and loads page 0.
+  const openTableBrowser = useCallback((table: string) => {
     setBrowserTable(table);
-    setBrowserPage(page);
-    setBrowserLoading(true);
-    setBrowserData(null);
-    try {
-      const data = await fetchAdminTableRows(table, { limit: PAGE_SIZE, offset: page * PAGE_SIZE });
-      setBrowserData(data);
-    } catch (e: any) {
-      toast.error(e.message);
-    } finally {
-      setBrowserLoading(false);
-    }
+    setBrowserPage(0);
+    setBrowserSearch('');
+    setAppliedSearch('');
   }, []);
+
+  // Debounce the search input → applied query. 250ms is plenty for the SQL
+  // LIKE query and keeps typing responsive. Also snaps page back to 0 so
+  // a filter narrowing past the current page doesn't strand the user on an
+  // empty page.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setAppliedSearch(browserSearch.trim());
+      setBrowserPage(0);
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [browserSearch]);
+
+  // Single fetch path — runs on table open, page change, search change, or
+  // an explicit refresh bump. Uses a `cancelled` flag so racing fetches
+  // (e.g. typing fast) don't overwrite each other with stale results.
+  useEffect(() => {
+    if (!browserTable) return;
+    let cancelled = false;
+    (async () => {
+      setBrowserLoading(true);
+      setBrowserData(null);
+      try {
+        const data = await fetchAdminTableRows(browserTable, {
+          limit: PAGE_SIZE,
+          offset: browserPage * PAGE_SIZE,
+          q: appliedSearch || undefined,
+        });
+        if (!cancelled) setBrowserData(data);
+      } catch (e: any) {
+        if (!cancelled) toast.error(e.message);
+      } finally {
+        if (!cancelled) setBrowserLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [browserTable, browserPage, appliedSearch, browserRefresh]);
 
   const handleDeleteRow = async () => {
     if (!confirmDeleteRow || !browserTable) return;
@@ -227,7 +266,7 @@ export default function AdminPage() {
       await deleteAdminTableRow(browserTable, confirmDeleteRow.pk, confirmDeleteRow.tenantId);
       toast.success('Row deleted');
       setConfirmDeleteRow(null);
-      await openTableBrowser(browserTable, browserPage);
+      setBrowserRefresh(n => n + 1);   // force the fetch effect to re-run on the same page
       loadStats();
     } catch (e: any) {
       toast.error(e.message);
@@ -689,7 +728,7 @@ export default function AdminPage() {
       </Dialog>
 
       {/* ── Table Browser Dialog ── */}
-      <Dialog open={browserTable !== null} onOpenChange={o => { if (!o) { setBrowserTable(null); setBrowserData(null); } }}>
+      <Dialog open={browserTable !== null} onOpenChange={o => { if (!o) { setBrowserTable(null); setBrowserData(null); setBrowserSearch(''); setAppliedSearch(''); } }}>
         <DialogContent className="sm:max-w-4xl max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -698,10 +737,36 @@ export default function AdminPage() {
               {browserData && (
                 <span className="text-sm font-normal text-muted-foreground ml-1">
                   — {browserData.total.toLocaleString()} row{browserData.total !== 1 ? 's' : ''}
+                  {appliedSearch && <span className="ml-1">matching "{appliedSearch}"</span>}
                 </span>
               )}
             </DialogTitle>
           </DialogHeader>
+
+          {/* Search bar — searches whitelisted text columns per table on the server side.
+              Server cols defined in server/index.js → ADMIN_TABLE_SEARCH_COLS. */}
+          {browserTable && (
+            <div className="relative shrink-0">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              <Input
+                value={browserSearch}
+                onChange={e => setBrowserSearch(e.target.value)}
+                placeholder={`Filter ${TABLE_LABELS[browserTable] || browserTable}…`}
+                className="pl-8 pr-8 h-9 text-sm"
+                autoFocus
+              />
+              {browserSearch && (
+                <button
+                  type="button"
+                  onClick={() => setBrowserSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label="Clear filter"
+                >
+                  <XCircle className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="flex-1 overflow-auto min-h-0">
             {browserLoading ? (
@@ -768,14 +833,14 @@ export default function AdminPage() {
                 <Button
                   variant="outline" size="sm"
                   disabled={browserPage === 0 || browserLoading}
-                  onClick={() => openTableBrowser(browserTable!, browserPage - 1)}
+                  onClick={() => setBrowserPage(p => Math.max(0, p - 1))}
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
                 <Button
                   variant="outline" size="sm"
                   disabled={(browserPage + 1) * PAGE_SIZE >= browserData.total || browserLoading}
-                  onClick={() => openTableBrowser(browserTable!, browserPage + 1)}
+                  onClick={() => setBrowserPage(p => p + 1)}
                 >
                   <ChevronRight className="w-4 h-4" />
                 </Button>
