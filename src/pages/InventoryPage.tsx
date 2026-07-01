@@ -6,7 +6,7 @@ import {
   fetchInvParts, createInvPart, updateInvPart, deleteInvPart,
   fetchInvStock, createInvStock, updateInvStock, deleteInvStock,
   fetchInvStats, fetchGeneralSettings,
-  fetchCheckSessions, createCheckSession, updateCheckSession, deleteCheckSession, fetchCheckSession, updateCheckItem,
+  fetchCheckSessions, createCheckSession, updateCheckSession, deleteCheckSession, fetchCheckSession, updateCheckItem, reconcileCheckSession,
   type InvLocation, type InvPart, type InvStock, type InvStats, type CheckSession, type CheckItem,
 } from '@/lib/api';
 import { AppShell, MIcon } from '@/components/AppShell';
@@ -280,6 +280,25 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
   const [startingKitId, setStartingKitId] = useState<string | null>(null);
 
   const aircraftManifest = useMemo(() => getAircraftManifest(aircraftType), [aircraftType]);
+
+  // Per-partNumber lookup into the manifest for partType + material. Used to
+  // surface a "FABRICATE" badge on rows that are NOT shipped parts you scan
+  // but builder-made assemblies you cut from raw stock (e.g. A-1011 trailing
+  // edge is made from VA-140; W-PITOT pitot line is made from AT0-032 X 1/4
+  // tubing). Source of truth: Van's Section 4 Parts Index, mirrored in our
+  // kit-manifest TS files. Key is uppercased partNumber.
+  const manifestByPN = useMemo(() => {
+    const map = new Map<string, ManifestEntry>();
+    if (aircraftManifest) {
+      for (const kit of aircraftManifest.kits) {
+        for (const e of kit.entries) {
+          map.set(e.partNumber.toUpperCase(), e);
+        }
+      }
+    }
+    return map;
+  }, [aircraftManifest]);
+
   // Kits without an active or paused session — those are the ones the
   // user can still start. A kit with an existing session shouldn't be
   // a second-session candidate (would split tracking unhelpfully).
@@ -447,6 +466,32 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
     catch { toast.error('Failed to complete session'); }
   };
 
+  /** Promote session items to verified/partial based on what's actually in
+   *  inventory_stock. Used after a mass-ingestion run where earlier bugs left
+   *  items pending even though the parts are physically in inventory. */
+  const [reconcilingId, setReconcilingId] = useState<number | null>(null);
+  const handleReconcile = async (session: CheckSession) => {
+    if (!confirm(`Reconcile "${session.kitLabel}" with inventory?\n\nWalks each pending item, checks whether the matching parts are already in inventory_stock, and promotes the row to verified or partial accordingly. Missing items (user-confirmed shortages) are left alone.`)) return;
+    setReconcilingId(session.id);
+    try {
+      const r = await reconcileCheckSession(session.id);
+      // Refresh the expanded item list too if this session is open
+      if (expandedSessionId === session.id) {
+        try { const data = await fetchCheckSession(session.id); setSessionItems(data.items || []); } catch {}
+      }
+      onRefresh();
+      const parts: string[] = [];
+      if (r.verifiedAdded) parts.push(`${r.verifiedAdded} verified`);
+      if (r.partialAdded)  parts.push(`${r.partialAdded} partial`);
+      if (parts.length === 0) toast.info('No changes — session already matches inventory');
+      else                    toast.success(`Reconciled: ${parts.join(' + ')}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Reconcile failed');
+    } finally {
+      setReconcilingId(null);
+    }
+  };
+
   // Split sessions: active/paused first, completed below
   const activeSessions = checkSessions.filter(s => s.status !== 'completed');
   const completedSessions = checkSessions.filter(s => s.status === 'completed');
@@ -480,6 +525,13 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
               <div className="space-y-2 max-h-96 overflow-y-auto">
                 {lookupResults.map(r => {
                   const totalStock = r.stockEntries.reduce((sum, s) => sum + s.quantity, 0);
+                  // Fabricated parts (MATERIAL with a `material:` reference) never
+                  // appear in inventory — they're build steps, not shipped items.
+                  // We surface the FABRICATE badge instead of the misleading
+                  // "Not ingested" status, and tell the user which raw stock to cut
+                  // it from. Source: Van's Section 4 Parts Index.
+                  const lookupEntry = manifestByPN.get(r.partNumber.toUpperCase());
+                  const isFabricated = lookupEntry?.partType === 'MATERIAL' && !!lookupEntry?.material;
                   const status: 'in-stock' | 'partial' | 'missing' =
                     totalStock === 0 ? 'missing' :
                     r.qtyRequired > 0 && totalStock < r.qtyRequired ? 'partial' :
@@ -488,15 +540,29 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                     <div key={r.partNumber} className="p-3 rounded-md bg-muted/30 text-sm">
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="font-mono font-bold truncate">{r.partNumber}</p>
-                          <p className="text-xs text-muted-foreground truncate">{r.name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-mono font-bold truncate">{r.partNumber}</p>
+                            {isFabricated && (
+                              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold uppercase tracking-wider">
+                                <MIcon name="build" className="text-[10px]" /> Fabricate
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {r.name}
+                            {isFabricated && lookupEntry?.material && (
+                              <span className="ml-1.5 text-amber-600/80 dark:text-amber-400/80">· from <span className="font-mono">{lookupEntry.material}</span></span>
+                            )}
+                          </p>
                         </div>
                         <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${
+                          isFabricated         ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' :
                           status === 'in-stock' ? 'bg-emerald-500/20 text-emerald-400' :
                           status === 'partial'  ? 'bg-amber-500/20 text-amber-400' :
                                                   'bg-muted text-muted-foreground'
                         }`}>
-                          {status === 'in-stock' ? (r.qtyRequired > 0 ? 'In stock' : 'In inventory') :
+                          {isFabricated         ? 'Fabricate' :
+                           status === 'in-stock' ? (r.qtyRequired > 0 ? 'In stock' : 'In inventory') :
                            status === 'partial'  ? `Short ${r.qtyRequired - totalStock}` :
                                                    'Not ingested'}
                         </span>
@@ -623,6 +689,14 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                       Complete
                     </button>
                   )}
+                  <button
+                    onClick={() => handleReconcile(session)}
+                    disabled={reconcilingId === session.id}
+                    title="Reconcile with inventory — promote pending items already sitting in stock"
+                    className="px-3 py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-primary/15 text-primary hover:bg-primary/25 transition-colors disabled:opacity-50"
+                  >
+                    {reconcilingId === session.id ? '…' : 'Reconcile'}
+                  </button>
                   <button onClick={() => handleDeleteSession(session.id)}
                     className="px-3 py-2 rounded-md text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
                     <Trash2 className="w-3.5 h-3.5" />
@@ -703,28 +777,55 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                                   )}
                                 </div>
                                 <div className="divide-y divide-border/50">
-                                  {groupItems.map(item => (
+                                  {groupItems.map(item => {
+                                    // Cross-reference the live manifest to find out whether this
+                                    // session item is a builder-fabricated MATERIAL part (e.g.
+                                    // A-1011 made from VA-140) so we can surface it as such
+                                    // instead of letting the user hunt for a label that
+                                    // doesn't ship. Falls back to the existing "scan this
+                                    // part" treatment when the manifest entry is MANUFACTURED
+                                    // or when no entry is found.
+                                    const me = manifestByPN.get(item.partNumber.toUpperCase());
+                                    const isFabricated = me?.partType === 'MATERIAL' && !!me?.material;
+                                    return (
                                     <div key={item.id} className="flex items-center gap-3 px-4 py-2.5">
-                                      {/* Status icon — partial uses the same
-                                          amber palette as the legacy 'pending
-                                          with qty > 0' rendering so the visual
-                                          change is small for existing users. */}
+                                      {/* Status icon — fabricated items get a wrench in the
+                                          "pending" state so the row reads as "build this"
+                                          rather than "scan this". Partial / verified / missing
+                                          icons remain the same so finished progress is uniform. */}
                                       <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
                                         item.status === 'verified' ? 'bg-emerald-500/15' :
                                         item.status === 'missing' ? 'bg-destructive/15' :
-                                        item.status === 'partial' ? 'bg-amber-500/15' : 'bg-muted/50'
+                                        item.status === 'partial' ? 'bg-amber-500/15' :
+                                        isFabricated         ? 'bg-amber-500/10' : 'bg-muted/50'
                                       }`}>
                                         {item.status === 'verified' && <MIcon name="check" className="text-sm text-emerald-500" />}
                                         {item.status === 'missing' && <MIcon name="close" className="text-sm text-destructive" />}
                                         {item.status === 'partial' && <MIcon name="remove" className="text-sm text-amber-500" />}
-                                        {item.status === 'pending' && <div className="w-2 h-2 rounded-full bg-muted-foreground/30" />}
+                                        {item.status === 'pending' && (
+                                          isFabricated
+                                            ? <MIcon name="build" className="text-sm text-amber-500/70" />
+                                            : <div className="w-2 h-2 rounded-full bg-muted-foreground/30" />
+                                        )}
                                       </div>
                                       {/* Part info */}
                                       <div className="flex-1 min-w-0">
-                                        <p className={`text-sm font-mono truncate ${item.status === 'pending' ? 'text-muted-foreground' : 'font-medium'}`}>
-                                          {item.partNumber}
+                                        <div className="flex items-center gap-1.5">
+                                          <p className={`text-sm font-mono truncate ${item.status === 'pending' ? 'text-muted-foreground' : 'font-medium'}`}>
+                                            {item.partNumber}
+                                          </p>
+                                          {isFabricated && (
+                                            <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold uppercase tracking-wider">
+                                              <MIcon name="build" className="text-[10px]" /> Fabricate
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-xs text-muted-foreground truncate">
+                                          {item.nomenclature}
+                                          {isFabricated && me?.material && (
+                                            <span className="ml-1.5 text-amber-600/80 dark:text-amber-400/80">· from <span className="font-mono">{me.material}</span></span>
+                                          )}
                                         </p>
-                                        <p className="text-xs text-muted-foreground truncate">{item.nomenclature}</p>
                                       </div>
                                       {/* Qty */}
                                       <div className="shrink-0 text-right">
@@ -734,6 +835,23 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                                       </div>
                                       {/* Actions */}
                                       <div className="shrink-0 flex items-center gap-1">
+                                        {/* Mark fabricated — only relevant for MATERIAL parts
+                                            and only when there's progress to make. Skips the
+                                            "Receive" flow entirely because there's no stock
+                                            to receive; this is purely "I made it". */}
+                                        {isFabricated && (item.status === 'pending' || item.status === 'partial') && (
+                                          <button onClick={async () => {
+                                            try {
+                                              await updateCheckItem(session.id, item.id, { qtyFound: item.qtyExpected, status: 'verified' });
+                                              setSessionItems(prev => prev.map(i => i.id === item.id ? { ...i, qtyFound: i.qtyExpected, status: 'verified' } : i));
+                                              onRefresh();
+                                              toast.success(`${item.partNumber} marked fabricated`);
+                                            } catch { toast.error('Failed to mark fabricated'); }
+                                          }}
+                                            className="p-1 rounded hover:bg-amber-500/15 text-muted-foreground hover:text-amber-500 transition-colors" title={`Mark fabricated (from ${me?.material})`}>
+                                            <MIcon name="build" className="text-sm" />
+                                          </button>
+                                        )}
                                         {(item.status === 'pending' || item.status === 'partial') && (
                                           <button onClick={() => handleToggleItemStatus(session.id, item, 'missing')}
                                             className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors" title="Mark as missing">
@@ -758,7 +876,7 @@ function DashboardTab({ stats, stock, locations, checkSessions, aircraftType, on
                                         )}
                                       </div>
                                     </div>
-                                  ))}
+                                  );})}
                                 </div>
                               </div>
                               );

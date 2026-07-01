@@ -1038,14 +1038,25 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
     setStage('processing');
     let count = 0;
     let boCount = 0;
+    let skippedCount = 0;
     try {
       for (const { entry, status, actualQty } of bagVerifyItems) {
+        // Skip anything the user didn't confirm as physically present in the
+        // bag: 'pending' (never touched), 'backordered' (marked missing), or
+        // any qty <= 0. These should NOT create inventory stock rows —
+        // otherwise the whole point of the verify flow is lost. The kit-check
+        // session below still receives backordered items so shortages stay
+        // trackable (Van's owes them), but the inventory only grows when we
+        // actually have parts in hand.
+        if (status === 'pending' || status === 'backordered' || actualQty <= 0) {
+          skippedCount++;
+          continue;
+        }
+
         const expected = entry.qtyRequired || 1;
-        const qty = status === 'backordered' ? 0 : actualQty;
+        const qty = actualQty;
         const shortage = expected - qty;
         const notesArr: string[] = [];
-        if (status === 'backordered') notesArr.push('BACKORDERED');
-        if (status === 'pending') notesArr.push('Not verified');
         if (qty > 0 && shortage > 0) notesArr.push(`Received ${qty}/${expected}`);
 
         // Ingest the part + stock for what we actually received. The bag's
@@ -1061,14 +1072,17 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
           bag:     pendingBag.bagId,
           quantity: qty,
           unit:    entry.unit || 'pcs',
-          status:  qty > 0 ? 'in_stock' : 'backordered',
+          status:  'in_stock',
           ...(notesArr.length > 0 ? { notes: notesArr.join(', ') } : {}),
           ...locExtra,
         });
         const createdStockIds: number[] = stockId != null ? [stockId] : [];
 
-        // If partial (received some but not all), create a backordered entry for the shortage
-        if (qty > 0 && shortage > 0) {
+        // If partial (received some but not all), create a backordered entry
+        // for the shortage so the missing count is still tracked. This is
+        // different from a full 'backordered' item — the user has some of the
+        // part but not all, so the shortage is a real Van's owe-you.
+        if (shortage > 0) {
           const { stockId: boStockId } = await ingestInvPart({
             partNumber: entry.partNumber,
             name:    entry.nomenclature || entry.partNumber,
@@ -1082,8 +1096,6 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
             ...locExtra,
           });
           if (boStockId != null) createdStockIds.push(boStockId);
-          boCount++;
-        } else if (status === 'backordered') {
           boCount++;
         }
 
@@ -1104,7 +1116,10 @@ export function MassIngestion({ onClose, onDone, vendorId = 'vans', aircraftType
         });
         count++;
       }
-      toast.success(`${pendingBag.bagId}: ${count} items added${boCount > 0 ? ` (${boCount} backordered)` : ''}`);
+      const parts: string[] = [`${count} added`];
+      if (boCount > 0) parts.push(`${boCount} short-backorder`);
+      if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
+      toast.success(`${pendingBag.bagId}: ${parts.join(', ')}`);
       // Mark items in the bag's kit-check session — NOT activeCheckSessionId,
       // which is null in Auto-Sort mode. The bag belongs unambiguously to
       // pendingBag.kitId, so that's the only session that matters here.

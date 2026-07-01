@@ -3666,7 +3666,7 @@ app.post('/api/import', requireAuth, backupUpload.single('backup'), async (req, 
 
 app.get('/api/admin/stats', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const tables = ['sessions', 'blog_posts', 'expenses', 'expense_budgets', 'sign_offs', 'visitor_stats', 'pending_uploads'];
+    const tables = ADMIN_BROWSABLE_TABLES;
     const stats = [];
     if (DB_BACKEND === 'postgres') {
       // Postgres: all tenants share one database — query without tenant filter to get global totals
@@ -3861,24 +3861,55 @@ app.post('/api/admin/users/:id/purge', requireAuth, requireAdmin, async (req, re
 
 // ─── Admin table browser ──────────────────────────────────────────────
 
-const ADMIN_BROWSABLE_TABLES = ['sessions', 'blog_posts', 'expenses', 'expense_budgets', 'sign_offs', 'visitor_stats', 'pending_uploads', 'inventory_locations', 'inventory_parts', 'inventory_stock'];
+const ADMIN_BROWSABLE_TABLES = ['sessions', 'blog_posts', 'expenses', 'expense_budgets', 'sign_offs', 'visitor_stats', 'pending_uploads', 'inventory_locations', 'inventory_parts', 'inventory_stock', 'inventory_check_sessions', 'inventory_check_items'];
 const ADMIN_TABLE_PK = {
   sessions: 'id', blog_posts: 'id', expenses: 'id', expense_budgets: 'category',
   sign_offs: 'id', visitor_stats: 'id', pending_uploads: 'url',
   inventory_locations: 'id', inventory_parts: 'id', inventory_stock: 'id',
+  inventory_check_sessions: 'id', inventory_check_items: 'id',
+};
+// Columns the admin table browser will search when a `q` query param is
+// provided. Intentionally hand-picked rather than "every column" so we don't
+// accidentally LIKE-scan blobs or huge text columns. All values are cast to
+// text and lower-cased for case-insensitive substring match.
+const ADMIN_TABLE_SEARCH_COLS = {
+  sessions:                 ['section', 'notes'],
+  blog_posts:               ['title', 'section', 'slug'],
+  expenses:                 ['description', 'category', 'currency'],
+  expense_budgets:          ['category'],
+  sign_offs:                ['package_label', 'section_id', 'inspector_name', 'notes'],
+  visitor_stats:            ['path', 'country', 'referrer'],
+  pending_uploads:          ['url'],
+  inventory_locations:      ['name'],
+  inventory_parts:          ['part_number', 'name', 'category', 'manufacturer'],
+  inventory_stock:          ['condition', 'status', 'notes'],
+  inventory_check_sessions: ['kit_label', 'kit_id', 'aircraft_type', 'status'],
+  inventory_check_items:    ['part_number', 'nomenclature', 'sub_kit', 'bag', 'status'],
 };
 
-// GET /api/admin/table/:table?tenantId=&limit=&offset=
+// GET /api/admin/table/:table?tenantId=&limit=&offset=&q=
 app.get('/api/admin/table/:table', requireAuth, requireAdmin, async (req, res) => {
   const { table } = req.params;
   if (!ADMIN_BROWSABLE_TABLES.includes(table)) return res.status(400).json({ error: 'Invalid table' });
   const limit  = Math.min(parseInt(req.query.limit)  || 50, 200);
   const offset = parseInt(req.query.offset) || 0;
   const tenantFilter = req.query.tenantId || null;
+  const q = (req.query.q || '').toString().trim();
+  const searchCols = q ? (ADMIN_TABLE_SEARCH_COLS[table] || []) : [];
+  const pattern = q ? `%${q.toLowerCase()}%` : null;
   try {
     if (DB_BACKEND === 'postgres') {
-      const where  = tenantFilter ? 'WHERE t.tenant_id = $1' : '';
-      const params = tenantFilter ? [tenantFilter] : [];
+      const whereParts = [];
+      const params = [];
+      if (tenantFilter) { params.push(tenantFilter); whereParts.push(`t.tenant_id = $${params.length}`); }
+      if (searchCols.length) {
+        const likes = searchCols.map(c => {
+          params.push(pattern);
+          return `LOWER(CAST(t.${c} AS TEXT)) LIKE $${params.length}`;
+        });
+        whereParts.push(`(${likes.join(' OR ')})`);
+      }
+      const where = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
       const countRow = await req.db.get(`SELECT COUNT(*) as count FROM ${table} t ${where}`, params);
       const rows = await req.db.all(
         `SELECT t.*, ten.slug as "_tenantSlug" FROM ${table} t LEFT JOIN tenants ten ON ten.id = t.tenant_id ${where} ORDER BY 1 LIMIT ${limit} OFFSET ${offset}`, params
@@ -3890,12 +3921,20 @@ app.get('/api/admin/table/:table', requireAuth, requireAdmin, async (req, res) =
         : await listTenants();
       const allRows = [];
       let totalCount = 0;
+      // Build the search-clause fragment once; it's stable across tenants.
+      const searchClause = searchCols.length
+        ? ` AND (${searchCols.map(c => `LOWER(CAST(${c} AS TEXT)) LIKE ?`).join(' OR ')})`
+        : '';
       for (const tenant of tenants) {
         try {
           const tdb = getTenantDb(tenant.id);
-          const countRow = await tdb.get(`SELECT COUNT(*) as count FROM ${table} WHERE tenant_id = ?`, [tenant.id]);
+          const baseParams = [tenant.id, ...searchCols.map(() => pattern)];
+          const countRow = await tdb.get(`SELECT COUNT(*) as count FROM ${table} WHERE tenant_id = ?${searchClause}`, baseParams);
           totalCount += Number(countRow?.count || 0);
-          const rows = await tdb.all(`SELECT * FROM ${table} WHERE tenant_id = ? LIMIT ? OFFSET ?`, [tenant.id, limit, offset]);
+          const rows = await tdb.all(
+            `SELECT * FROM ${table} WHERE tenant_id = ?${searchClause} LIMIT ? OFFSET ?`,
+            [...baseParams, limit, offset]
+          );
           for (const row of rows) allRows.push({ ...row, _tenantSlug: tenant.slug });
         } catch { /* table may not exist in older dbs */ }
       }
@@ -5468,6 +5507,114 @@ app.put('/api/inventory/checks/:sessionId/items/:itemId', requireAuth, async (re
     );
 
     res.json({ ok: true, verified: counts.verified || 0, missing: counts.missing || 0 });
+  } catch (err) { serverError(res, err); }
+});
+
+// Reconcile a check session against the actual inventory_stock totals.
+// Use case: the user's mass-ingestion scans landed in inventory but earlier
+// bugs (auto-sort flow not updating the session, kit-check writing to the
+// wrong session, etc.) left the session items at 'pending' even though the
+// physical parts are sitting in their crates and tracked in stock.
+//
+// For each non-verified session item we compute the matching in_stock
+// quantity:
+//   - if the item has a bag, only stock rows with batch=bag count
+//     (so multi-bag parts don't double-promote)
+//   - if the item has no bag, every in_stock row for that part number counts
+// Then we set qty_found = min(stockTotal, qtyExpected) and:
+//   stockTotal >= expected  → 'verified'
+//   stockTotal > 0          → 'partial'
+//   stockTotal == 0         → leave unchanged ('pending' / 'missing' stay)
+// Missing items are left alone — they're a user-confirmed shortage, not
+// something to silently overwrite from inventory.
+app.post('/api/inventory/checks/:sessionId/reconcile', requireAuth, async (req, res) => {
+  try {
+    const items = await req.db.all(
+      `SELECT id, part_number, COALESCE(bag, '') AS bag, qty_expected, qty_found, status
+       FROM inventory_check_items
+       WHERE session_id = ? AND tenant_id = ?`,
+      [req.params.sessionId, req.tenantId]
+    );
+
+    let verifiedAdded = 0;
+    let partialAdded = 0;
+    let unchanged    = 0;
+    const now = new Date().toISOString();
+
+    for (const item of items) {
+      // Don't second-guess already-verified or user-confirmed-missing rows
+      if (item.status === 'verified' || item.status === 'missing') {
+        unchanged++;
+        continue;
+      }
+
+      const bag = item.bag || '';
+      const totalRow = bag
+        ? await req.db.get(
+            `SELECT COALESCE(SUM(s.quantity), 0) AS total
+             FROM inventory_stock s
+             JOIN inventory_parts p ON p.id = s.part_id AND p.tenant_id = s.tenant_id
+             WHERE s.tenant_id = ?
+               AND UPPER(p.part_number) = UPPER(?)
+               AND UPPER(COALESCE(s.batch, '')) = UPPER(?)
+               AND s.status = 'in_stock'`,
+            [req.tenantId, item.part_number, bag]
+          )
+        : await req.db.get(
+            `SELECT COALESCE(SUM(s.quantity), 0) AS total
+             FROM inventory_stock s
+             JOIN inventory_parts p ON p.id = s.part_id AND p.tenant_id = s.tenant_id
+             WHERE s.tenant_id = ?
+               AND UPPER(p.part_number) = UPPER(?)
+               AND s.status = 'in_stock'`,
+            [req.tenantId, item.part_number]
+          );
+      const totalInStock = Number(totalRow?.total) || 0;
+
+      // No stock found — leave 'pending' alone, that's the honest signal
+      if (totalInStock <= 0) { unchanged++; continue; }
+
+      const newQtyFound = Math.min(totalInStock, item.qty_expected);
+      const newStatus   = newQtyFound >= item.qty_expected ? 'verified' : 'partial';
+
+      // Already matches what's in inventory — nothing to update
+      if (newStatus === item.status && Math.abs(newQtyFound - item.qty_found) < 0.001) {
+        unchanged++;
+        continue;
+      }
+
+      await req.db.run(
+        `UPDATE inventory_check_items
+         SET qty_found = ?, status = ?, scanned_at = ?
+         WHERE id = ? AND session_id = ? AND tenant_id = ?`,
+        [newQtyFound, newStatus, now, item.id, req.params.sessionId, req.tenantId]
+      );
+      if (newStatus === 'verified') verifiedAdded++;
+      else                          partialAdded++;
+    }
+
+    // Recompute session-level rollups
+    const counts = await req.db.get(
+      `SELECT
+         SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END) AS verified,
+         SUM(CASE WHEN status = 'missing'  THEN 1 ELSE 0 END) AS missing
+       FROM inventory_check_items WHERE session_id = ? AND tenant_id = ?`,
+      [req.params.sessionId, req.tenantId]
+    );
+    await req.db.run(
+      "UPDATE inventory_check_sessions SET verified_items = ?, missing_items = ?, updated_at = ? WHERE id = ? AND tenant_id = ?",
+      [counts.verified || 0, counts.missing || 0, now, req.params.sessionId, req.tenantId]
+    );
+
+    res.json({
+      ok:             true,
+      verifiedAdded,
+      partialAdded,
+      unchanged,
+      totalItems:     items.length,
+      verifiedTotal:  Number(counts.verified) || 0,
+      missingTotal:   Number(counts.missing)  || 0,
+    });
   } catch (err) { serverError(res, err); }
 });
 

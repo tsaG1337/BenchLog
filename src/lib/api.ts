@@ -958,11 +958,12 @@ export interface AdminTableResult {
   total: number;
 }
 
-export async function fetchAdminTableRows(table: string, opts?: { tenantId?: string; limit?: number; offset?: number }): Promise<AdminTableResult> {
+export async function fetchAdminTableRows(table: string, opts?: { tenantId?: string; limit?: number; offset?: number; q?: string }): Promise<AdminTableResult> {
   const params = new URLSearchParams();
   if (opts?.tenantId) params.set('tenantId', opts.tenantId);
   if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
   if (opts?.offset !== undefined) params.set('offset', String(opts.offset));
+  if (opts?.q) params.set('q', opts.q);
   const qs = params.toString();
   return request<AdminTableResult>(`/api/admin/table/${encodeURIComponent(table)}${qs ? '?' + qs : ''}`);
 }
@@ -1144,6 +1145,22 @@ export const updateCheckItem = (sessionId: number, itemId: number, data: Partial
  */
 export const verifyCheckBatch = (sessionId: number, items: { partNumber: string; qtyFound: number; isShort?: boolean; bag?: string; replace?: boolean }[]) =>
   request<{ matched: number }>(`/api/inventory/checks/${sessionId}/verify-batch`, { method: 'POST', body: JSON.stringify({ items }) });
+
+/** Reconcile a check session against the actual inventory_stock totals.
+ *  For each non-verified, non-missing item, looks up the matching in-stock
+ *  quantity (filtered by `bag` when set) and promotes the row to verified /
+ *  partial accordingly. Used after a mass-ingestion run where earlier bugs
+ *  left session items pending even though the parts are in inventory. */
+export const reconcileCheckSession = (sessionId: number) =>
+  request<{
+    ok: boolean;
+    verifiedAdded: number;
+    partialAdded: number;
+    unchanged: number;
+    totalItems: number;
+    verifiedTotal: number;
+    missingTotal: number;
+  }>(`/api/inventory/checks/${sessionId}/reconcile`, { method: 'POST' });
 
 // ─── Plans API ────────────────────────────────────────────────────────
 
