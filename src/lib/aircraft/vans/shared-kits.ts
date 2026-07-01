@@ -27,6 +27,15 @@ export const accessPanelKit: KitDefinition = {
     { partNumber: 'VA-258B', nomenclature: 'FORWARD FUSELAGE ACCESS PANEL',              qtyRequired: 2, partType: 'MANUFACTURED', material: '', subKit: '' },
   ],
   bags: [
+    // Top-level kit bag — what the user actually sees printed on the
+    // outer kit label. Lets a single scan of "ACCESS PANEL KIT" trigger
+    // the bag-prompt flow that ingests every part inside, including the
+    // sub-bag's hardware.
+    { id: 'ACCESS PANEL KIT', description: 'ACCESS PANEL KIT', contents: [
+      { partNumber: 'VA-258A', qty: 2 },
+      { partNumber: 'VA-258B', qty: 2 },
+      { partNumber: 'BAG 539', qty: 1 },
+    ]},
     { id: 'BAG 539', description: 'ACCESS PANEL HARDWARE', contents: [
       { partNumber: 'AN426AD3-3.5', qty: 0.02 },
       { partNumber: 'AN507C832R8',  qty: 32 },
@@ -68,6 +77,14 @@ export const afsYawServoInstallKit: KitDefinition = {
     { partNumber: 'F-14189B', nomenclature: 'YAW SERVO PLATE',         qtyRequired: 1, partType: 'MANUFACTURED', material: '', subKit: '' },
   ],
   bags: [
+    // Top-level kit bag — matches the outer kit label.
+    { id: '14 SV AFS YAW SERVO INSTAL KIT', description: '14 SV AFS YAW SERVO INSTAL KIT', contents: [
+      { partNumber: 'CS-00021', qty: 2 },
+      { partNumber: 'F-14189A', qty: 1 },
+      { partNumber: 'F-14189B', qty: 1 },
+      { partNumber: 'BAG 3347', qty: 1 },
+      { partNumber: 'BAG 3348', qty: 1 },
+    ]},
     { id: 'BAG 3347', description: 'AFS YAW SERVO HARDWARE', contents: [
       { partNumber: 'AN23-9',        qty: 2 },
       { partNumber: 'AN3-4A',        qty: 4 },
