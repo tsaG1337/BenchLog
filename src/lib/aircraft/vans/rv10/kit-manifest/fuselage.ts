@@ -281,9 +281,6 @@ export const fuselageKit: KitDefinition = {
     { partNumber: 'F-DRILL BUSHING', nomenclature: 'DRILL BUSHING', qtyRequired: 2, partType: 'MATERIAL', material: 'ST4130-028X3/16', subKit: 'FUSE', bag: 'BAG 1397' },
     { partNumber: 'FUEL LINE', nomenclature: 'FUEL LINE', qtyRequired: 1, partType: 'MATERIAL', material: 'AT0-035X3/8', subKit: 'FUSE' },
     { partNumber: 'F-VENT LINE', nomenclature: 'FUSELAGE VENT LINE', qtyRequired: 2, partType: 'MATERIAL', material: 'AT0-032X1/4', subKit: 'FUSE' },
-    { partNumber: 'SEAT RAIL-INBD', nomenclature: 'INBOARD SEAT RAIL', qtyRequired: 2, partType: 'MANUFACTURED', material: 'OREGON AERO PART', subKit: 'FUSE' },
-    { partNumber: 'SEAT RAIL-L', nomenclature: 'LEFT SEAT RAIL', qtyRequired: 1, partType: 'MANUFACTURED', material: 'OREGON AERO PART', subKit: 'FUSE' },
-    { partNumber: 'SEAT RAIL-R', nomenclature: 'RIGHT SEAT RAIL', qtyRequired: 1, partType: 'MANUFACTURED', material: 'OREGON AERO PART', subKit: 'FUSE' },
     { partNumber: 'TOOL 3" CUTTING DISK', nomenclature: 'TOOL 3" CUTTING DISK', qtyRequired: 3, partType: 'MATERIAL', material: 'N/A', subKit: 'FUSE' },
     { partNumber: 'VA-00277', nomenclature: 'TEMPLATE, DRILL, TOP', qtyRequired: 1, partType: 'MANUFACTURED', material: 'N/A', subKit: 'FUSE', bag: 'BAG 1376' },
     { partNumber: 'VA-00278', nomenclature: 'TEMPLATE, DRILL, BOTTOM', qtyRequired: 1, partType: 'MANUFACTURED', material: 'N/A', subKit: 'FUSE', bag: 'BAG 1376' },
@@ -837,8 +834,26 @@ export const fuselageKit: KitDefinition = {
         { partNumber: 'MS16562-31', qty: 2 },
         { partNumber: 'NAS1149F0432P', qty: 8 },
       ] },
-    // Non-BAG containers (sub-kit / kit level containers)
-    { id: '10 CENTER SECTION DT KIT', description: 'CENTER SECTION DRILL TEMPLATES', contents: ['DOC SB-00007', 'VA-00272', 'VA-00273', 'VA-00274', 'VA-00275'] },
-    { id: 'STATIC-KIT', description: 'STATIC AIR KIT ALL', contents: ['DOC STATIC AIR KIT', 'F PLASTIC TEE', 'FLF-00007', 'PT 1/4IDX3/8ODX4"', 'PT 1/4OD TUBEX20\'', 'PT 1/8 CLR X 5\'', 'RIVET SD-42-BSLF', 'VENT TG-1010 L&R'] },
+    // Non-BAG containers (sub-kit / kit level containers).
+    // Contents must use the BagContentItem shape ({ partNumber, qty }), not
+    // bare strings — bag-content resolvers read `.partNumber` and would
+    // crash on a string entry the moment one of these IDs got scanned.
+    { id: '10 CENTER SECTION DT KIT', description: 'CENTER SECTION DRILL TEMPLATES', contents: [
+        { partNumber: 'DOC SB-00007', qty: 1 },
+        { partNumber: 'VA-00272',     qty: 1 },
+        { partNumber: 'VA-00273',     qty: 1 },
+        { partNumber: 'VA-00274',     qty: 1 },
+        { partNumber: 'VA-00275',     qty: 1 },
+      ] },
+    { id: 'STATIC-KIT', description: 'STATIC AIR KIT ALL', contents: [
+        { partNumber: 'DOC STATIC AIR KIT', qty: 1 },
+        { partNumber: 'F PLASTIC TEE',      qty: 1 },
+        { partNumber: 'FLF-00007',          qty: 1 },
+        { partNumber: 'PT 1/4IDX3/8ODX4"',  qty: 1 },
+        { partNumber: 'PT 1/4OD TUBEX20\'', qty: 1 },
+        { partNumber: 'PT 1/8 CLR X 5\'',   qty: 1 },
+        { partNumber: 'RIVET SD-42-BSLF',   qty: 2 },
+        { partNumber: 'VENT TG-1010 L&R',   qty: 1 },
+      ] },
   ],
 };

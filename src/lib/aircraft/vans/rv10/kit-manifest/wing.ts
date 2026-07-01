@@ -37,7 +37,6 @@ export const wingKit: KitDefinition = {
     { partNumber: 'FL-1001B-R', nomenclature: 'OUTBOARD NOSE SKIN', qtyRequired: 1, partType: 'MANUFACTURED', material: '.020 6061-T6 BARE', subKit: 'FLAP' },
     { partNumber: 'FL-1001C', nomenclature: 'TOP SKIN', qtyRequired: 2, partType: 'MANUFACTURED', material: '.020 2024-T3 ALCLAD', subKit: 'FLAP' },
     { partNumber: 'FL-1002', nomenclature: 'BOTTOM SKIN', qtyRequired: 2, partType: 'MANUFACTURED', material: '.020 2024-T3 ALCLAD', subKit: 'FLAP' },
-    { partNumber: 'FL-1002A', nomenclature: 'ROCK SHIELD', qtyRequired: 2, partType: 'MANUFACTURED', material: '.040 304 STAINLESS SHEET', subKit: 'FLAP' },
     { partNumber: 'FL-1003-L', nomenclature: 'SPAR', qtyRequired: 1, partType: 'MANUFACTURED', material: '.040 2024-T3 ALCLAD', subKit: 'FLAP' },
     { partNumber: 'FL-1003-R', nomenclature: 'SPAR', qtyRequired: 1, partType: 'MANUFACTURED', material: '.040 2024-T3 ALCLAD', subKit: 'FLAP' },
     { partNumber: 'FL-1004-L', nomenclature: 'NOSE RIB', qtyRequired: 10, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'FLAP' },
@@ -83,7 +82,7 @@ export const wingKit: KitDefinition = {
     { partNumber: 'VA-195C', nomenclature: 'ACCESS HATCH DOUBLER', qtyRequired: 1, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'WING' },
     { partNumber: 'VA-195D', nomenclature: 'ACCESS HATCH', qtyRequired: 1, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'WING' },
     { partNumber: 'VA-196', nomenclature: 'STALL WARNING VANE', qtyRequired: 1, partType: 'MANUFACTURED', material: 'T-304 STAINLESS STEEL', subKit: 'WING', bag: 'BAG 1216-1' },
-    { partNumber: 'VB-11', nomenclature: 'WING LEADING EDGE VEE BLOCK', qtyRequired: 2, partType: 'MANUFACTURED', material: '3/4 MDF', subKit: 'WING' },
+    { partNumber: 'VB-11', nomenclature: 'TEMPLATE ON BOX LID', qtyRequired: 1, partType: 'MANUFACTURED', material: '3/4 MDF', subKit: 'WING' },
     { partNumber: 'W-1001-L', nomenclature: 'LEADING EDGE SKIN', qtyRequired: 1, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'WING' },
     { partNumber: 'W-1001-R', nomenclature: 'LEADING EDGE SKIN', qtyRequired: 1, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'WING' },
     { partNumber: 'W-1002', nomenclature: 'TOP INBD WING SKIN', qtyRequired: 2, partType: 'MANUFACTURED', material: '.032 2024-T3 ALCLAD', subKit: 'WING' },
@@ -145,11 +144,11 @@ export const wingKit: KitDefinition = {
     { partNumber: 'W-1029E', nomenclature: 'SPACER', qtyRequired: 2, partType: 'MATERIAL', material: 'AS3-063 .625 X 1.397', subKit: 'WING' },
     { partNumber: 'W-1031', nomenclature: 'AILERON BELLCRANK SPACER', qtyRequired: 2, partType: 'MATERIAL', material: 'AT6-058 X 5/16', subKit: 'WING' },
     { partNumber: 'W-730', nomenclature: 'BELLCRANK JIG', qtyRequired: 1, partType: 'MANUFACTURED', material: '.063 2024-T3 ALCLAD', subKit: 'WING' },
-    { partNumber: 'W-822PP', nomenclature: 'WING ACCESS PLATE', qtyRequired: 2, partType: 'MANUFACTURED', material: '.032 2024-T3 ALCLAD', subKit: 'WING' },
-    { partNumber: 'W-822PP-', nomenclature: 'WING ACCESS PLATE', qtyRequired: 4, partType: 'MANUFACTURED', material: '.032 2024-T3 ALCLAD', subKit: 'WING' },
+    { partNumber: 'W-822PP', nomenclature: 'WING ACCESS PLATE', qtyRequired: 6, partType: 'MANUFACTURED', material: '.032 2024-T3 ALCLAD', subKit: 'WING' },
     { partNumber: 'WD-1014C', nomenclature: 'TORQUE TUBE COLLAR', qtyRequired: 2, partType: 'MATERIAL', material: 'ST4130-035 X 7/8', subKit: 'WING' },
     { partNumber: 'WH-F1001', nomenclature: 'STALL WARNING WIRE', qtyRequired: 2, partType: 'MATERIAL', material: 'WIRE MS22759/16-18', subKit: 'WING' },
     { partNumber: 'W-PITOT', nomenclature: 'WING PITOT LINE', qtyRequired: 1, partType: 'MATERIAL', material: 'AT0-032 X 1/4', subKit: 'WING' },
+
 
     // ══════════════════════════════════════════════════════════
     // HARDWARE  (from packing list — items not in manifest)

@@ -75,7 +75,6 @@ export const empennageKit: KitDefinition = {
     { partNumber: 'F-1029-R', nomenclature: 'BELLCRANK RIB RIGHT', qtyRequired: 1, partType: 'MANUFACTURED', material: '.025 2024-T3 ALCLAD', subKit: 'TAILCONE', bag: '10A EMPCONE SUBKIT #2' },
     { partNumber: 'F-1032-L', nomenclature: 'TAILCONE LONGERON LEFT', qtyRequired: 1, partType: 'MATERIAL', material: 'AA6-125X3/4X3/4', subKit: 'TAILCONE' },
     { partNumber: 'F-1032-R', nomenclature: 'TAILCONE LONGERON RIGHT', qtyRequired: 1, partType: 'MATERIAL', material: 'AA6-125X3/4X3/4', subKit: 'TAILCONE' },
-    { partNumber: 'F-1035-1', nomenclature: 'BATTERY/BELLCRANK MOUNT', qtyRequired: 1, partType: 'MANUFACTURED', material: '.063 2024-T3 ALCLAD', subKit: 'TAILCONE' },
     { partNumber: 'F-1036', nomenclature: 'BATTERY CHANNELS', qtyRequired: 1, partType: 'MANUFACTURED', material: '.063 2024-T3 ALCLAD', subKit: 'TAILCONE', bag: '10A EMPCONE SUBKIT #5' },
     { partNumber: 'F-1037', nomenclature: 'BELLCRANK RIB ANGLES', qtyRequired: 1, partType: 'MANUFACTURED', material: '.063 2024-T3 ALCLAD', subKit: 'TAILCONE', bag: '10A EMPCONE SUBKIT #8' },
     { partNumber: 'F-1047A', nomenclature: 'TAILCONE SKIN J STIFFENER', qtyRequired: 1, partType: 'MATERIAL', material: 'J-STIF', subKit: 'TAILCONE' },
