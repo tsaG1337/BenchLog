@@ -111,12 +111,27 @@ export default function BlogPage() {
   useEffect(() => { loadPosts(filters); }, [filters, loadPosts]);
 
   // Deep-link: if the URL contains a postId, open that post on mount.
+  // Guarded so we don't double-fetch when the click handler already set
+  // activePost (which navigates first, then sets state — this effect fires
+  // in the same commit and would otherwise re-fetch and race).
+  // Session-derived posts (id starts with 'session-') live in the sessions
+  // table, not blog_posts — the /api/blog/:id endpoint would 404, so we
+  // find them in the already-loaded posts list instead.
   useEffect(() => {
     if (!postId) return;
+    if (activePost && activePost.id === postId) return;
+
+    if (postId.startsWith('session-')) {
+      const found = posts.find(p => p.id === postId);
+      if (found) { setActivePost(found); setView('post'); }
+      // If not in the loaded page, wait — this effect re-runs when posts changes.
+      return;
+    }
+
     fetchBlogPost(postId)
       .then(post => { setActivePost(post); setView('post'); })
       .catch(() => toast.error('Post not found'));
-  }, [postId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [postId, posts, activePost]);
 
   useEffect(() => {
     fetchBlogArchive().then(setArchive).catch(() => {});

@@ -259,14 +259,17 @@ export async function reassignSection(fromId: string, toId: string): Promise<{ s
 export interface TimerStatus {
   running: boolean;
   section?: string;
+  /** Work-package number persisted alongside the running timer so a page
+   *  refresh / navigate-back doesn't wipe the picker's selection. */
+  plansSection?: string;
   startedAt?: string;
   imageUrls?: string[];
 }
 
-export async function startTimer(section: string): Promise<{ ok: boolean; section: string; startedAt: string }> {
+export async function startTimer(section: string, plansSection?: string): Promise<{ ok: boolean; section: string; plansSection: string; startedAt: string }> {
   return request('/api/timer/start', {
     method: 'POST',
-    body: JSON.stringify({ section }),
+    body: JSON.stringify({ section, plansSection: plansSection || '' }),
   });
 }
 

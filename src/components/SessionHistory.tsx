@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { format, parseISO } from 'date-fns';
 import { SessionImages } from '@/components/SessionImages';
+import { WorkPackagePicker } from '@/components/WorkPackagePicker';
 import { toast } from 'sonner';
 
 interface SessionHistoryProps {
@@ -44,7 +45,7 @@ function toDatetimeLocal(iso: string): string {
 
 export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFormat = '24h', hasMore, onLoadMore }: SessionHistoryProps) {
   const timeFmt = timeFormat === '24h' ? 'HH:mm' : 'h:mm a';
-  const { labels, icons, sections } = useSections();
+  const { labels, icons } = useSections();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSection, setEditSection] = useState('');
   const [editNotes, setEditNotes] = useState('');
@@ -127,25 +128,18 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                 >
                   {isEditing ? (
                     <div className="space-y-4">
-                      {/* Section picker */}
-                      <div>
-                        <Label className="text-xs text-muted-foreground mb-2 block">Section</Label>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                          {sections.map((s) => (
-                            <button
-                              key={s.id}
-                              onClick={() => setEditSection(s.id)}
-                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all border ${
-                                editSection === s.id
-                                  ? 'bg-primary/15 border-primary text-primary'
-                                  : 'bg-accent border-border text-muted-foreground hover:border-muted-foreground/50'
-                              }`}
-                            >
-                              <span>{s.icon}</span>
-                              <span>{s.label}</span>
-                            </button>
-                          ))}
-                        </div>
+                      {/* Assembly section + Work package — same visual picker
+                          used on the timer form, so users can adjust the
+                          plans-Section (work-package number) with the tree
+                          instead of typing raw numbers below. */}
+                      <div className="bg-muted/40 rounded-lg p-3">
+                        <WorkPackagePicker
+                          section={editSection}
+                          onSectionChange={setEditSection}
+                          plansSection={editPlanSection}
+                          onPlansSectionChange={setEditPlanSection}
+                          compact
+                        />
                       </div>
 
                       {/* Timing */}
@@ -180,14 +174,11 @@ export function SessionHistory({ sessions, onDelete, onUpdate, readOnly, timeFor
                         })()}
                       </div>
 
-                      {/* Plans reference */}
+                      {/* Plans reference — Section now lives in the picker
+                          above, so only Page + Step are kept here. */}
                       <div>
                         <Label className="text-xs text-muted-foreground mb-2 block">Plans Reference</Label>
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <Label className="text-xs text-muted-foreground/70 mb-1 block">Section</Label>
-                            <Input value={editPlanSection} onChange={(e) => setEditPlanSection(e.target.value)} placeholder="e.g. 5" className="bg-accent border-border font-mono h-8 text-xs" />
-                          </div>
+                        <div className="grid grid-cols-2 gap-2">
                           <div>
                             <Label className="text-xs text-muted-foreground/70 mb-1 block">Page</Label>
                             <Input value={editPage} onChange={(e) => setEditPage(e.target.value)} placeholder="e.g. 8" className="bg-accent border-border font-mono h-8 text-xs" />
