@@ -34,8 +34,12 @@ import type { Point, PlacedDevice, Orientation } from '@/lib/wiring/types';
 import { previewPlacedDevice } from '@/lib/wiring/library';
 import {
   Plus, Undo2, Redo2, ChevronRight, ChevronLeft, AlertTriangle, Download, Upload, Trash2,
-  FileText, FileImage, FileJson, FileSpreadsheet, Cloud, CloudOff, Save, Tag, X, Scan,
-  RotateCcw, RotateCw,
+  FileText, FileImage, FileJson, FileSpreadsheet, CloudOff, Save, Tag, X, Scan,
+  // Toolbar redesign: icon labels for each action button so they collapse
+  // gracefully on narrow viewports. Save-status badge uses Check / Loader2.
+  // Harness orientation collapses to a single mirror toggle (>|<).
+  Spline, ShieldHalf, Type, StickyNote, Ruler, Workflow, Cable, CornerDownRight,
+  Check, Loader2, FolderOpen, FlipHorizontal2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -81,7 +85,7 @@ export default function WiringPage() {
   const serialize     = useWiring(s => s.serialize);
   const loadFromJson  = useWiring(s => s.loadFromJson);
   const reset         = useWiring(s => s.reset);
-  const rotateHarnessNode = useWiring(s => s.rotateHarnessNode);
+  const mirrorHarnessNode = useWiring(s => s.mirrorHarnessNode);
   const setHarnessScale = useWiring(s => s.setHarnessScale);
   const selectedHarnessTree = useWiring(s => s.selectedHarnessTree);
 
@@ -473,8 +477,8 @@ export default function WiringPage() {
 
   // True when at least one placed device is selected. In the harness view a
   // device block selects into `selectedDeviceIds` (the shared device-selection
-  // set) — that is the set the rotate buttons / `rotateHarnessNode` act on.
-  const canRotateHarness = [...selDevIds].some(id => visibleDevices.some(d => d.id === id));
+  // set) — that is the set the Mirror button / `mirrorHarnessNode` act on.
+  const canMirrorHarness = [...selDevIds].some(id => visibleDevices.some(d => d.id === id));
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
   useEffect(() => {
@@ -805,13 +809,13 @@ export default function WiringPage() {
 
   const exportSvg = () => {
     if (!activeSheet) return;
-    downloadSheetSvg(placedDevices, wires, netLabels, annotations, activeSheet, exportMeta);
+    downloadSheetSvg(placedDevices, wires, netLabels, annotations, shields, activeSheet, exportMeta);
     toast.success(`Sheet "${activeSheet.name}" exported as SVG`);
   };
 
   const exportPdf = () => {
     if (!activeSheet) return;
-    printSheetPdf(placedDevices, wires, netLabels, annotations, activeSheet, exportMeta);
+    printSheetPdf(placedDevices, wires, netLabels, annotations, shields, activeSheet, exportMeta);
   };
 
   const exportPinListXlsx = () => {
@@ -839,16 +843,6 @@ export default function WiringPage() {
   const errorCount   = issues.filter(i => i.severity === 'error').length;
   const warningCount = issues.filter(i => i.severity === 'warning').length;
 
-  const saveLabel = (() => {
-    switch (saveStatus) {
-      case 'saving':  return 'Saving…';
-      case 'saved':   return 'Saved';
-      case 'offline': return 'Offline — local only';
-      case 'error':   return 'Save failed';
-      default:        return '';
-    }
-  })();
-
   return (
     <AppShell activePage="wiring" projectName={projectName} pageTitle="Wiring Diagrams" fullWidth>
       {/* Topbar is 80px tall; the demo-mode banner adds another 32px on top.
@@ -856,99 +850,97 @@ export default function WiringPage() {
           remaining viewport without overflowing. */}
       <div className="flex flex-col" style={{ height: `calc(100vh - ${demoMode ? 112 : 80}px)` }}>
 
-        {/* Toolbar */}
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card/30">
-          {/* Schematic-editing controls. Hidden in harness view because the
-              harness is a *derived* rendering — adding devices, tagging nets,
-              wrapping shields, and dropping notes all belong to the
-              electrical design and must happen on the schematic sheet. */}
-          {viewMode === 'schematic' && (
-            <>
-              <Button size="sm" onClick={() => setPickerOpen(true)} className="gap-1" title="Browse the device library and add a device to the canvas">
-                <Plus className="w-4 h-4" /> Device DB
-              </Button>
-              <Button
-                size="sm"
-                variant={netLabelMode ? 'default' : 'outline'}
-                onClick={() => { setShieldMode(false); setShieldDrag(null); setJunctionMode(false); setNetLabelMode(v => !v); }}
-                className="gap-1"
-                title={netLabelMode ? 'Exit net-label mode (Esc)' : 'Tag a pin with a net name (5V, GND, …)'}
-              >
-                <Tag className="w-3.5 h-3.5" /> Net label
-              </Button>
-              {/* Wire tool — when active, clicking an existing wire splits it
-                  at the click point and starts a new wire from that junction. */}
-              <Button
-                size="sm"
-                variant={junctionMode ? 'default' : 'outline'}
-                onClick={() => {
-                  setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
-                  setTextMode(false); setNoteMode(false); setJunctionMode(v => !v);
-                }}
-                className="gap-1"
-                title={junctionMode ? 'Exit wire mode (Esc)' : 'Start a wire from a point on an existing wire (junction)'}
-              >
-                Wire
-              </Button>
-              {/* Shield tool — drag a rectangle on the canvas to wrap every wire
-                  crossing it in a new shield. The chosen termination applies to
-                  every shield drawn until the dropdown is changed. */}
-              <Button
-                size="sm"
-                variant={shieldMode ? 'default' : 'outline'}
-                onClick={() => shieldMode ? exitShieldMode() : enterShieldMode()}
-                className="gap-1"
-                title={shieldMode ? 'Exit shield mode (Esc)' : 'Drag across wires to add a shield'}
-              >
-                Shield
-              </Button>
-              {/* Annotation tools — text comment + numbered note marker. Both
-                  are one-shot: click on the canvas to drop, then auto-exit. */}
-              <Button
-                size="sm"
-                variant={textMode ? 'default' : 'outline'}
-                onClick={() => {
-                  setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
-                  setJunctionMode(false); setNoteMode(false); setTextMode(v => !v);
-                }}
-                className="gap-1"
-                title={textMode ? 'Exit text mode (Esc)' : 'Add a free-text comment to the sheet'}
-              >
-                Text
-              </Button>
-              {shieldMode && (
-                <select
-                  value={shieldTermination}
-                  onChange={(e) => setShieldTermination(e.target.value as 'ground' | 'float' | 'backshell')}
-                  className="h-8 text-xs bg-background border border-border rounded px-2"
-                  title="Shield termination drawn on every new shield"
-                >
-                  <option value="ground">Ground-terminated</option>
-                  <option value="float">Floating</option>
-                  <option value="backshell">Backshell (S)</option>
-                </select>
-              )}
+        {/* Toolbar — single non-wrapping row.  Action buttons collapse to
+            icon-only below `lg:` so the View toggle + right cluster
+            (Save / issues / inspector) stay visible at every breakpoint.
+            `overflow-x-auto` is the safety net for very narrow viewports
+            (mobile rotation, split-view) so nothing falls off the page
+            unrecoverably. */}
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card/30 overflow-x-auto">
+          {/* View mode toggle — Schematic / Harness.  Anchored at the
+              leftmost slot in both modes so the primary "where am I?"
+              control is always in the same place.  Icon-only below `lg:`;
+              tooltip carries the full label. shrink-0 because this must
+              stay visible at every breakpoint. */}
+          <div className="inline-flex rounded border border-border overflow-hidden shrink-0">
+            <Button
+              size="sm"
+              variant={viewMode === 'schematic' ? 'default' : 'ghost'}
+              className="rounded-none px-2 lg:px-3 py-1 text-sm gap-1"
+              onClick={() => onToggle('schematic')}
+              title="Schematic view"
+              aria-label="Schematic view"
+              aria-pressed={viewMode === 'schematic'}
+            >
+              <Workflow className="w-4 h-4" />
+              <span className="hidden lg:inline">Schematic</span>
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === 'harness' ? 'default' : 'ghost'}
+              className="rounded-none px-2 lg:px-3 py-1 text-sm gap-1"
+              onClick={() => onToggle('harness')}
+              title="Harness view"
+              aria-label="Harness view"
+              aria-pressed={viewMode === 'harness'}
+            >
+              <Cable className="w-4 h-4" />
+              <span className="hidden lg:inline">Harness</span>
+            </Button>
+          </div>
 
-              <div className="w-px h-5 bg-border mx-1" />
-            </>
-          )}
-
-          {/* The Note tool is available in BOTH schematic and harness views —
-              numbered notes are useful annotations regardless of which view
-              the user is in. */}
-          <Button
-            size="sm"
-            variant={noteMode ? 'default' : 'outline'}
-            onClick={() => {
-              setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
-              setTextMode(false); setJunctionMode(false); setNoteMode(v => !v);
+          {/* Unified File menu — Export variants + Import + Clear all sit
+              under one button so the toolbar doesn't fight for width.
+              Destructive items live below a separator and carry red text. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="ghost" className="gap-1" title="Export, import, or clear the project">
+                <FolderOpen className="w-4 h-4" />
+                <span className="hidden lg:inline">File</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem onClick={exportPdf} className="gap-2">
+                <FileText className="w-4 h-4" /> Export current sheet → PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportSvg} className="gap-2">
+                <FileImage className="w-4 h-4" /> Export current sheet → SVG
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={exportPinListXlsx} className="gap-2">
+                <FileSpreadsheet className="w-4 h-4" /> Export pin list → Excel (.xlsx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportJson} className="gap-2">
+                <FileJson className="w-4 h-4" /> Export full project → JSON
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => fileInputRef.current?.click()} className="gap-2">
+                <Upload className="w-4 h-4" /> Import project from JSON…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={doReset}
+                className="gap-2 text-destructive focus:text-destructive focus:bg-destructive/10"
+              >
+                <Trash2 className="w-4 h-4" /> Clear entire project…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importJson(f);
+              e.target.value = '';
             }}
-            className="gap-1"
-            title={noteMode ? 'Exit note mode (Esc)' : 'Drop a numbered triangle note marker'}
-          >
-            Note
-          </Button>
+          />
 
+          {/* Editing actions — Undo / Redo / Fit-to-view — grouped together
+              because they're reached for in quick succession when recovering
+              from a mistaken click or re-orienting after a pan/zoom. */}
           <Button size="icon" variant="ghost" onClick={undo} disabled={past.length === 0} title="Undo (Ctrl+Z)">
             <Undo2 className="w-4 h-4" />
           </Button>
@@ -956,8 +948,7 @@ export default function WiringPage() {
             <Redo2 className="w-4 h-4" />
           </Button>
           {/* Fit to content — frames every device, wire, shield, and
-              net-label on the active sheet inside the viewport. Useful
-              after zooming/panning out to "find your way back". */}
+              net-label on the active sheet inside the viewport. */}
           <Button
             size="icon"
             variant="ghost"
@@ -975,106 +966,118 @@ export default function WiringPage() {
             className="gap-1 text-muted-foreground hover:text-destructive disabled:opacity-40"
             title="Delete selected (Del)"
           >
-            <Trash2 className="w-4 h-4" /> Delete
+            <Trash2 className="w-4 h-4" />
+            <span className="hidden lg:inline">Delete</span>
           </Button>
 
           <div className="w-px h-5 bg-border mx-1" />
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="ghost" className="gap-1" title="Export…">
-                <Download className="w-4 h-4" /> Export
+          {/* Schematic-mode content tools — hidden in harness view because
+              the harness is a *derived* rendering.  Adding devices, tagging
+              nets, and wrapping shields all happen on the schematic sheet. */}
+          {viewMode === 'schematic' && (
+            <>
+              <Button size="sm" onClick={() => setPickerOpen(true)} className="gap-1" title="Browse the device library and add a device to the canvas">
+                <Plus className="w-4 h-4" />
+                <span className="hidden lg:inline">Devices</span>
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuItem onClick={exportPdf} className="gap-2">
-                <FileText className="w-4 h-4" /> Current sheet → PDF (via print)
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={exportSvg} className="gap-2">
-                <FileImage className="w-4 h-4" /> Current sheet → SVG
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={exportPinListXlsx} className="gap-2">
-                <FileSpreadsheet className="w-4 h-4" /> Pin list → Excel (.xlsx)
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={exportJson} className="gap-2">
-                <FileJson className="w-4 h-4" /> Full project → JSON
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <Button
+                size="sm"
+                variant={netLabelMode ? 'default' : 'outline'}
+                onClick={() => { setShieldMode(false); setShieldDrag(null); setJunctionMode(false); setNetLabelMode(v => !v); }}
+                className="gap-1"
+                title={netLabelMode ? 'Exit net-label mode (Esc)' : 'Tag a pin with a net name (5V, GND, …)'}
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">Net label</span>
+              </Button>
+              {/* Wire tool — when active, clicking an existing wire splits it
+                  at the click point and starts a new wire from that junction. */}
+              <Button
+                size="sm"
+                variant={junctionMode ? 'default' : 'outline'}
+                onClick={() => {
+                  setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
+                  setTextMode(false); setNoteMode(false); setJunctionMode(v => !v);
+                }}
+                className="gap-1"
+                title={junctionMode ? 'Exit wire mode (Esc)' : 'Start a wire from a point on an existing wire (junction)'}
+              >
+                <Spline className="w-4 h-4" />
+                <span className="hidden lg:inline">Wire</span>
+              </Button>
+              {/* Shield tool — drag a rectangle on the canvas to wrap every wire
+                  crossing it in a new shield.  The chosen termination applies to
+                  every shield drawn until the dropdown is changed. */}
+              <Button
+                size="sm"
+                variant={shieldMode ? 'default' : 'outline'}
+                onClick={() => shieldMode ? exitShieldMode() : enterShieldMode()}
+                className="gap-1"
+                title={shieldMode ? 'Exit shield mode (Esc)' : 'Drag across wires to add a shield'}
+              >
+                <ShieldHalf className="w-4 h-4" />
+                <span className="hidden lg:inline">Shield</span>
+              </Button>
+              <Button
+                size="sm"
+                variant={textMode ? 'default' : 'outline'}
+                onClick={() => {
+                  setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
+                  setJunctionMode(false); setNoteMode(false); setTextMode(v => !v);
+                }}
+                className="gap-1"
+                title={textMode ? 'Exit text mode (Esc)' : 'Add a free-text comment to the sheet'}
+              >
+                <Type className="w-4 h-4" />
+                <span className="hidden lg:inline">Text</span>
+              </Button>
+              {shieldMode && (
+                <select
+                  value={shieldTermination}
+                  onChange={(e) => setShieldTermination(e.target.value as 'ground' | 'float' | 'backshell')}
+                  className="h-8 text-xs bg-background border border-border rounded px-2"
+                  title="Shield termination drawn on every new shield"
+                >
+                  <option value="ground">Ground-terminated</option>
+                  <option value="float">Floating</option>
+                  <option value="backshell">Backshell (S)</option>
+                </select>
+              )}
+            </>
+          )}
 
-          <Button size="sm" variant="ghost" onClick={() => fileInputRef.current?.click()} className="gap-1" title="Import JSON">
-            <Upload className="w-4 h-4" /> Import
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json,application/json"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) importJson(f);
-              e.target.value = '';
-            }}
-          />
-
-          <div className="w-px h-5 bg-border mx-1" />
-
-          <Button size="sm" variant="ghost" onClick={doReset} className="gap-1 text-muted-foreground hover:text-destructive" title="Clear project">
-            <Trash2 className="w-4 h-4" /> Clear
-          </Button>
-
-          <div className="w-px h-5 bg-border mx-1" />
-
-          {/* View mode toggle — Schematic / Harness */}
-          <div className="inline-flex rounded border border-border overflow-hidden">
-            <Button
-              size="sm"
-              variant={viewMode === 'schematic' ? 'default' : 'ghost'}
-              className="rounded-none px-3 py-1 text-sm"
-              onClick={() => onToggle('schematic')}
-              title="Schematic view"
-            >
-              Schematic
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === 'harness' ? 'default' : 'ghost'}
-              className="rounded-none px-3 py-1 text-sm"
-              onClick={() => onToggle('harness')}
-              title="Harness view"
-            >
-              Harness
-            </Button>
-          </div>
+          {/* Harness-mode content tools — only relevant when looking at the
+              derived harness drawing. */}
           {viewMode === 'harness' && (
             <>
               <Button
                 size="sm"
                 variant={bendMode ? 'default' : 'outline'}
-                className="ml-1 text-xs"
+                className="gap-1"
                 onClick={() => setBendMode(v => !v)}
                 title={bendMode
                   ? 'Exit Bend tool (Esc) — click a bundle to add a cable bend point'
                   : 'Bend tool — click a bundle to add a cable bend point'}
               >
-                Bend
+                <CornerDownRight className="w-4 h-4" />
+                <span className="hidden lg:inline">Bend</span>
               </Button>
               <Button
                 size="sm"
                 variant={showLengths ? 'default' : 'outline'}
-                className="ml-1 text-xs"
+                className="gap-1"
                 onClick={() => setShowLengths(v => !v)}
                 title="Show cable length labels"
               >
-                Lengths
+                <Ruler className="w-4 h-4" />
+                <span className="hidden lg:inline">Lengths</span>
               </Button>
               {(() => {
                 const mmPerUnit = activeSheetObj?.harness?.mmPerUnit ?? DEFAULT_MM_PER_UNIT;
                 const mmPerSquare = Math.round(mmPerUnit * HARNESS_GRID);
                 return (
-                  <label className="ml-2 text-xs flex items-center gap-1 text-muted-foreground"
+                  <label className="ml-1 text-xs flex items-center gap-1 text-muted-foreground"
                          title="Harness drawing scale — millimetres of cable per grid square">
                     Scale
                     <input
@@ -1092,77 +1095,131 @@ export default function WiringPage() {
                   </label>
                 );
               })()}
+              {/* Mirror — flips each selected unit between 0° and 180° so its
+                  connectors face the opposite edge.  Mixed selections flip
+                  per-device, not en-bloc. */}
               <Button
                 size="sm"
                 variant="outline"
-                className="ml-1 px-2"
-                disabled={!canRotateHarness}
-                onClick={() => rotateHarnessNode(activeSheetId, 'left')}
-                title="Face the selected unit's connectors to the left edge"
+                className="ml-1 gap-1"
+                disabled={!canMirrorHarness}
+                onClick={() => mirrorHarnessNode(activeSheetId)}
+                title="Mirror selected unit(s) — flip connectors to the opposite edge"
+                aria-label="Mirror selected unit(s)"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="ml-1 px-2"
-                disabled={!canRotateHarness}
-                onClick={() => rotateHarnessNode(activeSheetId, 'right')}
-                title="Face the selected unit's connectors to the right edge"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
+                <FlipHorizontal2 className="w-4 h-4" />
+                <span className="hidden lg:inline">Mirror</span>
               </Button>
             </>
           )}
 
-          <div className="flex-1" />
-
-          {/* Explicit Save button — disabled in demo mode (changes never round-trip) */}
+          {/* Note tool — view-agnostic, lives at the end of the content
+              tools because it's the universal "leave a marker" action
+              regardless of which view the user is in. */}
           <Button
             size="sm"
-            variant={saveStatus === 'offline' ? 'destructive' : 'outline'}
-            onClick={manualSave}
-            disabled={saveStatus === 'saving' || demoMode}
+            variant={noteMode ? 'default' : 'outline'}
+            onClick={() => {
+              setShieldMode(false); setShieldDrag(null); setNetLabelMode(false);
+              setTextMode(false); setJunctionMode(false); setNoteMode(v => !v);
+            }}
             className="gap-1"
-            title={demoMode ? 'Demo mode — changes are not saved' : (saveError ? `Last error: ${saveError}` : 'Save to server now')}
+            title={noteMode ? 'Exit note mode (Esc)' : 'Drop a numbered triangle note marker'}
           >
-            <Save className="w-3.5 h-3.5" />
-            {demoMode ? 'Save' : (saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Retry save' : 'Save')}
+            <StickyNote className="w-4 h-4" />
+            <span className="hidden lg:inline">Note</span>
           </Button>
 
-          {/* Demo-mode status pill replaces the save status indicator entirely. */}
-          {demoMode ? (
+          <div className="flex-1" />
+
+          {/* Save button — floppy icon carries the persistence status via a
+              small badge in its bottom-right corner.  No separate status
+              text pill: the badge + tooltip do the same work in a fraction
+              of the width.
+                • idle    → bare floppy (nothing to report)
+                • saving  → blue dot with a spinning loader
+                • saved   → green dot with a checkmark
+                • offline → amber dot with a struck-through cloud
+                • error   → red dot with an X
+              In demo mode the button is disabled and tinted amber to signal
+              "this would normally save but won't right now". */}
+          <Button
+            size="icon"
+            variant={saveStatus === 'offline' || saveStatus === 'error' ? 'destructive' : 'outline'}
+            onClick={manualSave}
+            disabled={saveStatus === 'saving' || demoMode}
+            className={`relative shrink-0 ${
+              demoMode ? 'border-amber-500/40 text-amber-600 dark:text-amber-400' : ''
+            }`}
+            aria-label="Save to server"
+            title={
+              demoMode ? 'Demo mode — changes are not saved'
+              : saveError ? `Last error: ${saveError}`
+              : saveStatus === 'saved'   ? 'All changes saved'
+              : saveStatus === 'saving'  ? 'Saving…'
+              : saveStatus === 'offline' ? 'Offline — local backup only.  Click to retry.'
+              : saveStatus === 'error'   ? 'Save failed — click to retry'
+              : 'Save to server now'
+            }
+          >
+            <Save className="w-4 h-4" />
+            {!demoMode && saveStatus !== 'idle' && (
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 rounded-full p-0.5 ring-1 ring-background flex items-center justify-center ${
+                  saveStatus === 'saved'   ? 'bg-green-500' :
+                  saveStatus === 'saving'  ? 'bg-blue-500' :
+                  saveStatus === 'offline' ? 'bg-amber-500' :
+                                             'bg-destructive'
+                }`}
+                aria-hidden
+              >
+                {saveStatus === 'saved'   ? <Check    className="w-2.5 h-2.5 text-white" /> :
+                 saveStatus === 'saving'  ? <Loader2  className="w-2.5 h-2.5 text-white animate-spin" /> :
+                 saveStatus === 'offline' ? <CloudOff className="w-2.5 h-2.5 text-white" /> :
+                                            <X        className="w-2.5 h-2.5 text-white" />}
+              </span>
+            )}
+          </Button>
+
+          {/* Demo-mode pill stays — it's a distinct conceptual mode users
+              need to see at a glance, not just a transient save status. */}
+          {demoMode && (
             <span
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              className="hidden md:flex items-center gap-1 text-xs px-2 py-1 rounded bg-amber-500/15 text-amber-600 dark:text-amber-400"
               title="Demo mode — your changes stay in this browser only and are not persisted to the server."
             >
               <CloudOff className="w-3.5 h-3.5" />
-              Demo · changes not saved
-            </span>
-          ) : saveStatus !== 'idle' && (
-            <span className={`flex items-center gap-1 text-xs px-2 py-1 ${
-              saveStatus === 'saved'   ? 'text-muted-foreground' :
-              saveStatus === 'saving'  ? 'text-muted-foreground' :
-              saveStatus === 'offline' ? 'text-yellow-600 dark:text-yellow-400' :
-                                         'text-destructive'
-            }`} title={saveError ?? undefined}>
-              {saveStatus === 'offline' ? <CloudOff className="w-3.5 h-3.5" /> : <Cloud className="w-3.5 h-3.5" />}
-              {saveLabel}
+              <span className="hidden lg:inline">Demo · changes not saved</span>
+              <span className="lg:hidden">Demo</span>
             </span>
           )}
 
-          {/* Issues count pill */}
+          {/* Issues count pill — long form on lg+, compact "Nerr · Nwarn"
+              on smaller viewports so it doesn't crowd the right cluster. */}
           <button
             onClick={() => setIssuesOpen(v => !v)}
-            className={`flex items-center gap-1 text-xs px-2 py-1 rounded ${
+            className={`shrink-0 flex items-center gap-1 text-xs px-2 py-1 rounded ${
               errorCount > 0 ? 'bg-destructive/15 text-destructive'
               : warningCount > 0 ? 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400'
               : 'bg-card text-muted-foreground hover:text-foreground'
             }`}
-            title="Toggle issues panel"
+            title={errorCount + warningCount === 0
+              ? 'No issues — toggle issues panel'
+              : `${errorCount} error${errorCount === 1 ? '' : 's'} · ${warningCount} warning${warningCount === 1 ? '' : 's'} — toggle issues panel`}
           >
             <AlertTriangle className="w-3.5 h-3.5" />
-            {errorCount + warningCount === 0 ? 'No issues' : `${errorCount} error${errorCount === 1 ? '' : 's'} · ${warningCount} warning${warningCount === 1 ? '' : 's'}`}
+            {errorCount + warningCount === 0 ? (
+              <span className="hidden lg:inline">No issues</span>
+            ) : (
+              <>
+                <span className="hidden lg:inline">
+                  {errorCount} error{errorCount === 1 ? '' : 's'} · {warningCount} warning{warningCount === 1 ? '' : 's'}
+                </span>
+                <span className="lg:hidden tabular-nums">
+                  {errorCount}·{warningCount}
+                </span>
+              </>
+            )}
           </button>
 
           <Button size="icon" variant="ghost" onClick={() => setInspectorOpen(v => !v)} title="Toggle inspector">

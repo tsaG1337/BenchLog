@@ -68,12 +68,16 @@ function initTenantSchema(tenantSqlite, tenantId) {
   `);
 
   // active_timer uses tenant_id as the singleton PK (one active timer per tenant)
+  // plans_section persists the work-package number (e.g. "7") so the picker
+  // restores it after a page swap / refresh — otherwise the picker collapses
+  // back to the section default and the user's package selection is lost.
   tenantSqlite.exec(`
     CREATE TABLE IF NOT EXISTS active_timer (
-      tenant_id  TEXT PRIMARY KEY,
-      section    TEXT NOT NULL,
-      start_time TEXT NOT NULL,
-      image_urls TEXT DEFAULT '[]'
+      tenant_id     TEXT PRIMARY KEY,
+      section       TEXT NOT NULL,
+      start_time    TEXT NOT NULL,
+      image_urls    TEXT DEFAULT '[]',
+      plans_section TEXT DEFAULT ''
     )
   `);
 
@@ -424,11 +428,17 @@ async function initPostgresSchema(pool) {
       PRIMARY KEY (key, tenant_id)
     )`,
     `CREATE TABLE IF NOT EXISTS active_timer (
-      tenant_id  TEXT PRIMARY KEY,
-      section    TEXT NOT NULL,
-      start_time TEXT NOT NULL,
-      image_urls TEXT DEFAULT '[]'
+      tenant_id     TEXT PRIMARY KEY,
+      section       TEXT NOT NULL,
+      start_time    TEXT NOT NULL,
+      image_urls    TEXT DEFAULT '[]',
+      plans_section TEXT DEFAULT ''
     )`,
+    // Idempotent add for DBs that already had the table before plans_section
+    // was introduced. Must be an unconditional statement (not the silent-catch
+    // migration block below), because the earlier catch was swallowing any
+    // real failure and hiding the fact that the ALTER never ran.
+    `ALTER TABLE active_timer ADD COLUMN IF NOT EXISTS plans_section TEXT DEFAULT ''`,
     `CREATE TABLE IF NOT EXISTS blog_posts (
       id           TEXT NOT NULL,
       tenant_id    TEXT NOT NULL DEFAULT '',
@@ -708,6 +718,10 @@ async function initPostgresSchema(pool) {
     const sc = stockCols.map(r => r.column_name);
     if (sc.length > 0 && !sc.includes('source_kit')) await pool.query(`ALTER TABLE inventory_stock ADD COLUMN source_kit TEXT DEFAULT ''`);
   } catch (e) { /* table may not exist yet — fine */ }
+
+  // (active_timer.plans_section is handled by the unconditional ALTER TABLE
+  // IF NOT EXISTS in the statements array above — no need for a
+  // silent-catch migration here.)
 
   console.log('[init] PostgreSQL schema ready');
 }

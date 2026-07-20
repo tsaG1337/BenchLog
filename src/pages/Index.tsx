@@ -108,6 +108,11 @@ const Index = () => {
     } catch { toast.error('Failed to load more sessions.'); }
   }, [sessionsOffset]);
 
+  // Track whether the user has manually touched section/plansSection so the
+  // "default from last session" restore doesn't clobber their explicit pick
+  // if it arrives late.
+  const userTouchedSelectionRef = useRef(false);
+
   useEffect(() => {
     loadSessions();
     fetchGeneralSettings().then(s => {
@@ -119,16 +124,47 @@ const Index = () => {
       if (status.running && status.section) {
         setIsRunning(true);
         setSection(status.section);
+        // Restore work-package too — otherwise the picker collapses back to
+        // just the section after a refresh/navigate, losing the user's pick.
+        if (status.plansSection) setPlansSection(status.plansSection);
         if (status.imageUrls?.length) setPendingImageUrls(status.imageUrls);
+        userTouchedSelectionRef.current = true;  // treat timer state as authoritative
       }
     }).catch(() => {});
   }, [loadSessions]);
+
+  // Issue 1: when no timer is running and the user hasn't touched the picker,
+  // default section + work-package to the most recent session's values.
+  // Extracts the "Section N" fragment from the free-form plansReference string
+  // that the timer form re-serialises on save.
+  useEffect(() => {
+    if (userTouchedSelectionRef.current) return;
+    if (isRunning) return;                 // timer restore already handled it
+    if (sessions.length === 0) return;
+    const last = sessions[0];
+    if (last.section) setSection(last.section);
+    const match = last.plansReference?.match(/Section\s+(\S+?)(?:,|$)/);
+    if (match) setPlansSection(match[1]);
+  }, [sessions, isRunning]);
+
+  // Wrap the picker's setters so any manual change flips the "user touched"
+  // flag and locks out the last-session default from later overriding it.
+  const handleSectionChange = useCallback((s: string) => {
+    userTouchedSelectionRef.current = true;
+    setSection(s);
+  }, []);
+  const handlePlansSectionChange = useCallback((v: string) => {
+    userTouchedSelectionRef.current = true;
+    setPlansSection(v);
+  }, []);
 
   // ─── Timer handlers ──────────────────────────────────────────────
   const handleStart = async () => {
     if (demoMode) { setServerStartedAt(new Date().toISOString()); setIsRunning(true); return; }
     try {
-      const result = await startTimer(section);
+      // Send plansSection too — the server persists it in active_timer so
+      // /api/timer/status can restore the work-package after a page swap.
+      const result = await startTimer(section, plansSection);
       setServerStartedAt(result.startedAt);
       setIsRunning(true);
     } catch (err: any) { toast.error('Failed to start timer: ' + err.message); }
@@ -227,9 +263,9 @@ const Index = () => {
             <div className="bg-muted/40 rounded-lg p-4" data-tour-id="tracker-section">
               <WorkPackagePicker
                 section={section}
-                onSectionChange={setSection}
+                onSectionChange={handleSectionChange}
                 plansSection={plansSection}
-                onPlansSectionChange={setPlansSection}
+                onPlansSectionChange={handlePlansSectionChange}
               />
             </div>
 

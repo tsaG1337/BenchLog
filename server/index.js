@@ -534,6 +534,13 @@ if (DB_BACKEND === 'postgres') {
         sqlite.exec(`ALTER TABLE inventory_stock ADD COLUMN source_kit TEXT DEFAULT ''`);
         console.log('[migration] Added source_kit column to inventory_stock');
       }
+      // active_timer: add plans_section so the work-package number persists
+      // across page reloads / navigation for the same active timer.
+      const atCols = sqlite.prepare('PRAGMA table_info(active_timer)').all().map(c => c.name);
+      if (atCols.length > 0 && !atCols.includes('plans_section')) {
+        sqlite.exec(`ALTER TABLE active_timer ADD COLUMN plans_section TEXT DEFAULT ''`);
+        console.log('[migration] Added plans_section column to active_timer');
+      }
     } catch (e) {
       console.warn('[init] Schema migration warning:', e.message);
     }
@@ -2713,15 +2720,15 @@ app.post('/api/sections/reassign', requireAuth, async (req, res) => {
 
 app.post('/api/timer/start', requireAuth, async (req, res) => {
   try {
-    const { section } = req.body;
+    const { section, plansSection } = req.body;
     if (!section) return res.status(400).json({ error: 'Section is required' });
     const startTime = new Date().toISOString();
     await req.db.run('DELETE FROM active_timer WHERE tenant_id = ?', [req.tenantId]);
     await req.db.run(
-      'INSERT OR REPLACE INTO active_timer (tenant_id, section, start_time, image_urls) VALUES (?, ?, ?, ?)',
-      [req.tenantId, section, startTime, '[]']
+      'INSERT OR REPLACE INTO active_timer (tenant_id, section, start_time, image_urls, plans_section) VALUES (?, ?, ?, ?, ?)',
+      [req.tenantId, section, startTime, '[]', plansSection || '']
     );
-    res.json({ ok: true, section, startedAt: startTime });
+    res.json({ ok: true, section, plansSection: plansSection || '', startedAt: startTime });
   } catch (err) { serverError(res, err); }
 });
 
@@ -2754,7 +2761,13 @@ app.get('/api/timer/status', requireAuth, async (req, res) => {
     const db  = req.db;
     const row = await db.get('SELECT * FROM active_timer WHERE tenant_id = ?', [db.tenantId]);
     if (!row) return res.json({ running: false });
-    res.json({ running: true, section: row.section, startedAt: row.start_time, imageUrls: JSON.parse(row.image_urls || '[]') });
+    res.json({
+      running: true,
+      section: row.section,
+      plansSection: row.plans_section || '',
+      startedAt: row.start_time,
+      imageUrls: JSON.parse(row.image_urls || '[]'),
+    });
   } catch (err) { serverError(res, err); }
 });
 
