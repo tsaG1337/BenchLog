@@ -1,9 +1,8 @@
-import type { PlacedDevice, Wire, Sheet, NetLabel, Point, Annotation } from './types';
+import type { PlacedDevice, Wire, Sheet, NetLabel, Point, Annotation, Shield } from './types';
 import { isJunctionKey } from './types';
 import { layoutDevice, computePinInfo } from './layout';
-import { pathFromPoints } from './routing';
 import { computePinWorldPos } from './layout';
-import { computeWirePath, resolveJunctionPos } from './wirePaths';
+import { computeWirePath, buildWirePath, computeEffectiveRouting, getWireEndpoints, resolveJunctionPos } from './wirePaths';
 import { getSymbolDef, type SymbolDef } from './symbols';
 import { colorForText } from '../../components/wiring/NetLabelView';
 import { annotationPlainText } from '../../components/wiring/AnnotationEditor';
@@ -59,6 +58,7 @@ export function sheetBoundingBox(
   wires: Wire[],
   netLabels: NetLabel[],
   annotations: Annotation[],
+  shields: Shield[],
   sheetId: string,
 ): Box {
   let minX =  Infinity, minY =  Infinity;
@@ -81,28 +81,30 @@ export function sheetBoundingBox(
     maxY = Math.max(maxY, d.position.y + height + 20);
   }
 
-  // Wires (on this sheet only). We resolve endpoints against the placements
-  // ON THIS SHEET — cross-sheet wires aren't supported (wire.sheetId limits
-  // where a wire lives, and pins are only visible on one sheet).
+  // Wires: walk the FULL routed polyline, not just the endpoints. A wire
+  // detoured around a device (auto-avoidance) or dragged by the user can
+  // extend well past the endpoint box — endpoint-only bboxes clipped those
+  // in exports. computeWirePath also resolves junction / net-label
+  // endpoints, which the old per-pin lookup silently skipped.
   for (const w of wires.filter(onSheet)) {
-    const fromPinId = w.fromPin.split(':')[1];
-    const toPinId   = w.toPin  .split(':')[1];
-    const fromDevId = w.fromPin.split(':')[0];
-    const toDevId   = w.toPin  .split(':')[0];
-    const fromPd = devicesOnSheet.find(d => d.deviceId === fromDevId
-      && d.connectors.some(c => c.pinIds.includes(fromPinId)));
-    const toPd = devicesOnSheet.find(d => d.deviceId === toDevId
-      && d.connectors.some(c => c.pinIds.includes(toPinId)));
-    if (!fromPd || !toPd) continue;
-    const fromPos = computePinWorldPos(fromPd, fromPinId);
-    const toPos   = computePinWorldPos(toPd,   toPinId);
-    if (!fromPos || !toPos) continue;
-    for (const p of [fromPos, toPos]) {
+    const pts = computeWirePath(placedDevices, w);
+    for (const p of pts) {
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x);
       maxY = Math.max(maxY, p.y);
     }
+  }
+
+  // Shields: stadium wraps its wires' ys at the shield's x-range, plus the
+  // termination glyph hanging below (stem 12 + glyph ~14 + padding).
+  for (const sh of shields.filter(s => s.sheetId === sheetId)) {
+    const ext = shieldExtent(sh, wires, placedDevices);
+    if (!ext) continue;
+    minX = Math.min(minX, sh.xStart - 4);
+    maxX = Math.max(maxX, sh.xEnd + 4);
+    minY = Math.min(minY, ext.top - 4);
+    maxY = Math.max(maxY, ext.glyphBottom + 4);
   }
 
   // Annotations — text + note markers contribute their own footprint.
@@ -151,6 +153,92 @@ export function sheetBoundingBox(
   };
 }
 
+// ── Shield geometry (mirrors ShieldBlock.tsx) ────────────────────────
+
+/** Sample the wire's y at the given world x by walking its routed polyline.
+ *  Port of ShieldBlock's sampleWireYAt — kept in sync so exported shields
+ *  wrap the same wires at the same heights as the canvas. */
+function sampleWireYAt(path: Point[], targetX: number): number | null {
+  if (path.length < 2) return null;
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i], b = path[i + 1];
+    const xLo = Math.min(a.x, b.x), xHi = Math.max(a.x, b.x);
+    if (targetX < xLo || targetX > xHi) continue;
+    if (a.x === b.x) continue;
+    const t = (targetX - a.x) / (b.x - a.x);
+    return a.y + t * (b.y - a.y);
+  }
+  const first = path[0], last = path[path.length - 1];
+  return Math.abs(targetX - first.x) <= Math.abs(targetX - last.x) ? first.y : last.y;
+}
+
+const SHIELD_PAD = 12;
+const SHIELD_STEM = 12;
+
+interface ShieldExtent { top: number; bottom: number; glyphBottom: number; midX: number; }
+
+/** Vertical extent of a shield's stadium + its termination glyph. Returns
+ *  null when none of the shield's wires resolve (all deleted). */
+function shieldExtent(shield: Shield, wires: Wire[], placedDevices: PlacedDevice[]): ShieldExtent | null {
+  const midX = (shield.xStart + shield.xEnd) / 2;
+  const inShield = new Set(shield.wireIds);
+  const ys: number[] = [];
+  for (const w of wires) {
+    if (!inShield.has(w.id)) continue;
+    const path = computeWirePath(placedDevices, w);
+    const y = sampleWireYAt(path, midX);
+    if (y !== null) ys.push(y);
+  }
+  if (ys.length === 0) return null;
+  const top = Math.min(...ys) - SHIELD_PAD;
+  const bottom = Math.max(...ys) + SHIELD_PAD;
+  // Glyph extends below the stem: ground = 3 bars (~6px), backshell =
+  // triangle (12px), pin = circle (r 3.5 at stem+4). Use the max.
+  const glyphBottom = shield.termination === 'float'
+    ? bottom
+    : bottom + SHIELD_STEM + 14;
+  return { top, bottom, glyphBottom, midX };
+}
+
+/** Render one shield as standalone SVG: stadium outline + stem +
+ *  termination glyph. Mirrors ShieldBlock.tsx with concrete colors. */
+function renderShieldSvg(shield: Shield, wires: Wire[], placedDevices: PlacedDevice[]): string {
+  const ext = shieldExtent(shield, wires, placedDevices);
+  if (!ext) return '';
+  const { top, bottom, midX } = ext;
+  const xStart = shield.xStart, xEnd = shield.xEnd;
+  const width = xEnd - xStart;
+  const height = bottom - top;
+  const r = Math.max(2, Math.min(width / 2, height / 2));
+  const straightTop = top + r;
+  const straightBottom = bottom - r;
+  const stadiumPath =
+    `M ${xStart} ${straightTop} ` +
+    `A ${r} ${r} 0 0 1 ${xEnd} ${straightTop} ` +
+    `L ${xEnd} ${straightBottom} ` +
+    `A ${r} ${r} 0 0 1 ${xStart} ${straightBottom} ` +
+    `Z`;
+  const out: string[] = [];
+  out.push(`<path d="${stadiumPath}" fill="none" stroke="#111" stroke-width="1"/>`);
+  const stemTop = bottom;
+  const stemBottom = stemTop + SHIELD_STEM;
+  if (shield.termination !== 'float') {
+    out.push(`<line x1="${midX}" y1="${stemTop}" x2="${midX}" y2="${stemBottom}" stroke="#111" stroke-width="1"/>`);
+  }
+  if (shield.termination === 'ground') {
+    out.push(`<line x1="${midX - 8}" y1="${stemBottom}" x2="${midX + 8}" y2="${stemBottom}" stroke="#111" stroke-width="1"/>`);
+    out.push(`<line x1="${midX - 5}" y1="${stemBottom + 3}" x2="${midX + 5}" y2="${stemBottom + 3}" stroke="#111" stroke-width="1"/>`);
+    out.push(`<line x1="${midX - 2}" y1="${stemBottom + 6}" x2="${midX + 2}" y2="${stemBottom + 6}" stroke="#111" stroke-width="1"/>`);
+  } else if (shield.termination === 'backshell') {
+    const half = 7, triHeight = 12;
+    out.push(`<path d="M ${midX - half} ${stemBottom} L ${midX + half} ${stemBottom} L ${midX} ${stemBottom + triHeight} Z" fill="#ffffff" stroke="#111" stroke-width="1"/>`);
+    out.push(`<text x="${midX}" y="${stemBottom + 6}" font-size="9" font-weight="700" text-anchor="middle" fill="#111">S</text>`);
+  } else if (shield.termination === 'pin') {
+    out.push(`<circle cx="${midX}" cy="${stemBottom + 4}" r="3.5" fill="#ffffff" stroke="#111" stroke-width="1"/>`);
+  }
+  return out.join('\n');
+}
+
 // ── SVG emitter ──────────────────────────────────────────────────────
 // Produces a standalone SVG string that can be downloaded, opened in a
 // browser, imported into Illustrator, or embedded elsewhere. Uses the same
@@ -173,10 +261,11 @@ export function renderSheetSvg(
   wires: Wire[],
   netLabels: NetLabel[],
   annotations: Annotation[],
+  shields: Shield[],
   sheet: Sheet,
   meta: ExportMetadata,
 ): string {
-  const bbox = sheetBoundingBox(placedDevices, wires, netLabels, annotations, sheet.id);
+  const bbox = sheetBoundingBox(placedDevices, wires, netLabels, annotations, shields, sheet.id);
   // Add space below for the title block.
   const titleBlockHeight = 80;
   bbox.height += titleBlockHeight;
@@ -188,35 +277,61 @@ export function renderSheetSvg(
   // White background
   parts.push(`<rect x="${bbox.x}" y="${bbox.y}" width="${bbox.width}" height="${bbox.height}" fill="#ffffff"/>`);
 
-  // Wires first (render below devices). computeWirePath uses the same
-  // obstacle-aware router the canvas does, so exports match what the user sees.
+  // Wires first (render below devices). buildWirePath is the SAME path
+  // generator the on-canvas <Wire> uses — including the hop arcs where a
+  // horizontal run crosses another wire's vertical (the "not connected"
+  // bumps). Using anything simpler here is what made old exports diverge
+  // from the editor.
   const wiresOnSheet = wires.filter(w => w.sheetId === sheet.id);
+  const wireLabelParts: string[] = [];
   for (const w of wiresOnSheet) {
-    const points = computeWirePath(placedDevices, w);
-    if (points.length < 2) continue;
-    const d = pathFromPoints(points);
+    const d = buildWirePath(placedDevices, w, wiresOnSheet);
+    if (!d) continue;
     const stroke = w.color === 'currentColor' ? '#111' : w.color;
     parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`);
-    if (w.label && w.showLabel) {
-      const midIdx = Math.floor(points.length / 2);
-      const mid = points[midIdx];
-      // Label anchor IS the visual centre (dominantBaseline=middle below),
-      // so no y-offset is needed — the wire bisects the text both when
-      // horizontal and after rotation.
-      const labelX = w.labelX ?? mid.x;
-      const labelY = w.labelY ?? mid.y;
-      // Auto rotation: 90° when the label sits at the default position on
-      // a predominantly-vertical segment; 0° otherwise. Matches the on-canvas
-      // heuristic so exports look the same as the editor.
-      const prev = points[Math.max(0, midIdx - 1)];
-      const next = points[Math.min(points.length - 1, midIdx)];
-      const segLen = Math.abs(next.y - prev.y);
-      const labelAtDefault = w.labelX === undefined && w.labelY === undefined;
-      const autoRot = (labelAtDefault && segLen > 10) ? 90 : 0;
-      const rot = w.labelRotation ?? autoRot;
-      const xform = rot ? ` transform="rotate(${rot} ${labelX} ${labelY})"` : '';
-      parts.push(`<text x="${labelX}" y="${labelY}" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111"${xform}>${escapeXml(w.label)}</text>`);
+    // Stripe overlay — dashed second stroke, same as the editor.
+    if (w.stripeColor) {
+      parts.push(`<path d="${d}" fill="none" stroke="${w.stripeColor}" stroke-width="1.5" stroke-dasharray="7 7"/>`);
     }
+    // Junction dots — filled circles anywhere the wire terminates on a
+    // junction, so T-taps read as connected (complement of the hops).
+    const ends = getWireEndpoints(placedDevices, w);
+    if (ends) {
+      if (isJunctionKey(w.fromPin)) {
+        parts.push(`<circle cx="${ends.from.x}" cy="${ends.from.y}" r="3.5" fill="#111"/>`);
+      }
+      if (isJunctionKey(w.toPin)) {
+        parts.push(`<circle cx="${ends.to.x}" cy="${ends.to.y}" r="3.5" fill="#111"/>`);
+      }
+    }
+    if (w.label && w.showLabel) {
+      // Default label position/rotation mirror Wire.tsx exactly: anchored on
+      // the middle vertical (computeEffectiveRouting), rotated 90° when that
+      // vertical is long enough and the user hasn't dragged the label.
+      const eff = computeEffectiveRouting(placedDevices, w);
+      const labelX = w.labelX ?? eff.midX;
+      const labelY = w.labelY ?? (eff.fromY + eff.toY) / 2;
+      const middleVertLength = Math.abs(eff.fromY - eff.toY);
+      const labelAtDefault = w.labelX === undefined && w.labelY === undefined;
+      const autoRot = (labelAtDefault && middleVertLength > 10) ? 90 : 0;
+      const rot = w.labelRotation ?? autoRot;
+      const labelWidth = Math.max(w.label.length * 6 + 8, 20);
+      // Label backing rect (editor has one too) — without it the label text
+      // sits directly on the wire stroke and is illegible in print.
+      // Collected separately and emitted AFTER all wires so a label never
+      // ends up underneath a later wire's stroke.
+      wireLabelParts.push(`<g${rot ? ` transform="rotate(${rot} ${labelX} ${labelY})"` : ''}>`);
+      wireLabelParts.push(`<rect x="${labelX - labelWidth / 2}" y="${labelY - 8}" width="${labelWidth}" height="16" rx="2" fill="#ffffff" opacity="0.9"/>`);
+      wireLabelParts.push(`<text x="${labelX}" y="${labelY}" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">${escapeXml(w.label)}</text>`);
+      wireLabelParts.push(`</g>`);
+    }
+  }
+  parts.push(...wireLabelParts);
+
+  // Shields — stadium outline + termination glyph over their wire bundles.
+  for (const sh of shields.filter(s => s.sheetId === sheet.id)) {
+    const svg = renderShieldSvg(sh, wires, placedDevices);
+    if (svg) parts.push(svg);
   }
 
   // Devices on this sheet only
@@ -887,65 +1002,78 @@ export function downloadSheetSvg(
   wires: Wire[],
   netLabels: NetLabel[],
   annotations: Annotation[],
+  shields: Shield[],
   sheet: Sheet,
   meta: ExportMetadata,
 ): void {
-  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, sheet, meta);
+  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, shields, sheet, meta);
   const safeProj  = meta.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const safeSheet = sheet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   triggerDownload(`${safeProj}-${safeSheet}.svg`, 'image/svg+xml', svg);
 }
 
 /**
- * "Print to PDF" via the browser's print dialog. Opens a new window with the
- * SVG sized for print, then calls window.print() so the user can "Save as PDF".
- * No pdf libraries required — works everywhere print works.
+ * "Print to PDF" via the browser's print dialog. Renders the sheet SVG into
+ * a hidden same-origin iframe and prints THAT document — no pop-up window,
+ * so it cannot be eaten by pop-up blockers and never leaves a stray tab.
+ * No pdf libraries required — the user picks "Save as PDF" in the dialog.
  *
- * Page setup: A3 landscape by default (matches typical wiring diagrams). The
- * SVG is set to `width: 100%` and `height: auto` so it scales to fill the
- * page width — avoids the "diagram in top-left of a huge blank page" effect
- * the previous flex-center version had when the SVG aspect ratio didn't
- * match the chosen page size.
+ * Page setup: A3 landscape (typical for wiring diagrams). The SVG fills the
+ * page with preserveAspectRatio=meet semantics, so the whole sheet always
+ * lands on a single page regardless of the diagram's aspect ratio.
  */
 export function printSheetPdf(
   placedDevices: PlacedDevice[],
   wires: Wire[],
   netLabels: NetLabel[],
   annotations: Annotation[],
+  shields: Shield[],
   sheet: Sheet,
   meta: ExportMetadata,
 ): void {
-  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, sheet, meta);
-  // Print layout: container fills exactly one page; the SVG fills the
-  // container; `preserveAspectRatio="xMidYMid meet"` (the SVG default) makes
-  // the diagram scale to fit while keeping its aspect ratio, centered, with
-  // letterbox/pillarbox whitespace on the longer dimension. This is what
-  // guarantees the whole sheet lands on a SINGLE page no matter the
-  // diagram's natural aspect ratio.
-  const html = `<!doctype html><html><head><meta charset="UTF-8"><title>${meta.projectName} — ${sheet.name}</title>
+  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, shields, sheet, meta);
+  const html = `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeXml(meta.projectName)} — ${escapeXml(sheet.name)}</title>
     <style>
       @page { size: A3 landscape; margin: 8mm; }
       html, body { margin: 0; padding: 0; background: white; }
       body { width: 100vw; height: 100vh; overflow: hidden; }
       svg { display: block; width: 100%; height: 100%; }
     </style>
-  </head><body>${svg}
-  <script>
-    // Print once the SVG is laid out. Close the window after printing so the
-    // user isn't left staring at a stray tab.
-    window.addEventListener('load', () => {
-      setTimeout(() => {
-        window.print();
-        setTimeout(() => window.close(), 500);
-      }, 100);
-    });
-  </script></body></html>`;
+  </head><body>${svg}</body></html>`;
 
-  const w = window.open('', '_blank', 'width=1200,height=800');
-  if (!w) {
-    alert('Your browser blocked the print window — allow pop-ups for this site.');
-    return;
-  }
-  w.document.write(html);
-  w.document.close();
+  const iframe = document.createElement('iframe');
+  // Keep it in-layout but invisible: display:none would prevent rendering
+  // (and thus printing) in some engines; a 0×0 off-screen frame prints fine.
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '1px';
+  iframe.style.height = '1px';
+  iframe.style.border = '0';
+  iframe.style.visibility = 'hidden';
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.srcdoc = html;
+
+  const cleanup = () => {
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  };
+
+  iframe.onload = () => {
+    const win = iframe.contentWindow;
+    if (!win) { cleanup(); return; }
+    // Remove the frame once the print dialog closes. afterprint fires in
+    // all modern browsers; the timeout is a safety net for engines that
+    // skip it when the user cancels.
+    win.addEventListener('afterprint', () => setTimeout(cleanup, 100));
+    setTimeout(cleanup, 120_000);
+    try {
+      win.focus();
+      win.print();
+    } catch {
+      cleanup();
+      alert('Printing failed — try the SVG export instead.');
+    }
+  };
+
+  document.body.appendChild(iframe);
 }
