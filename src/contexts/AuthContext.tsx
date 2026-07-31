@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { subdomainSlug } from '@/lib/hostname';
+import { markNewsSeen as apiMarkNewsSeen, type LatestNews } from '@/lib/api';
 
 interface AuthContextType {
   token: string | null;
@@ -13,9 +14,12 @@ interface AuthContextType {
   isDeactivated: boolean;
   role: string | null;
   slug: string | null;
+  latestNews: LatestNews | null;
+  hasUnseenNews: boolean;
   login: (password: string, username?: string) => Promise<void>;
   setup: (password: string) => Promise<void>;
   logout: () => void;
+  markNewsSeen: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -40,6 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return JSON.parse(atob(t.split('.')[1])).slug || null;
     } catch { return null; }
   });
+  const [latestNews, setLatestNews] = useState<LatestNews | null>(null);
+  const [hasUnseenNews, setHasUnseenNews] = useState(false);
 
   const checkAuth = useCallback(async () => {
     const currentToken = localStorage.getItem('auth_token');
@@ -56,6 +62,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNeedsSetup(!data.hasPassword);
       setIsAuthenticated(data.authenticated);
       setRole(data.role || null);
+      setLatestNews(data.latestNews || null);
+      setHasUnseenNews(!!data.hasUnseenNews);
     } catch {
       // Server unavailable
     } finally {
@@ -154,8 +162,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void checkAuth();
   };
 
+  const markNewsSeen = async () => {
+    // Optimistic — the badge should disappear the instant they click,
+    // not after a round-trip. Worst case on failure: it reappears on the
+    // next status poll and they click again, not worth surfacing an error for.
+    setHasUnseenNews(false);
+    try {
+      await apiMarkNewsSeen();
+    } catch {}
+  };
+
   return (
-    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, maintenanceMode, multiTenant, tenantNotFound, isDeactivated, role, slug, login, setup, logout }}>
+    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, maintenanceMode, multiTenant, tenantNotFound, isDeactivated, role, slug, latestNews, hasUnseenNews, login, setup, logout, markNewsSeen }}>
       {children}
     </AuthContext.Provider>
   );
