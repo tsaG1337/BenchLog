@@ -676,7 +676,6 @@ export async function fetchSignOffs(): Promise<SignOff[]> {
 
 export async function createSignOff(data: Omit<SignOff, 'createdAt'>): Promise<void> {
   await request('/api/signoffs', { method: 'POST', body: JSON.stringify(data) });
-}
 
 export async function deleteSignOff(id: string): Promise<void> {
   await request(`/api/signoffs/${id}`, { method: 'DELETE' });
@@ -934,11 +933,9 @@ export async function fetchAdminDbStats(): Promise<DbStat[]> {
 
 export async function createAdminUser(data: { slug: string; displayName: string; password: string; role: string; email?: string }): Promise<{ ok: boolean; id: string }> {
   return request('/api/admin/users', { method: 'POST', body: JSON.stringify(data) });
-}
 
 export async function updateAdminUser(id: string, data: { displayName?: string; role?: string; password?: string; email?: string }): Promise<void> {
   await request(`/api/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-}
 
 export async function purgeAdminUserData(id: string, options?: { deleteSessions?: boolean; deleteBlogPosts?: boolean; deleteSignOffs?: boolean; deleteExpenses?: boolean; deleteInventory?: boolean; deleteVisitorStats?: boolean }): Promise<void> {
   await request(`/api/admin/users/${id}/purge`, { method: 'POST', body: JSON.stringify(options || {}) });
@@ -993,6 +990,7 @@ export async function fetchAdminJobs(): Promise<JobInfo[]> {
 
 export async function runAdminJob(key: string): Promise<{ ok: boolean; message: string }> {
   return request(`/api/admin/jobs/${key}/run`, { method: 'POST' });
+}
 
 // ─── News ───────────────────────────────────────────────────────────
 
@@ -1015,7 +1013,6 @@ export function updateLatestNews(data: { slug: string; title: string; date: stri
     method: 'PUT',
     body: JSON.stringify(data),
   });
-}
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
