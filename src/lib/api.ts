@@ -993,6 +993,29 @@ export async function fetchAdminJobs(): Promise<JobInfo[]> {
 
 export async function runAdminJob(key: string): Promise<{ ok: boolean; message: string }> {
   return request(`/api/admin/jobs/${key}/run`, { method: 'POST' });
+
+// ─── News ───────────────────────────────────────────────────────────
+
+export interface LatestNews {
+  slug: string;
+  title: string;
+  date: string;
+}
+
+export async function markNewsSeen(): Promise<void> {
+  await request('/api/news/seen', { method: 'POST' });
+}
+
+export function fetchLatestNewsAdmin(): Promise<{ latestNews: LatestNews | null }> {
+  return request('/api/admin/news');
+}
+
+export function updateLatestNews(data: { slug: string; title: string; date: string } | Record<string, never>): Promise<{ ok: boolean; latestNews: LatestNews | null }> {
+  return request('/api/admin/news', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
