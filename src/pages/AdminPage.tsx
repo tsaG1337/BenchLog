@@ -221,6 +221,7 @@ export default function AdminPage() {
         newsForm.slug.trim() ? newsForm : {}
       );
       setLatestNews(saved);
+      if (!saved) setNewsForm({ title: '', slug: '', date: '' });
       toast.success(saved ? 'Latest news updated' : 'Latest news cleared');
     } catch (e: any) {
       toast.error(e.message);
@@ -477,7 +478,7 @@ export default function AdminPage() {
               <div>
                 <p className="text-sm font-medium text-foreground">Latest News</p>
                 <p className="text-xs text-muted-foreground">
-                  Fill this in right after publishing a post at benchlog.build/news — every builder who hasn't seen it yet gets a badge in their nav until they click through. Clear the title/slug and save to turn the badge off entirely.
+                  Fill this in right after publishing a post at benchlog.build/news — every builder who hasn't seen it yet gets a badge in their nav until they click through. Clear the slug and save to turn the badge off entirely.
                 </p>
               </div>
             </div>

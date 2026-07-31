@@ -102,7 +102,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
     return flag !== false;
   });
 
-  const newsUrl = latestNews ? `https://benchlog.build/news/${latestNews.slug}/` : null;
+  const newsUrl = latestNews ? `https://benchlog.build/news/${encodeURIComponent(latestNews.slug)}/` : null;
   const handleNewsClick = () => {
     if (hasUnseenNews) markNewsSeen();
   };
@@ -311,6 +311,7 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => { setSidebarOpen(false); handleNewsClick(); }}
+                  aria-label="What's New"
                   className="relative flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
                 >
                   <MIcon name="new_releases" className="text-xl text-muted-foreground" />

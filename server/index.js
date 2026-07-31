@@ -4035,13 +4035,28 @@ app.get('/api/admin/news', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Same character class as the tenant SLUG_RE above, but without the
+// length/leading-hyphen constraints — news slugs mirror blog post slugs,
+// not tenant subdomains.
+const NEWS_SLUG_RE = /^[a-z0-9-]+$/i;
+
 app.put('/api/admin/news', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { slug, title, date } = req.body || {};
     if (slug !== undefined && slug !== null && typeof slug !== 'string') {
       return res.status(400).json({ error: 'slug must be a string' });
     }
-    const value = (slug && slug.trim()) ? { slug: slug.trim(), title: title || '', date: date || '' } : null;
+    if (title !== undefined && title !== null && typeof title !== 'string') {
+      return res.status(400).json({ error: 'title must be a string' });
+    }
+    if (date !== undefined && date !== null && typeof date !== 'string') {
+      return res.status(400).json({ error: 'date must be a string' });
+    }
+    const trimmedSlug = typeof slug === 'string' ? slug.trim() : '';
+    if (trimmedSlug && !NEWS_SLUG_RE.test(trimmedSlug)) {
+      return res.status(400).json({ error: 'slug must contain only letters, numbers, and hyphens' });
+    }
+    const value = trimmedSlug ? { slug: trimmedSlug, title: title || '', date: date || '' } : null;
     await setPlatformSetting('latestNews', value);
     res.json({ ok: true, latestNews: value });
   } catch (err) {
