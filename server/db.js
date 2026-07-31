@@ -513,6 +513,33 @@ async function deleteTenantRow(id) {
   }
 }
 
+// ─── Platform-wide settings (global, no tenant_id) ────────────────────
+// Used for cross-tenant config like the "latest news" pointer — distinct
+// from the per-tenant `settings` table (key, tenant_id) used everywhere
+// else. Lives in the master SQLite DB / the shared Postgres DB.
+
+async function getPlatformSetting(key, defaultValue = null) {
+  if (DB_BACKEND === 'postgres') {
+    const { rows } = await getPool().query('SELECT value FROM platform_settings WHERE key = $1', [key]);
+    return rows[0] ? JSON.parse(rows[0].value) : defaultValue;
+  }
+  const row = getMasterSqlite().prepare('SELECT value FROM platform_settings WHERE key = ?').get(key);
+  return row ? JSON.parse(row.value) : defaultValue;
+}
+
+async function setPlatformSetting(key, value) {
+  if (DB_BACKEND === 'postgres') {
+    await getPool().query(
+      'INSERT INTO platform_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+      [key, JSON.stringify(value)]
+    );
+    return;
+  }
+  getMasterSqlite().prepare(
+    'INSERT OR REPLACE INTO platform_settings (key, value) VALUES (?, ?)'
+  ).run(key, JSON.stringify(value));
+}
+
 // ─── Migration: legacy database.db → tenant layout ────────────────────
 
 function runMigrationIfNeeded() {
@@ -691,4 +718,6 @@ module.exports = {
   createTenantRow,
   updateTenantRow,
   deleteTenantRow,
+  getPlatformSetting,
+  setPlatformSetting,
 };
