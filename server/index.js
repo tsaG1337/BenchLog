@@ -40,6 +40,8 @@ const {
   createTenantRow,
   updateTenantRow,
   deleteTenantRow,
+  getPlatformSetting,
+  setPlatformSetting,
 } = require('./db');
 const { initMasterSchema, initTenantSchema, initPostgresSchema } = require('./schema');
 const { DEFAULT_GENERAL, DEFAULT_SECTIONS, DEFAULT_AIRCRAFT_SLUG, DEFAULT_ONBOARDING, loadDefaultWorkPackages } = require('./tenant-defaults');
@@ -1937,6 +1939,20 @@ app.get('/api/auth/status', async (req, res) => {
         }
       } catch {}
     }
+    // Latest-news badge: only meaningful for a real authenticated session —
+    // demo visitors and logged-out users never see it.
+    let latestNews = null;
+    let hasUnseenNews = false;
+    if (!DEMO_MODE && authenticated) {
+      try {
+        latestNews = await getPlatformSetting('latestNews', null);
+        if (latestNews && latestNews.slug) {
+          const db = req.db || getDefaultDb();
+          const newsSeen = await getSetting(db, 'newsSeen', { lastSeenSlug: null });
+          hasUnseenNews = latestNews.slug !== newsSeen.lastSeenSlug;
+        }
+      } catch {}
+    }
     // Admin-with-real-token override: when an admin presents a verified token
     // on a demo deployment, report `demoMode: false` for that session so the
     // frontend treats them as a regular admin (saves enabled, full nav, real
@@ -1952,9 +1968,21 @@ app.get('/api/auth/status', async (req, res) => {
       role:          DEMO_MODE ? 'admin' : role,
       maintenanceMode,
       isDeactivated,
+      latestNews,
+      hasUnseenNews,
     });
   } catch {
     res.json({ hasPassword: false, authenticated: false, demoMode: DEMO_MODE });
+  }
+});
+
+app.post('/api/news/seen', requireAuth, async (req, res) => {
+  try {
+    const latestNews = await getPlatformSetting('latestNews', null);
+    await setSetting(req.db, 'newsSeen', { lastSeenSlug: latestNews?.slug || null });
+    res.json({ ok: true });
+  } catch (err) {
+    serverError(res, err);
   }
 });
 
@@ -3996,6 +4024,29 @@ app.post('/api/admin/jobs/:key/run', requireAuth, requireAdmin, async (req, res)
   // Run in background so we can respond immediately
   fn().catch(e => console.warn(`[admin] Manual job run failed for ${key}:`, e.message));
   res.json({ ok: true, message: `Job "${key}" started` });
+});
+
+app.get('/api/admin/news', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const latestNews = await getPlatformSetting('latestNews', null);
+    res.json({ latestNews });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+app.put('/api/admin/news', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { slug, title, date } = req.body || {};
+    if (slug !== undefined && slug !== null && typeof slug !== 'string') {
+      return res.status(400).json({ error: 'slug must be a string' });
+    }
+    const value = (slug && slug.trim()) ? { slug: slug.trim(), title: title || '', date: date || '' } : null;
+    await setPlatformSetting('latestNews', value);
+    res.json({ ok: true, latestNews: value });
+  } catch (err) {
+    serverError(res, err);
+  }
 });
 
 // ─── Reserved slugs ───────────────────────────────────────────────────
