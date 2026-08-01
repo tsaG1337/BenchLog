@@ -71,8 +71,12 @@ export function SbMarkerLayer({
                  which would otherwise open the placement picker on top of the
                  popover. */
               onClick={e => e.stopPropagation()}
+              // z-10: the marker needs to win hit-testing over pdf.js's
+              // selectable text layer (z-index:2 via TextLayer.css) wherever
+              // a marker sits over a text-covered area — see the matching
+              // comment in PlanAnnotationsLayer.tsx.
               className={`
-                absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto
+                absolute -translate-x-1/2 -translate-y-1/2 pointer-events-auto z-10
                 w-6 h-6 rounded-full flex items-center justify-center
                 text-white text-xs font-bold shadow-md cursor-pointer
                 transition-transform hover:scale-110

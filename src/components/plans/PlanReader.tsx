@@ -614,6 +614,18 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
     </>
   );
 
+  // Raster resolution handed to pdf.js, independent from the CSS zoom
+  // level (`scale`). Native devicePixelRatio (2-3x on Retina/4K) gives
+  // full sharpness, but "N pages x high zoom x native DPR" is what used
+  // to spike canvas memory enough to kill the tab on long sections —
+  // which is why DPR was pinned to 1 everywhere. Instead of a flat cap,
+  // taper DPR down as zoom goes up so the raster budget (scale * dpr)
+  // stays bounded at the same worst case already known to be safe:
+  // scale=3 (max zoom) at dpr=1. At scale=1 (the common case) this
+  // yields full native DPR, while still degrading gracefully at high
+  // zoom on long sections.
+  const rasterDpr = Math.min(window.devicePixelRatio || 1, 3 / scale);
+
   return (
     <>
     <div className="h-full flex flex-col">
@@ -743,19 +755,11 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                     <Page
                       pageNumber={n}
                       scale={scale}
-                      // Pin pdf.js to a 1× pixel-ratio raster instead of
-                      // Retina's default 2× / 3×. On a 25-page section at
-                      // 2× zoom, that's the difference between ~50 MB of
-                      // canvas memory (safe) and ~200 MB (Safari kills
-                      // the tab). The pages look slightly less crisp at
-                      // very high zoom but everything stays readable —
-                      // builders zoom in to find a callout, not to
-                      // appreciate hairlines.
-                      devicePixelRatio={1}
+                      devicePixelRatio={rasterDpr}
                       onRenderSuccess={({ width, height }) =>
                         setPageSizes(prev => ({ ...prev, [n]: { width, height } }))
                       }
-                      renderTextLayer={false}
+                      renderTextLayer
                       renderAnnotationLayer={false}
                     />
                     {size && (
