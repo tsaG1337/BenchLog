@@ -5350,14 +5350,25 @@ app.get('/api/inventory/stats', requireAuth, async (req, res) => {
 
 app.get('/api/inventory/lookup/:partNumber', requireAuth, async (req, res) => {
   try {
+    // Exact, case-insensitive match — the old substring `LIKE '%...%'`
+    // meant looking up "AN3-3" also matched "AN3-3A", and a part with
+    // zero stock rows was indistinguishable from a part that was never
+    // imported at all (both returned `[]`). Starting from
+    // inventory_parts with a LEFT JOIN fixes both: exact match, and a
+    // part with no stock still comes back with `part` populated.
+    const part = await req.db.get(
+      'SELECT * FROM inventory_parts WHERE tenant_id = ? AND LOWER(part_number) = LOWER(?)',
+      [req.tenantId, req.params.partNumber]
+    );
+    if (!part) return res.json({ part: null, stock: [] });
+
     const rows = await req.db.all(
       `SELECT s.*, p.part_number, p.name AS part_name, p.manufacturer, l.name AS location_name, l.id AS loc_id, l.parent_id AS loc_parent_id
        FROM inventory_stock s
-       JOIN inventory_parts p ON p.id = s.part_id AND p.tenant_id = s.tenant_id
        JOIN inventory_locations l ON l.id = s.location_id AND l.tenant_id = s.tenant_id
-       WHERE s.tenant_id = ? AND p.part_number LIKE ?
+       WHERE s.tenant_id = ? AND s.part_id = ?
        ORDER BY l.name`,
-      [req.tenantId, `%${req.params.partNumber}%`]
+      [req.tenantId, part.id]
     );
     // Build location paths
     const allLocs = await req.db.all('SELECT * FROM inventory_locations WHERE tenant_id = ?', [req.tenantId]);
@@ -5368,7 +5379,10 @@ app.get('/api/inventory/lookup/:partNumber', requireAuth, async (req, res) => {
       while (cur) { parts.unshift(cur.name); cur = cur.parent_id ? locMap[cur.parent_id] : null; }
       return parts.join(' → ');
     }
-    res.json(rows.map(r => ({ ...stockRow(r), locationPath: buildPath(r.location_id) })));
+    res.json({
+      part: partRow(part),
+      stock: rows.map(r => ({ ...stockRow(r), locationPath: buildPath(r.location_id) })),
+    });
   } catch (err) { serverError(res, err); }
 });
 
