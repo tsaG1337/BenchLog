@@ -493,6 +493,32 @@ export interface HarnessOverrides {
   /** Per-device connector row order — placement id → ordered logical
    *  connector names. Topology-free presentation; absent = natural order. */
   connectorOrder?: Record<string, string[]>;
+  /** Branch-point node id → its persisted `BP<n>` sequence number (2026-07).
+   *  Branch-point IDS are already stable (`bp:<connectorId>`); only the
+   *  DISPLAYED NUMBER was unstable before this — recomputed from a live sort
+   *  every render, so an unrelated branch point appearing/disappearing
+   *  elsewhere in the tree could renumber everyone else. Assigned once, on
+   *  first sighting (by a sync effect in `WiringPage`, never by
+   *  `deriveHarness` itself, which stays a pure reader of this map) and
+   *  never reused or reassigned afterwards — an entry for a branch point
+   *  that no longer exists is a harmless orphan, same as every other field
+   *  here. Topology-free — purely a display label. */
+  branchPointLabels?: Record<string, number>;
+  /** Explicitly locked topology (2026-07) — the ONE deliberate exception to
+   *  "overrides are topology-free". A set of raw MST edge keys
+   *  (`edgeKey(a,b)`, connector/splice node ids only — never branch-point or
+   *  component ids) the user pinned via the "Lock harness layout" action.
+   *  When present, `deriveHarness` skips the fresh per-move MST for any tree
+   *  these edges touch and replays them instead (see `buildMstWithLocks`),
+   *  so the tree shape — which connectors get branch points, which bundle
+   *  connects which — stops reshuffling on every drag. A locked edge whose
+   *  endpoint no longer exists (device deleted) is dropped harmlessly; a new
+   *  device added to a locked tree attaches via nearest-neighbour rather
+   *  than requiring a full re-lock. Cleared by "Unlock harness layout",
+   *  which reverts the tree to fresh-MST-with-hysteresis. Presence of this
+   *  field is what "locked" means — an empty/absent map is the default,
+   *  fully-auto-routed behaviour every prior release had. */
+  lockedEdges?: Record<string, true>;
 }
 
 /** An empty override layer — the pure auto-derived state. */
@@ -553,6 +579,11 @@ export interface HarnessNode {
   /** kind 'component' only — device rotation, from `HarnessOverrides`.
    *  Undefined elsewhere; treat a missing value as `0`. */
   orientation?: Orientation;
+  /** kind 'branchPoint' only — the persisted `"BP<n>"` display label, from
+   *  `HarnessOverrides.branchPointLabels` (2026-07). Undefined for a branch
+   *  point that appeared this frame and hasn't been assigned a number yet
+   *  (renders with no label for one tick) — see `HarnessOverrides.branchPointLabels`. */
+  label?: string;
 }
 
 /**
@@ -591,4 +622,12 @@ export interface Bundle {
 export interface HarnessGraph {
   nodes: HarnessNode[];
   bundles: Bundle[];
+  /** Internal (2026-07) — the raw MST edge keys this derivation used, across
+   *  every tree on the sheet. Not rendered; the sole purpose is for the
+   *  caller to keep it and feed it back into the next `deriveHarness` call
+   *  as `previousMstEdges`, so small moves get hysteresis instead of
+   *  reshuffling the whole tree. Optional so a graph built without it
+   *  (tests, older call sites) stays valid — hysteresis just doesn't apply
+   *  for that one derivation. */
+  _mstEdgeKeys?: ReadonlySet<string>;
 }

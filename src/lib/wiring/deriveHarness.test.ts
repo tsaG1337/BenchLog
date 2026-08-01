@@ -930,3 +930,260 @@ describe('harnessAutoLayout', () => {
     expect(pos.U1).toEqual(harnessAutoLayout(devices).U1);
   });
 });
+
+// ── 2026-07 topology stability: hysteresis + lock ────────────────────
+//
+// Regression coverage for the bug report: "moving a device has a high
+// chance of messing up the harness order and general design." Root cause
+// was `deriveHarness` recomputing the MST cold on every derivation, with no
+// memory of the shape it produced last time — a small move could flip a
+// close distance comparison, spawning/killing branch points and rerouting
+// everything downstream, even for devices the user never touched.
+
+/** Sorted-pair edge key — same convention `deriveHarness`'s internal
+ *  `edgeKey` uses (and what `Bundle.id` / `_mstEdgeKeys` are keyed by). Not
+ *  imported (it's private to the module) — reproduced here so tests can
+ *  construct/read edge keys without reaching into module internals. */
+function ek(a: string, b: string): string {
+  return a <= b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+describe('deriveHarness — MST hysteresis', () => {
+  // Shared fixture for the three tests below — three devices, positioned
+  // ONLY via the `nodePositions` override (raw `PlacedDevice.position` is
+  // NOT what `deriveHarness` docks connectors against; without an override
+  // every device instead lands wherever `harnessAutoLayout`'s deterministic
+  // column puts it — the same override-only discipline `starFixture` uses).
+  // U1—U2 (dist 100) vs U1—U3 (dist 112) — U2 wins the first Prim's step,
+  // so the chain resolves U1—U2—U3 with U2 as the branch point.
+  function threeInARow() {
+    const placedDevices = [
+      makeDevice('U1', 'C1', 2),
+      makeDevice('U2', 'C1', 2),
+      makeDevice('U3', 'C1', 2),
+    ];
+    const netLabels: NetLabel[] = [
+      { id: 'l1', text: 'BUS', attachedTo: 'U1:C1-P1' } as NetLabel,
+      { id: 'l2', text: 'BUS', attachedTo: 'U2:C1-P1' } as NetLabel,
+      { id: 'l3', text: 'BUS', attachedTo: 'U3:C1-P1' } as NetLabel,
+    ];
+    const wires = [
+      wire('w1', 'U1:C1-P1', '#l1'),
+      wire('w2', 'U2:C1-P1', '#l2'),
+      wire('w3', 'U3:C1-P1', '#l3'),
+    ];
+    const overrides = mkOverrides({
+      nodePositions: { U1: { x: 0, y: 0 }, U2: { x: 100, y: 0 }, U3: { x: 112, y: 0 } },
+    });
+    return { placedDevices, wires, netLabels, overrides };
+  }
+
+  it('reproduces the bug: an unbiased small move flips which device branches', () => {
+    const { placedDevices, wires, netLabels, overrides } = threeInARow();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), overrides);
+    expect(g1.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U2:C1']);
+
+    // Nudge U3 from x=112 to x=90 — now closer to U1 (90) than U2 is (100).
+    // Without hysteresis this flips which node Prim's picks first, moving
+    // the branch point from U2 to U3 even though nothing electrically
+    // changed and the move is a perfectly ordinary "dragged it a bit".
+    const nudgedOverrides = mkOverrides({
+      nodePositions: { ...overrides.nodePositions, U3: { x: 90, y: 0 } },
+    });
+    const g2 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), nudgedOverrides);
+    expect(g2.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U3:C1']);
+  });
+
+  it('hysteresis keeps the same branch point across that same nudge', () => {
+    const { placedDevices, wires, netLabels, overrides } = threeInARow();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), overrides);
+    expect(g1._mstEdgeKeys).toBeDefined();
+
+    // Same 22-unit nudge as the previous test — but this time feed g1's raw
+    // MST edges back in as the hysteresis bias, exactly like WiringPage's
+    // ref does frame-to-frame.
+    const nudgedOverrides = mkOverrides({
+      nodePositions: { ...overrides.nodePositions, U3: { x: 90, y: 0 } },
+    });
+    const g2 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), nudgedOverrides, g1._mstEdgeKeys);
+    expect(g2.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U2:C1']);
+  });
+
+  it('a genuinely large move still wins over hysteresis', () => {
+    // Same starting shape, but U3 moves 500+ units away — far beyond the
+    // hysteresis bonus margin. Hysteresis smooths small jitter; it must
+    // never trap the layout in a stale shape once the user makes a real,
+    // decisive move.
+    const { placedDevices, wires, netLabels, overrides } = threeInARow();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), overrides);
+
+    const movedOverrides = mkOverrides({
+      nodePositions: { ...overrides.nodePositions, U3: { x: -500, y: 0 } },
+    });
+    const g2 = deriveHarness(makeInput({ placedDevices, wires, netLabels }), movedOverrides, g1._mstEdgeKeys);
+    // U3 is now far closer to U1 than to U2 — the branch point relocates to
+    // U1 (both U2 and U3 attach directly to it) despite the bias.
+    expect(g2.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U1:C1']);
+  });
+
+  it('a tiny nudge on the star fixture leaves the branch point and satellite set unchanged', () => {
+    // Broader sanity check on a realistic 3-way fan-out (not a razor-thin
+    // constructed tie) — every-day small drags should never perturb it.
+    const { placedDevices, wires, overrides } = starFixture();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires }), overrides);
+    const bundleKeysBefore = g1.bundles.map(b => b.id).sort();
+
+    const nudged = placedDevices.map(d => d.id === 'U2'
+      ? { ...d, position: { x: (overrides.nodePositions.U2?.x ?? 0) + 3, y: (overrides.nodePositions.U2?.y ?? 0) + 3 } }
+      : d);
+    const nudgedOverrides = mkOverrides({
+      nodePositions: { ...overrides.nodePositions, U2: nudged.find(d => d.id === 'U2')!.position },
+    });
+    const g2 = deriveHarness(makeInput({ placedDevices: nudged, wires }), nudgedOverrides, g1._mstEdgeKeys);
+    expect(g2.bundles.map(b => b.id).sort()).toEqual(bundleKeysBefore);
+  });
+});
+
+describe('deriveHarness — locked topology', () => {
+  it('replaying locked edges reproduces the same tree even after every node moves', () => {
+    const { placedDevices, wires, overrides: baseOverrides } = starFixture();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires }), baseOverrides);
+    expect(g1.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U1:C1']);
+    const lockedEdges: Record<string, true> = {};
+    for (const key of g1._mstEdgeKeys ?? []) lockedEdges[key] = true;
+
+    // Scramble every device into a totally different arrangement that would
+    // normally produce a different MST (U2 now sits right next to U3).
+    const scrambled: Record<string, { x: number; y: number }> = {
+      U1: { x: -900, y: 200 },
+      U2: { x: 4000, y: 4000 },
+      U3: { x: 4010, y: 4005 }, // right next to the scrambled U2
+      U4: { x: -300, y: -900 },
+    };
+    const lockedOverrides = mkOverrides({ nodePositions: scrambled, lockedEdges });
+    const g2 = deriveHarness(makeInput({ placedDevices, wires }), lockedOverrides);
+
+    expect(g2.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id)).toEqual(['bp:U1:C1']);
+    expect(g2.bundles.map(b => b.endpoints.slice().sort().join('|')).sort())
+      .toEqual(g1.bundles.map(b => b.endpoints.slice().sort().join('|')).sort());
+  });
+
+  it('a new device added to a locked tree attaches via nearest neighbour, not a full reroute', () => {
+    const { placedDevices, wires, overrides: baseOverrides } = starFixture();
+    const g1 = deriveHarness(makeInput({ placedDevices, wires }), baseOverrides);
+    const lockedEdges: Record<string, true> = {};
+    for (const key of g1._mstEdgeKeys ?? []) lockedEdges[key] = true;
+
+    // U5 joins the same electrical net, positioned right next to U3. Its
+    // position MUST go through the override (same reasoning as
+    // `threeInARow` above) — `makeDevice`'s x/y args alone are ignored by
+    // `deriveHarness` for a device with no `nodePositions` entry.
+    const u3Pos = baseOverrides.nodePositions.U3!;
+    const u5Pos = { x: u3Pos.x + 5, y: u3Pos.y + 5 };
+    const u5 = makeDevice('U5', 'C1', 1);
+    const withU5 = [...placedDevices, u5];
+    const wiresWithU5 = [...wires, wire('w4', 'U5:C1-P1', 'U3:C1-P1')];
+    const overrides = mkOverrides({
+      nodePositions: { ...baseOverrides.nodePositions, U5: u5Pos },
+      lockedEdges,
+    });
+    const g2 = deriveHarness(makeInput({ placedDevices: withU5, wires: wiresWithU5 }), overrides);
+
+    // Every original locked edge survives untouched…
+    for (const key of Object.keys(lockedEdges)) {
+      expect(g2.bundles.some(b => ek(b.endpoints[0], b.endpoints[1]) === key)
+        || g2._mstEdgeKeys?.has(key)).toBeTruthy();
+    }
+    // …and U5 attached to U3 (its nearest neighbour), not U1 or elsewhere.
+    expect(g2._mstEdgeKeys?.has(ek('U5:C1', 'U3:C1'))).toBe(true);
+  });
+
+  it('a device deletion fragmenting a locked chain gets bridged back at the nearest surviving pair', () => {
+    // Hand-authored lock — a straight chain U1—U2—U3—U4 — independent of
+    // whatever a fresh MST would compute, to isolate fragmentation/bridging
+    // behaviour from position-derived MST behaviour.
+    const lockedEdges: Record<string, true> = {
+      [ek('U1:C1', 'U2:C1')]: true,
+      [ek('U2:C1', 'U3:C1')]: true,
+      [ek('U3:C1', 'U4:C1')]: true,
+    };
+    // All four on one net label — electrical connectivity does NOT depend
+    // on U2 individually, only on shared label membership, so deleting U2
+    // fragments the LOCK (which references U2) without disconnecting the
+    // electrical tree.
+    const placedDevices = [
+      makeDevice('U1', 'C1', 1, 0, 0),
+      makeDevice('U3', 'C1', 1, 20, 0),   // closest surviving node to U1
+      makeDevice('U4', 'C1', 1, 500, 500),
+    ];
+    const netLabels: NetLabel[] = [
+      { id: 'l1', text: 'BUS', attachedTo: 'U1:C1-P1' } as NetLabel,
+      { id: 'l3', text: 'BUS', attachedTo: 'U3:C1-P1' } as NetLabel,
+      { id: 'l4', text: 'BUS', attachedTo: 'U4:C1-P1' } as NetLabel,
+    ];
+    const wires = [
+      wire('w1', 'U1:C1-P1', '#l1'),
+      wire('w3', 'U3:C1-P1', '#l3'),
+      wire('w4', 'U4:C1-P1', '#l4'),
+    ];
+    const overrides = mkOverrides({ lockedEdges });
+    const g = deriveHarness(makeInput({ placedDevices, wires, netLabels }), overrides);
+
+    // The surviving locked edge (U3—U4) is preserved exactly.
+    expect(g._mstEdgeKeys?.has(ek('U3:C1', 'U4:C1'))).toBe(true);
+    // U1 (orphaned by U2's deletion) is bridged back in at its nearest real
+    // neighbour — U3, not U4.
+    expect(g._mstEdgeKeys?.has(ek('U1:C1', 'U3:C1'))).toBe(true);
+    expect(g._mstEdgeKeys?.has(ek('U1:C1', 'U4:C1'))).toBe(false);
+    // The dropped U1—U2 / U2—U3 locked keys don't linger as phantom edges.
+    expect(g._mstEdgeKeys?.has(ek('U1:C1', 'U2:C1'))).toBe(false);
+  });
+
+  it('with no locked edges at all, behaves identically to plain buildMst (no regression)', () => {
+    const { placedDevices, wires, overrides } = starFixture();
+    const withEmptyLock = mkOverrides({ ...overrides, lockedEdges: {} });
+    const gPlain = deriveHarness(makeInput({ placedDevices, wires }), overrides);
+    const gEmptyLock = deriveHarness(makeInput({ placedDevices, wires }), withEmptyLock);
+    expect(gEmptyLock.bundles.map(b => b.id).sort()).toEqual(gPlain.bundles.map(b => b.id).sort());
+  });
+
+  it('a CYCLE in lockedEdges is reduced to a spanning tree, not replayed as-is', () => {
+    // Unreachable via the UI (the lock toggle always clears-then-captures an
+    // acyclic tree), but `lockHarnessEdges` merges and a project JSON can be
+    // imported/hand-edited — a cycle here would silently break the
+    // "unique tree-path" invariant conductor routing depends on. The
+    // defense keeps the sorted-first spanning subset and drops the rest.
+    const lockedEdges: Record<string, true> = {
+      [ek('U1:C1', 'U2:C1')]: true,
+      [ek('U2:C1', 'U3:C1')]: true,
+      [ek('U1:C1', 'U3:C1')]: true, // closes the triangle — must be dropped
+    };
+    const placedDevices = [
+      makeDevice('U1', 'C1', 1),
+      makeDevice('U2', 'C1', 1),
+      makeDevice('U3', 'C1', 1),
+    ];
+    const netLabels: NetLabel[] = [
+      { id: 'l1', text: 'BUS', attachedTo: 'U1:C1-P1' } as NetLabel,
+      { id: 'l2', text: 'BUS', attachedTo: 'U2:C1-P1' } as NetLabel,
+      { id: 'l3', text: 'BUS', attachedTo: 'U3:C1-P1' } as NetLabel,
+    ];
+    const wires = [
+      wire('w1', 'U1:C1-P1', '#l1'),
+      wire('w2', 'U2:C1-P1', '#l2'),
+      wire('w3', 'U3:C1-P1', '#l3'),
+    ];
+    const g = deriveHarness(makeInput({ placedDevices, wires, netLabels }), mkOverrides({ lockedEdges }));
+    // Three connector nodes joined by exactly 2 edges — a tree, no cycle.
+    // (Sorted-first means U1|U2 and U1|U3 survive; U2|U3 is the cycle edge
+    // by sort order and gets dropped.)
+    expect(g._mstEdgeKeys?.size).toBe(2);
+    expect(g._mstEdgeKeys?.has(ek('U1:C1', 'U2:C1'))).toBe(true);
+    expect(g._mstEdgeKeys?.has(ek('U1:C1', 'U3:C1'))).toBe(true);
+    expect(g._mstEdgeKeys?.has(ek('U2:C1', 'U3:C1'))).toBe(false);
+    // And the derived bundles stay consistent with the surviving tree —
+    // every conductor still routes (no wire lost to a broken path).
+    const routedWireIds = new Set(g.bundles.flatMap(b => b.conductorIds));
+    expect(routedWireIds.size).toBeGreaterThan(0);
+  });
+});

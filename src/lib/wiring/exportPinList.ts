@@ -436,7 +436,167 @@ export function exportPinList(
 
   XLSX.utils.book_append_sheet(wb, ws, 'Pin list');
 
+  // ── Per-connector build sheets ─────────────────────────────────────
+  // One worksheet per physical connector that has at least one connection:
+  // every pin of that connector in order, with what lands on it and where
+  // the other end goes. This is the sheet you tape to the bench while
+  // crimping — pin-major, not wire-major like the main list.
+  appendConnectorBuildSheets(wb, devices, rows);
+
   const safeName = (projectName || 'wiring').replace(/[^A-Za-z0-9_-]+/g, '-');
   const fileDate = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(wb, `pin-list-${safeName}-${fileDate}.xlsx`);
+}
+
+// ── Connector build sheets ───────────────────────────────────────────
+
+const CONN_COLUMNS: { key: string; header: string; width: number }[] = [
+  { key: 'pinNumber', header: 'Pin #',       width: 8  },
+  { key: 'pinName',   header: 'Pin Name',    width: 24 },
+  { key: 'net',       header: 'Net',         width: 18 },
+  { key: 'cable',     header: 'Cable',       width: 10 },
+  { key: 'twist',     header: 'Twist Group', width: 12 },
+  { key: 'dest',      header: 'Destination', width: 44 },
+  { key: 'remarks',   header: 'Remarks',     width: 24 },
+];
+
+interface ConnRow {
+  pinNumber: string; pinName: string; net: string; cable: string;
+  twist: string; dest: string; remarks: string;
+}
+
+/** Excel worksheet names: max 31 chars, no []:*?/\ , unique per workbook. */
+function safeSheetName(raw: string, used: Set<string>): string {
+  let name = raw.replace(/[[\]:*?/\\]/g, '-').trim() || 'Connector';
+  name = name.slice(0, 31);
+  let candidate = name;
+  let n = 2;
+  while (used.has(candidate.toLowerCase())) {
+    const suffix = ` (${n++})`;
+    candidate = name.slice(0, 31 - suffix.length) + suffix;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function appendConnectorBuildSheets(
+  wb: XLSX.WorkBook,
+  devices: readonly Device[],
+  rows: PinListRow[],
+): void {
+  // Collect connections per (designator, connector, pin#) from BOTH sides
+  // of every main-list row. A pin can carry several nets' branches — those
+  // destinations join with "; ".
+  type Conn = { net: string; cable: string; twist: string; dest: string };
+  const byPin = new Map<string, Conn[]>();
+  const pinKeyOf = (unit: string, conn: string, pin: string) => `${unit} ${conn} ${pin}`;
+  const destOf = (unit: string, conn: string, pin: string, pinName: string) =>
+    `${unit} ${conn ? conn + '-' : ''}${pin}${pinName ? ` (${pinName})` : ''}`;
+
+  for (const r of rows) {
+    const fromKey = pinKeyOf(r.fromUnit, r.fromConn, r.fromPin);
+    const toKey   = pinKeyOf(r.toUnit,   r.toConn,   r.toPin);
+    let list = byPin.get(fromKey);
+    if (!list) { list = []; byPin.set(fromKey, list); }
+    list.push({ net: r.netName, cable: r.cableType, twist: r.twistGroup, dest: destOf(r.toUnit, r.toConn, r.toPin, r.toPinName) });
+    list = byPin.get(toKey);
+    if (!list) { list = []; byPin.set(toKey, list); }
+    list.push({ net: r.netName, cable: r.cableType, twist: r.twistGroup, dest: destOf(r.fromUnit, r.fromConn, r.fromPin, r.fromPinName) });
+  }
+
+  // Group each device's pin catalog by logical connector. Only connectors
+  // with at least one connected pin get a sheet, but the sheet lists ALL of
+  // that connector's pins — unconnected ones show as "—" so the crimper can
+  // see at a glance which cavities stay empty.
+  const usedNames = new Set<string>(['pin list']);
+  const sheets: { name: string; rows: ConnRow[]; title: string }[] = [];
+
+  for (const dev of devices) {
+    const byConnector = new Map<string, Pin[]>();
+    for (const pin of dev.pinCatalog) {
+      const conn = pin.logicalConnectorName ?? '';
+      let list = byConnector.get(conn);
+      if (!list) { list = []; byConnector.set(conn, list); }
+      list.push(pin);
+    }
+    for (const [connName, pins] of byConnector) {
+      const connRows: ConnRow[] = [];
+      let connectedCount = 0;
+      // Numeric-aware pin ordering ("2" before "10", letters after).
+      const sorted = [...pins].sort((a, b) => {
+        const an = parseInt(a.pinNumber ?? '', 10);
+        const bn = parseInt(b.pinNumber ?? '', 10);
+        if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn;
+        return (a.pinNumber ?? '').localeCompare(b.pinNumber ?? '');
+      });
+      for (const pin of sorted) {
+        const conns = byPin.get(pinKeyOf(dev.name ?? dev.id, connName, pin.pinNumber ?? ''));
+        if (conns && conns.length > 0) {
+          connectedCount++;
+          connRows.push({
+            pinNumber: pin.pinNumber ?? '',
+            pinName:   pin.name ?? '',
+            net:       [...new Set(conns.map(c => c.net).filter(Boolean))].join('; '),
+            cable:     [...new Set(conns.map(c => c.cable).filter(Boolean))].join('; '),
+            twist:     [...new Set(conns.map(c => c.twist).filter(Boolean))].join('; '),
+            dest:      conns.map(c => c.dest).join('; '),
+            remarks:   pin.comment ?? '',
+          });
+        } else {
+          connRows.push({
+            pinNumber: pin.pinNumber ?? '',
+            pinName:   pin.name ?? '',
+            net: '', cable: '', twist: '', dest: '—',
+            remarks: pin.comment ?? '',
+          });
+        }
+      }
+      if (connectedCount === 0) continue;
+      const designator = dev.name ?? dev.id;
+      const rawName = connName ? `${designator} ${connName}` : designator;
+      sheets.push({
+        name: safeSheetName(rawName, usedNames),
+        rows: connRows,
+        title: connName ? `${designator} — ${connName}` : designator,
+      });
+    }
+  }
+
+  // Stable workbook order: by sheet title.
+  sheets.sort((a, b) => a.title.localeCompare(b.title));
+
+  for (const sheet of sheets) {
+    const ws: XLSX.WorkSheet = {};
+    const ncols = CONN_COLUMNS.length;
+    ws['A1'] = { t: 's', v: sheet.title, s: subtitleStyle };
+    for (let c = 1; c < ncols; c++) {
+      ws[XLSX.utils.encode_cell({ r: 0, c })] = { t: 's', v: '', s: subtitleStyle };
+    }
+    const HEADER_ROW = 1;
+    CONN_COLUMNS.forEach((col, i) => {
+      ws[XLSX.utils.encode_cell({ r: HEADER_ROW, c: i })] = { t: 's', v: col.header, s: headerStyle };
+    });
+    const DATA_START = HEADER_ROW + 1;
+    sheet.rows.forEach((row, ri) => {
+      const style = dataCellStyle(ri % 2 === 1);
+      CONN_COLUMNS.forEach((col, ci) => {
+        ws[XLSX.utils.encode_cell({ r: DATA_START + ri, c: ci })] = {
+          t: 's',
+          v: (row as unknown as Record<string, string>)[col.key] ?? '',
+          s: style,
+        };
+      });
+    });
+    const lastRow = Math.max(HEADER_ROW, DATA_START + sheet.rows.length - 1);
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: ncols - 1 } });
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: ncols - 1 } }];
+    ws['!cols'] = CONN_COLUMNS.map(c => ({ wch: c.width }));
+    ws['!freeze'] = {
+      xSplit: '0', ySplit: String(DATA_START),
+      topLeftCell: `A${DATA_START + 1}`,
+      activePane: 'bottomLeft', state: 'frozen',
+    };
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 22 }];
+    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+  }
 }

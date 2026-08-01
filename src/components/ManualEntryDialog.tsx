@@ -4,21 +4,25 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Calendar } from '@/components/ui/calendar';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Plus, CalendarIcon, ImagePlus, X, Loader2 } from 'lucide-react';
-import { format } from 'date-fns';
-import { cn } from '@/lib/utils';
+import { Plus, ImagePlus, X, Loader2 } from 'lucide-react';
 import { uploadImages, deleteImage } from '@/lib/api';
 import { WorkPackagePicker } from '@/components/WorkPackagePicker';
 import { toast } from 'sonner';
 
+// Local date <-> `<input type="datetime-local">` string conversion. Kept
+// local rather than shared — SessionHistory.tsx's edit form (the "other
+// format" this dialog now matches) and SessionBlogEditor.tsx each keep
+// their own copy too; it's a 4-line pure function, not worth a shared util.
+function toDatetimeLocal(d: Date): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 interface ManualEntryDialogProps {
   onAdd: (session: {
     section: string;
-    date: Date;
-    hours: number;
-    minutes: number;
+    startTime: Date;
+    endTime: Date;
     notes: string;
     plansPage: string;
     plansSection: string;
@@ -34,9 +38,11 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [section, setSection] = useState('');
-  const [date, setDate] = useState<Date>(new Date());
-  const [hours, setHours] = useState('');
-  const [minutes, setMinutes] = useState('');
+  // Both default to "now" — same starting point the edit form would show
+  // for a fresh session, and it gives an immediate (zero) duration readout
+  // instead of blank fields with no feedback until both are filled in.
+  const [startTime, setStartTime] = useState(() => toDatetimeLocal(new Date()));
+  const [endTime, setEndTime] = useState(() => toDatetimeLocal(new Date()));
   const [notes, setNotes] = useState('');
   const [plansPage, setPlansPage] = useState('');
   const [plansSection, setPlansSection] = useState('');
@@ -75,14 +81,18 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
   };
 
   const handleSubmit = () => {
-    const h = Math.max(0, parseInt(hours) || 0);
-    const m = Math.max(0, parseInt(minutes) || 0);
-    if (h === 0 && m === 0) return;
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (!startTime || !endTime || end.getTime() <= start.getTime()) {
+      toast.error('End time must be after start time');
+      return;
+    }
 
-    onAdd({ section: section || 'other', date, hours: h, minutes: m, notes, plansPage, plansSection, plansStep, imageUrls });
+    onAdd({ section: section || 'other', startTime: start, endTime: end, notes, plansPage, plansSection, plansStep, imageUrls });
     setOpen(false);
-    setHours('');
-    setMinutes('');
+    const now = toDatetimeLocal(new Date());
+    setStartTime(now);
+    setEndTime(now);
     setNotes('');
     setPlansPage('');
     setPlansSection('');
@@ -90,6 +100,21 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
     setImageUrls([]);
     tempId.current = `manual-${Date.now()}`;
   };
+
+  // null while unset; negative once end is before start (invalid, but not
+  // worth flagging until the fields actually disagree — the default state
+  // has start === end, i.e. 0, which is a normal "not filled in yet" value,
+  // not an error).
+  const durationMins = startTime && endTime
+    ? (new Date(endTime).getTime() - new Date(startTime).getTime()) / 60000
+    : null;
+  const durationLabel = durationMins !== null && durationMins >= 0
+    ? (() => {
+        const h = Math.floor(durationMins / 60);
+        const m = Math.round(durationMins % 60);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+      })()
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -114,38 +139,32 @@ export function ManualEntryDialog({ onAdd, open: controlledOpen, onOpenChange: c
           />
 
           <div>
-            <Label className="text-sm text-muted-foreground mb-2 block">Date</Label>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !date && "text-muted-foreground")}>
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {date ? format(date, 'PPP') : 'Pick a date'}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="start">
-                <Calendar
-                  mode="single"
-                  selected={date}
-                  onSelect={(d) => d && setDate(d)}
-                  initialFocus
-                  className={cn("p-3 pointer-events-auto")}
+            <Label className="text-sm text-muted-foreground mb-2 block">Timing</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-xs text-muted-foreground/70 mb-1 block">Start</Label>
+                <Input
+                  type="datetime-local"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  className="bg-accent border-border font-mono"
                 />
-              </PopoverContent>
-            </Popover>
-          </div>
-
-          <div>
-            <Label className="text-sm text-muted-foreground mb-2 block">Duration</Label>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <Label className="text-xs text-muted-foreground/70 mb-1 block">Hours</Label>
-                <Input type="number" min="0" max="999" placeholder="0" value={hours} onChange={(e) => setHours(e.target.value)} className="bg-accent border-border font-mono" />
               </div>
-              <div className="flex-1">
-                <Label className="text-xs text-muted-foreground/70 mb-1 block">Minutes</Label>
-                <Input type="number" min="0" max="59" placeholder="0" value={minutes} onChange={(e) => setMinutes(e.target.value)} className="bg-accent border-border font-mono" />
+              <div>
+                <Label className="text-xs text-muted-foreground/70 mb-1 block">End</Label>
+                <Input
+                  type="datetime-local"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  className="bg-accent border-border font-mono"
+                />
               </div>
             </div>
+            {durationLabel ? (
+              <p className="text-xs text-muted-foreground/60 mt-1">Duration: {durationLabel}</p>
+            ) : durationMins !== null && durationMins < 0 ? (
+              <p className="text-xs text-destructive mt-1">End time must be after start time</p>
+            ) : null}
           </div>
 
           <div>

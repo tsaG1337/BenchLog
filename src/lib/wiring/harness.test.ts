@@ -15,6 +15,7 @@ import {
   HARNESS_BLOCK_ROW_H,
   HARNESS_BLOCK_COL_W,
   HARNESS_BLOCK_PAD,
+  HARNESS_BLOCK_MIN_WIDTH,
   cableCurvePath,
   sampleCableCurve,
   harnessTreeOf,
@@ -22,6 +23,7 @@ import {
   isBranchPointNodeId,
   harnessNodeIdKind,
   bundleGeometricLengthMm,
+  computeNewBranchPointLabelAssignments,
 } from './harness';
 import type { PlacedDevice, ConnectorInstance, HarnessNode, HarnessGraph } from './types';
 
@@ -271,10 +273,15 @@ describe('connectorDockPoints / harnessBlockLayout', () => {
     expect(docks.get('B')!.y).toBe(pd.position.y + layout.height);
   });
 
-  it('layout dimensions: 0° width equals placement.width; height accounts for n rows + header + padding', () => {
+  it('layout dimensions: 0° width is content-driven (NOT placement.width); height accounts for n rows + header + padding', () => {
     const pd = makePlacedDevice2();
     const layout = harnessBlockLayout(pd, 0);
-    expect(layout.width).toBe(pd.width);
+    // Fixture's name ("U1") and connector rows ("A [2]", "B [2]") are tiny —
+    // the block should size down to the minimum floor, not the schematic
+    // block's much wider `placement.width` (80 here, but a real schematic
+    // block sized for a pin list can be 200-400px — the whole point of this
+    // layout being content-driven instead of inherited).
+    expect(layout.width).toBe(HARNESS_BLOCK_MIN_WIDTH);
     expect(layout.height).toBe(HARNESS_BLOCK_HEADER_H + 2 * HARNESS_BLOCK_ROW_H + 8);
   });
 
@@ -284,6 +291,31 @@ describe('connectorDockPoints / harnessBlockLayout', () => {
     expect(layout.height).toBe(HARNESS_BLOCK_HEADER_H + HARNESS_BLOCK_ROW_H + 8);
     // 2 connectors → at least 2 * HARNESS_BLOCK_COL_W + 8 wide
     expect(layout.width).toBeGreaterThanOrEqual(2 * HARNESS_BLOCK_COL_W + 8);
+  });
+
+  it('0°: width is independent of an oversized placement.width (schematic sizing must not leak into the harness view)', () => {
+    // Same short name/connectors as makePlacedDevice2, but with a
+    // schematic-sized placement.width (e.g. a device with a big pin-list
+    // box on the schematic sheet). The harness block must stay narrow.
+    const pd = { ...makePlacedDevice2(), width: 420 };
+    const layout = harnessBlockLayout(pd, 0);
+    expect(layout.width).toBeLessThan(pd.width);
+    expect(layout.width).toBe(HARNESS_BLOCK_MIN_WIDTH);
+  });
+
+  it('0°: width grows to fit a long device name / product name / connector name', () => {
+    const pd: PlacedDevice = {
+      ...makePlacedDevice2(),
+      name: 'U1',
+      productName: 'A Fairly Long Avionics Product Name',
+      connectors: [{
+        id: 'U1:LONGCONN', name: 'LONGCONN', logicalConnectorName: 'LONGCONN',
+        side: 'right', pinIds: ['P1'],
+      }],
+      pinCatalog: [{ id: 'P1', name: 'P1', logicalConnectorName: 'LONGCONN' }],
+    };
+    const layout = harnessBlockLayout(pd, 0);
+    expect(layout.width).toBeGreaterThan(HARNESS_BLOCK_MIN_WIDTH);
   });
 
   it('single-connector device: exactly one dock, on the left edge at 0°', () => {
@@ -525,5 +557,53 @@ describe('bundleGeometricLengthMm', () => {
   it('missing endpoint node → 0', () => {
     const orphan = { id: 'a|z', endpoints: ['a', 'z'] as [string, string], conductorIds: [] };
     expect(bundleGeometricLengthMm(orphan, graph, 10)).toBe(0);
+  });
+});
+
+// ── 2026-07 stable branch-point numbering ────────────────────────────
+//
+// Regression coverage for the other half of the "moving a device messes up
+// the order" report: branch-point IDS were already stable, but the
+// DISPLAYED NUMBER (BP1, BP2, …) was recomputed from a live sort every
+// render, so an unrelated branch point appearing/disappearing anywhere in
+// the tree could renumber every other one. This is the pure assignment
+// logic the `WiringPage` sync effect calls — see its doc comment in
+// `harness.ts` for why it's a separate exported function instead of staying
+// inline in the effect (unit-testable without a React render harness).
+describe('computeNewBranchPointLabelAssignments', () => {
+  it('nothing existing, nothing current → no assignments', () => {
+    expect(computeNewBranchPointLabelAssignments({}, [])).toEqual({});
+  });
+
+  it('assigns fresh ids sequentially in sorted-id order, starting at 1', () => {
+    const result = computeNewBranchPointLabelAssignments({}, ['bp:C', 'bp:A', 'bp:B']);
+    expect(result).toEqual({ 'bp:A': 1, 'bp:B': 2, 'bp:C': 3 });
+  });
+
+  it('never re-assigns or returns an id that already has a number', () => {
+    const existing = { 'bp:A': 1, 'bp:C': 3 };
+    const result = computeNewBranchPointLabelAssignments(existing, ['bp:A', 'bp:B', 'bp:C', 'bp:D']);
+    // Only the two genuinely new ids come back, numbered from max(1,3)+1=4
+    // upward — bp:A / bp:C are untouched (not even present in the result).
+    expect(result).toEqual({ 'bp:B': 4, 'bp:D': 5 });
+  });
+
+  it('is idempotent — merging the result in leaves nothing left to assign next time', () => {
+    const existing = { 'bp:A': 1 };
+    const currentIds = ['bp:A', 'bp:B'];
+    const round1 = computeNewBranchPointLabelAssignments(existing, currentIds);
+    const merged = { ...existing, ...round1 };
+    const round2 = computeNewBranchPointLabelAssignments(merged, currentIds);
+    expect(round2).toEqual({});
+  });
+
+  it('an id that disappears and comes back keeps its original number (orphan-tolerant)', () => {
+    // bp:B had number 2 before; it's gone from `currentIds` this round
+    // (nothing to assign, existing entries are just left in the map by the
+    // caller). If it reappears later, it's already in `existingLabels`, so
+    // it must NOT be treated as new / re-numbered.
+    const existing = { 'bp:A': 1, 'bp:B': 2 };
+    const result = computeNewBranchPointLabelAssignments(existing, ['bp:A', 'bp:B', 'bp:C']);
+    expect(result).toEqual({ 'bp:C': 3 });
   });
 });

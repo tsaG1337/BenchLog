@@ -25,6 +25,19 @@ export const HARNESS_BLOCK_COL_W = 44;
 /** Padding added beyond the connector strip on the block's far edge. */
 export const HARNESS_BLOCK_PAD = 8;
 
+/** Floor width so a device with a very short name/connector list still
+ *  reads as a block rather than degenerating to a sliver. */
+export const HARNESS_BLOCK_MIN_WIDTH = 100;
+
+/** Rough average glyph width for the UI's sans-serif font at a given point
+ *  size. There's no DOM text measurement available in this pure geometry
+ *  module (`harnessBlockLayout` has to stay callable from non-render code),
+ *  so this is a heuristic — good enough given the padding baked into the
+ *  callers below leaves a little slack either way. */
+function estimateTextWidth(text: string, fontSize: number, bold = false): number {
+  return text.length * fontSize * (bold ? 0.66 : 0.58);
+}
+
 /**
  * Bounding box + connector dock positions for a device block at a given
  * orientation.
@@ -65,9 +78,25 @@ export function harnessBlockLayout(placement: PlacedDevice, orientation: Orienta
   const logConns = orderedLogicalConnectors(placement, connectorOrder);
   const n = Math.max(logConns.length, 1);
 
+  // Content-driven width — the harness view's compact "name [n]" rows and
+  // short header need far less room than `placement.width`, which is sized
+  // for the schematic sheet's block (pin lists, symbol shape, …) and can be
+  // 2-3x wider than this view actually needs. Estimate what the header text
+  // and each connector row's text need instead of inheriting that width.
+  const headerContentW = HARNESS_BLOCK_PAD
+    + estimateTextWidth(placement.name, 12, true)
+    + 16
+    + estimateTextWidth(placement.productName ?? '', 10)
+    + HARNESS_BLOCK_PAD;
+
   if (orientation === 0 || orientation === 180) {
     // ── Vertical strip — one row per connector ──────────────────────
-    const width  = placement.width;
+    const rowContentW = logConns.map(lc => HARNESS_BLOCK_PAD
+      + estimateTextWidth(lc.name, 11)
+      + 12
+      + estimateTextWidth(`[${lc.pinCount}]`, 10)
+      + HARNESS_BLOCK_PAD);
+    const width  = Math.max(HARNESS_BLOCK_MIN_WIDTH, headerContentW, ...rowContentW);
     const height = HARNESS_BLOCK_HEADER_H + n * HARNESS_BLOCK_ROW_H + HARNESS_BLOCK_PAD;
     const connectorEdge: 'left' | 'right' = orientation === 0 ? 'left' : 'right';
     const localDocks = new Map<string, Point>();
@@ -82,7 +111,7 @@ export function harnessBlockLayout(placement: PlacedDevice, orientation: Orienta
 
   // ── Horizontal strip — one column per connector ─────────────────
   // orientation === 90 || orientation === 270
-  const width  = Math.max(placement.width, n * HARNESS_BLOCK_COL_W + HARNESS_BLOCK_PAD);
+  const width  = Math.max(headerContentW, n * HARNESS_BLOCK_COL_W + HARNESS_BLOCK_PAD);
   const height = HARNESS_BLOCK_HEADER_H + HARNESS_BLOCK_ROW_H + HARNESS_BLOCK_PAD;
   const connectorEdge: 'top' | 'bottom' = orientation === 90 ? 'top' : 'bottom';
   // Header is on the OPPOSITE edge to the connector strip.
@@ -652,6 +681,76 @@ export function bundleGeometricLengthMm(
     units += Math.hypot(poly[i + 1].x - poly[i].x, poly[i + 1].y - poly[i].y);
   }
   return units * mmPerUnit;
+}
+
+/** Visible stroke width for a cable carrying `conductorCount` conductors.
+ *
+ *  Square-root scaling so each added conductor adds less visual weight,
+ *  clamped so empty/huge bundles still render sanely:
+ *    • Min 4 px — every cable has a visible body even when carrying 0–1.
+ *    • Max 24 px — past ~110 conductors the tube saturates.
+ *
+ *  Lives here (not in the renderer component) because the PDF/SVG exporter
+ *  draws the same cables — one formula, canvas and print can't drift. */
+export function tubeThickness(conductorCount: number): number {
+  const n = Math.max(1, conductorCount);
+  return Math.max(4, Math.min(24, 3 + Math.sqrt(n) * 2));
+}
+
+/** Midpoint of a polyline by arclength — where the bundle labels sit.
+ *  Shared by the canvas renderer and the exporter for the same reason as
+ *  `tubeThickness`. */
+export function polylineMidpoint(points: Point[]): Point {
+  if (points.length === 0) return { x: 0, y: 0 };
+  if (points.length === 1) return points[0];
+  let total = 0;
+  const segLen: number[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const L = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    segLen.push(L);
+    total += L;
+  }
+  let target = total / 2;
+  for (let i = 0; i < segLen.length; i++) {
+    if (target <= segLen[i] || i === segLen.length - 1) {
+      const t = segLen[i] > 0 ? target / segLen[i] : 0;
+      return {
+        x: points[i].x + (points[i + 1].x - points[i].x) * t,
+        y: points[i].y + (points[i + 1].y - points[i].y) * t,
+      };
+    }
+    target -= segLen[i];
+  }
+  return points[Math.floor(points.length / 2)];
+}
+
+/**
+ * Stable branch-point numbering (2026-07) — pure assignment logic, called by
+ * a sync effect in `WiringPage` (never by `deriveHarness`, which only READS
+ * `HarnessOverrides.branchPointLabels` and must stay pure). Extracted here,
+ * rather than left inline in the effect, purely so it's unit-testable
+ * without a React render harness.
+ *
+ * Given the numbers already assigned and the full set of branch-point ids
+ * that exist THIS derivation, returns ONLY the new assignments needed for
+ * ids that don't have a number yet — sequential, starting one past the
+ * highest number ever given out, in sorted-id order for determinism. An id
+ * that already has a number is never included in the result (so merging the
+ * result into the existing map never changes a prior assignment) — an empty
+ * result means nothing new needs assigning.
+ */
+export function computeNewBranchPointLabelAssignments(
+  existingLabels: Record<string, number>,
+  currentBranchPointIds: readonly string[],
+): Record<string, number> {
+  const unassigned = currentBranchPointIds
+    .filter(id => existingLabels[id] === undefined)
+    .sort();
+  if (unassigned.length === 0) return {};
+  let next = Math.max(0, ...Object.values(existingLabels)) + 1;
+  const assignments: Record<string, number> = {};
+  for (const id of unassigned) assignments[id] = next++;
+  return assignments;
 }
 
 /**

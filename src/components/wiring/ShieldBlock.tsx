@@ -1,13 +1,13 @@
 import { useGroupDrag } from '@/lib/wiring/useGroupDrag';
-import type { Shield, Wire, PlacedDevice } from '@/lib/wiring/types';
+import type { Shield } from '@/lib/wiring/types';
 import { useWiring } from '@/lib/wiring/store';
-import { computeWirePath } from '@/lib/wiring/wirePaths';
+import { sampleWireYAt, SHIELD_PAD, SHIELD_STEM, SHIELD_PIN_DROP, type WireRoute } from '@/lib/wiring/sheetRoutes';
 
 interface Props {
   shield: Shield;
-  /** All wires on the same sheet — used to look up enclosed wire endpoints. */
-  wires: Wire[];
-  placedDevices: PlacedDevice[];
+  /** Sheet-wide routing cache — the shield samples its member wires'
+   *  routed polylines from here instead of re-routing them per render. */
+  routes: ReadonlyMap<string, WireRoute>;
   selected: boolean;
   onSelect: (id: string, shift: boolean) => void;
 }
@@ -23,39 +23,6 @@ function screenToWorld(el: SVGElement, clientX: number, clientY: number) {
 }
 
 /**
- * Sample the wire's actual y at the given world x. Walks the routed
- * orthogonal polyline and returns the y of whichever segment's x-range
- * contains targetX. Falls back to nearest segment when targetX is outside
- * every segment's range. Returns null if the path is degenerate.
- *
- * This is what the shield needs (not the average of fromY/toY) — wires
- * with one end at the shielded connector and the other end on a far-away
- * device are at very different y's at each end, so averaging puts the
- * shield somewhere in between.
- */
-function sampleWireYAt(path: { x: number; y: number }[], targetX: number): number | null {
-  if (path.length < 2) return null;
-  // First pass: find a segment whose x-range includes targetX.
-  for (let i = 0; i < path.length - 1; i++) {
-    const a = path[i], b = path[i + 1];
-    const xLo = Math.min(a.x, b.x), xHi = Math.max(a.x, b.x);
-    if (targetX < xLo || targetX > xHi) continue;
-    // Vertical segment — its x is fixed, its y spans a range. The
-    // shield is interested in horizontal runs, so prefer the next
-    // horizontal segment if there is one. But return our best guess.
-    if (a.x === b.x) continue;
-    // Linear interpolation between a and b (orthogonal routes are mostly
-    // horizontal segments, so y rarely changes here).
-    const t = (targetX - a.x) / (b.x - a.x);
-    return a.y + t * (b.y - a.y);
-  }
-  // Fallback: targetX is outside the wire's x-range. Use whichever endpoint
-  // is closer along the path so the shield still has a sensible y.
-  const first = path[0], last = path[path.length - 1];
-  return Math.abs(targetX - first.x) <= Math.abs(targetX - last.x) ? first.y : last.y;
-}
-
-/**
  * Renders a graphical shield over a horizontal wire bundle. Shape is a
  * vertical "stadium" / "pill" — straight sides on the left and right, half-
  * circle arcs at the top and bottom — to match standard schematic notation.
@@ -67,7 +34,7 @@ function sampleWireYAt(path: { x: number; y: number }[], targetX: number): numbe
  * so shields stay aligned even when the wires bend or terminate at
  * far-away devices with different y's.
  */
-export function ShieldBlock({ shield, wires, placedDevices, selected, onSelect }: Props) {
+export function ShieldBlock({ shield, routes, selected, onSelect }: Props) {
   // Shields slide horizontally along their wire bundle. The hook handles
   // multi-select-aware drag, snap-to-grid, and dispatch via moveSelectionBy
   // (which shifts xStart/xEnd in lock-step so the shield's width is
@@ -94,26 +61,14 @@ export function ShieldBlock({ shield, wires, placedDevices, selected, onSelect }
   // can run a totally different physical route, so pulling it in via BFS
   // would visually rope in unrelated wires that just happen to share a
   // node. The user's explicit wireIds list is the source of truth.
-  const inShield = new Set(shield.wireIds);
-
-  // Sample each in-shield wire's y at the shield's mid-x. Wires whose
-  // path doesn't cross midX are skipped (sampleWireYAt returns null only
-  // for paths with <2 points — the fallback otherwise returns a sensible
-  // endpoint y).
   //
-  // All shielded wires land in a single group. The stadium spans from the
-  // topmost shielded wire's y to the bottommost — non-shielded wires that
-  // happen to pass through the same X range are ignored for grouping.
-  // Rationale: one Shield record should always render as one shield
-  // visual, otherwise a wire elsewhere on the sheet that incidentally
-  // crosses the shield's X can split it (e.g. shielding two label-to-pin
-  // wires while an unrelated signal threads between them). If the user
-  // really wants two separate shields, they create two Shield records.
+  // Wire ys are sampled from the shared routing cache (same polylines the
+  // wires render with), so the stadium hugs exactly what's on screen.
   const inShieldYs: number[] = [];
-  for (const w of wires) {
-    if (!inShield.has(w.id)) continue;
-    const path = computeWirePath(placedDevices, w);
-    const y = sampleWireYAt(path, midX);
+  for (const wid of shield.wireIds) {
+    const r = routes.get(wid);
+    if (!r) continue;
+    const y = sampleWireYAt(r.points, midX);
     if (y === null) continue;
     inShieldYs.push(y);
   }
@@ -123,8 +78,8 @@ export function ShieldBlock({ shield, wires, placedDevices, selected, onSelect }
 
   const stroke = selected ? 'hsl(var(--primary))' : 'hsl(var(--foreground))';
   const strokeWidth = selected ? 2 : 1;
-  const PAD = 12;
-  const stemLen = 12;
+  const PAD = SHIELD_PAD;
+  const stemLen = SHIELD_STEM;
 
   // Render one stadium + stem + termination per contiguous group. All
   // groups share the same x-range and termination style (they're all
@@ -191,15 +146,15 @@ export function ShieldBlock({ shield, wires, placedDevices, selected, onSelect }
         })()}
         {shield.termination === 'pin' && (
           // Open connection circle a wire can dock onto. Same visual idiom
-          // as a device pin so users recognise it as connectable. The
-          // larger transparent hit ring widens the click target so wires
-          // snap reliably (see ShieldPinHit below for the connect logic).
+          // as a device pin so users recognise it as connectable. The dot's
+          // position uses the shared SHIELD_PIN_DROP constant so the routing
+          // cache resolves `#shield:<id>` endpoints to this exact spot.
           <g>
-            <circle cx={midX} cy={stemBottom + 4} r={3.5}
+            <circle cx={midX} cy={stemBottom + SHIELD_PIN_DROP} r={3.5}
                     fill="hsl(var(--background))"
                     stroke={stroke} strokeWidth={strokeWidth}
                     pointerEvents="none" />
-            <ShieldPinHit shieldId={shield.id} cx={midX} cy={stemBottom + 4} />
+            <ShieldPinHit shieldId={shield.id} cx={midX} cy={stemBottom + SHIELD_PIN_DROP} />
           </g>
         )}
       </g>
