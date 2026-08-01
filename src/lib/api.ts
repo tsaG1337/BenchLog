@@ -1082,6 +1082,11 @@ export interface InvStock {
   locationPath?: string;
 }
 
+export interface InvPartLookup {
+  part: InvPart | null;
+  stock: InvStock[];
+}
+
 export interface InvStats {
   totalParts: number;
   totalLocations: number;
@@ -1112,7 +1117,7 @@ export const deleteInvStock      = (id: number)                          => requ
 
 // Stats & Lookup
 export const fetchInvStats       = ()                                    => request<InvStats>('/api/inventory/stats');
-export const lookupInvPart       = (partNumber: string)                  => request<InvStock[]>(`/api/inventory/lookup/${encodeURIComponent(partNumber)}`);
+export const lookupInvPart       = (partNumber: string)                  => request<InvPartLookup>(`/api/inventory/lookup/${encodeURIComponent(partNumber)}`);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  INVENTORY CHECK SESSIONS

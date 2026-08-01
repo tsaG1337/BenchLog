@@ -23,7 +23,7 @@ const STOPWORDS = new Set([
 ]);
 
 /** Run vendor regexes against one string. Returns the first match or null. */
-function firstMatch(text: string, vendor: OcrVendorConfig): string | null {
+export function matchPartNumber(text: string, vendor: OcrVendorConfig): string | null {
   for (const re of vendor.partNumberPatterns) {
     re.lastIndex = 0; // safety — these are constructed with /g-less, but be defensive
     const m = re.exec(text);
@@ -45,7 +45,7 @@ export function extractPartRefsFromTextItems(
   for (let i = 0; i < items.length; i++) {
     const str = (items[i].str || '').trim();
     if (str.length < 3) continue;
-    const pn = firstMatch(str, vendor);
+    const pn = matchPartNumber(str, vendor);
     if (!pn) continue;
     // Build a small snippet from the next 2-3 items for context.
     const snippetParts: string[] = [];

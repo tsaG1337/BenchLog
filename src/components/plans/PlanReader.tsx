@@ -8,12 +8,12 @@
  * Annotations live in a sibling overlay (PlanAnnotationsLayer) so the
  * react-pdf canvas stays untouched.
  */
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Document, Page } from 'react-pdf';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { MIcon } from '@/components/AppShell';
-import { fetchPlanPdf, updatePlan, type PlanFile } from '@/lib/api';
+import { fetchPlanPdf, updatePlan, fetchGeneralSettings, type PlanFile, type GeneralSettings } from '@/lib/api';
 import { toast } from 'sonner';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -25,8 +25,11 @@ import { PlanSearchBar } from './PlanSearchBar';
 import { PlanSearchSidebar } from './PlanSearchSidebar';
 import { PlanSearchHighlightLayer } from './PlanSearchHighlightLayer';
 import { usePdfTextSearch } from './usePdfTextSearch';
+import { PlanPartLinkLayer } from './PlanPartLinkLayer';
+import { usePdfPartRefs } from './usePdfPartRefs';
 import { registerActivePdf, unregisterActivePdf } from './pdfSearchBridge';
 import type { ServiceBulletin, SbPlacement } from '@/lib/aircraft';
+import { getAircraft } from '@/lib/aircraft';
 import { useAuth } from '@/contexts/AuthContext';
 
 const SCALE_KEY = 'plans:zoom';
@@ -87,8 +90,22 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const latestVisiblePageRef = useRef<number>(pageNumber);
   // Used by handleFit + toolbar-disabled checks; cheap derived value.
   const pageSize = pageSizes[pageNumber] ?? null;
-  const { role } = useAuth();
+  const { role, demoMode } = useAuth();
   const isAdmin = role === 'admin';
+  // Same vendor resolution indexPlanFile() already uses for search
+  // indexing — aircraft with no configured OCR vendor simply detect no
+  // part refs (usePdfPartRefs handles a null vendor as "nothing to
+  // scan"), same silent-skip behavior the search indexer already has.
+  const vendor = useMemo(() => getAircraft(aircraftSlug)?.manufacturer.labelOcr ?? null, [aircraftSlug]);
+  const [featureFlags, setFeatureFlags] = useState<GeneralSettings['featureFlags']>(undefined);
+  useEffect(() => {
+    fetchGeneralSettings().then(s => setFeatureFlags(s.featureFlags)).catch(() => {});
+  }, []);
+  // Same admin-bypass convention as AppShell's nav gating: only a real
+  // (non-demo) admin session bypasses the flag; everyone else needs
+  // `inventory` to not be explicitly disabled. Missing key defaults to
+  // enabled.
+  const showPartLinks = (role === 'admin' && !demoMode) || featureFlags?.inventory !== false;
   // Captured (normalized) coordinates of the most recent place-sb click.
   // When non-null, the SbPlacementPicker dialog is mounted so the admin
   // can pick an SB from the catalog and stage / copy the placement.
@@ -120,6 +137,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const [searchOpen, setSearchOpen] = useState<boolean>(() => !!urlSearch);
   const [searchSidebarOpen, setSearchSidebarOpen] = useState(true);
   const search = usePdfTextSearch(pdfDoc, { initialQuery: urlSearch });
+  const partRefs = usePdfPartRefs(pdfDoc, vendor);
 
   // Track which match the user has scrolled to so we don't fight the
   // IntersectionObserver every time a new match becomes active.
@@ -782,6 +800,12 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                       <PlanSearchHighlightLayer
                         matches={search.matchesByPage.get(n) ?? []}
                         currentIndex={search.currentIndex}
+                      />
+                    )}
+                    {size && showPartLinks && (
+                      <PlanPartLinkLayer
+                        refs={partRefs.refsByPage.get(n) ?? []}
+                        pageSize={size}
                       />
                     )}
                   </div>
