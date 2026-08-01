@@ -13,7 +13,7 @@ interface AuthContextType {
   isDeactivated: boolean;
   role: string | null;
   slug: string | null;
-  login: (password: string, username?: string) => Promise<void>;
+  login: (password: string, username?: string, rememberMe?: boolean) => Promise<void>;
   setup: (password: string) => Promise<void>;
   logout: () => void;
 }
@@ -74,11 +74,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('accountDeactivated', handler);
   }, []);
 
-  const login = async (password: string, username?: string) => {
+  const login = async (password: string, username?: string, rememberMe?: boolean) => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, username }),
+      body: JSON.stringify({ password, username, rememberMe }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Login failed' }));

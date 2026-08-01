@@ -48,7 +48,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     handle403Deactivated(res, text);
     let message = res.statusText;
     try { const parsed = JSON.parse(text).error; if (parsed) message = parsed; } catch { /* not JSON */ }
-    throw new Error(message || `Request failed (${res.status})`);
+    // Attach the HTTP status so callers can branch on specific codes
+    // (e.g. 409 conflict handling) without string-matching messages.
+    const err = new Error(message || `Request failed (${res.status})`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   try {
     return JSON.parse(text);
@@ -846,10 +850,23 @@ export async function fetchWiringProject(): Promise<WiringProjectPayload> {
   return request<WiringProjectPayload>('/api/wiring');
 }
 
-export async function saveWiringProject(name: string, data: unknown): Promise<{ ok: true; updatedAt: string }> {
+/** `baseUpdatedAt` is the `updatedAt` the client last loaded or saved
+ *  (null when the project was empty at load). The server rejects the save
+ *  with 409 when the stored project has moved past it — i.e. another tab
+ *  or device saved in between. */
+export async function saveWiringProject(
+  name: string,
+  data: unknown,
+  baseUpdatedAt?: string | null,
+): Promise<{ ok: true; updatedAt: string }> {
+  // Omit the field entirely when the client doesn't know the server state
+  // (offline load) — the server then skips the conflict check.
+  const body = baseUpdatedAt === undefined
+    ? { name, data }
+    : { name, data, baseUpdatedAt };
   return request('/api/wiring', {
     method: 'PUT',
-    body: JSON.stringify({ name, data }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -993,6 +1010,29 @@ export async function fetchAdminJobs(): Promise<JobInfo[]> {
 
 export async function runAdminJob(key: string): Promise<{ ok: boolean; message: string }> {
   return request(`/api/admin/jobs/${key}/run`, { method: 'POST' });
+}
+
+// ─── News ───────────────────────────────────────────────────────────
+
+export interface LatestNews {
+  slug: string;
+  title: string;
+  date: string;
+}
+
+export async function markNewsSeen(): Promise<void> {
+  await request('/api/news/seen', { method: 'POST' });
+}
+
+export function fetchLatestNewsAdmin(): Promise<{ latestNews: LatestNews | null }> {
+  return request('/api/admin/news');
+}
+
+export function updateLatestNews(data: { slug: string; title: string; date: string } | Record<string, never>): Promise<{ ok: boolean; latestNews: LatestNews | null }> {
+  return request('/api/admin/news', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

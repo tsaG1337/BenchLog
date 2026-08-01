@@ -68,7 +68,8 @@ function escapeHtml(str) {
 const loginAttempts = new Map();
 const LOGIN_RATE_LIMIT = 10;
 const LOGIN_RATE_WINDOW = 15 * 60 * 1000; // 15 minutes
-const TOKEN_EXPIRY_HOURS = 72;
+const TOKEN_EXPIRY_HOURS = 24 * 14; // 14 days
+const TOKEN_EXPIRY_HOURS_REMEMBER = 24 * 90; // 90 days — opt-in via "Remember me"
 // Clean up expired login attempt entries every 30 minutes
 setInterval(() => {
   const now = Date.now();
@@ -77,9 +78,9 @@ setInterval(() => {
   }
 }, 30 * 60 * 1000).unref();
 
-function createToken(payload) {
+function createToken(payload, hours = TOKEN_EXPIRY_HOURS) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-  const body   = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + TOKEN_EXPIRY_HOURS * 3600000 })).toString('base64url');
+  const body   = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + hours * 3600000 })).toString('base64url');
   const sig    = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${sig}`;
 }
@@ -1868,7 +1869,7 @@ app.post('/api/auth/login', async (req, res) => {
       loginAttempts.set(ip, { count: 1, resetTime: now + LOGIN_RATE_WINDOW });
     }
 
-    const { password, username } = req.body;
+    const { password, username, rememberMe } = req.body;
     let tenant = null;
     if (MULTI_TENANT) {
       if (!username) return res.status(400).json({ error: 'Username is required' });
@@ -1899,7 +1900,7 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(503).json({ error: 'Server is in maintenance mode. Please try again later.' });
       }
     }
-    const token = createToken({ role, tenantId: tenant.id, slug: tenant.slug });
+    const token = createToken({ role, tenantId: tenant.id, slug: tenant.slug }, rememberMe === true ? TOKEN_EXPIRY_HOURS_REMEMBER : TOKEN_EXPIRY_HOURS);
     res.json({ ok: true, token, slug: tenant.slug });
   } catch (err) {
     serverError(res, err);
@@ -4704,13 +4705,31 @@ app.get('/api/wiring', requireAuth, async (req, res) => {
 
 app.put('/api/wiring', requireAuth, requireNotDemo, async (req, res) => {
   try {
-    const { name, data } = req.body ?? {};
+    const { name, data, baseUpdatedAt } = req.body ?? {};
     if (data === undefined) return res.status(400).json({ error: 'Missing `data` field' });
     const serialized = JSON.stringify(data ?? {});
     if (serialized.length > 5_000_000) {
       return res.status(400).json({ error: 'Wiring project exceeds 5 MB — split into multiple projects or clean up unused elements' });
     }
     const projectName = (typeof name === 'string' && name.trim()) ? name.trim() : 'Wiring';
+
+    // Optimistic-concurrency check: the client sends the `updatedAt` it last
+    // loaded/saved (null when it loaded an empty project). If the stored row
+    // has moved past that, another tab/device saved in between — reject with
+    // 409 instead of silently clobbering their work. Clients that omit the
+    // field (older builds) skip the check and keep last-write-wins.
+    if (baseUpdatedAt !== undefined) {
+      const existing = await req.db.get(
+        'SELECT updated_at FROM wiring_projects WHERE tenant_id = ?', [req.tenantId]);
+      const storedAt = existing ? existing.updated_at : null;
+      if (storedAt !== (baseUpdatedAt ?? null)) {
+        return res.status(409).json({
+          error: 'Wiring project was modified in another tab or on another device',
+          updatedAt: storedAt,
+        });
+      }
+    }
+
     const nowIso = new Date().toISOString();
     // Single UPSERT — works in both SQLite (>=3.24) and Postgres.
     // Using ON CONFLICT also sidesteps the db-wrapper's auto-append of
