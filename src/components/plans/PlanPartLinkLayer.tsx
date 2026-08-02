@@ -47,8 +47,9 @@ export function PlanPartLinkLayer({ refs, pageSize }: Props) {
                  PlanAnnotationsLayer.tsx / SbMarkerLayer.tsx. */
               className="absolute pointer-events-auto z-10 cursor-pointer
                 bg-transparent border-0 p-0 m-0
-                text-primary underline decoration-primary/60 underline-offset-2
-                hover:decoration-primary"
+                text-blue-600 dark:text-blue-400 font-semibold
+                underline decoration-2 underline-offset-2
+                hover:text-blue-700 dark:hover:text-blue-300"
               style={{
                 left: ref.rect.x * pageSize.width,
                 top: ref.rect.y * pageSize.height,

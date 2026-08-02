@@ -55,3 +55,33 @@ export function textItemToNormalizedRect(
     height: Math.max(0, Math.min(1, height)),
   };
 }
+
+/**
+ * Same as `textItemToNormalizedRect`, but scoped to a character range
+ * within the item's string rather than the whole item — e.g. the "F-1074"
+ * inside a single text run "F-1074 Forward Top Skin". pdfjs doesn't expose
+ * per-character positions, so this assumes roughly uniform character
+ * width across the item (true enough for the monospace-ish technical
+ * lettering these plans use) and scales the full rect proportionally.
+ * Callers with a match spanning the entire item (charStart 0, charLength
+ * === item.str.length) get back the same rect as the unscoped function.
+ */
+export function textItemRangeToNormalizedRect(
+  item: PdfTextItemLike,
+  pageWidth: number,
+  pageHeight: number,
+  charStart: number,
+  charLength: number,
+): NormalizedRect | null {
+  const full = textItemToNormalizedRect(item, pageWidth, pageHeight);
+  if (!full) return null;
+  const totalChars = item.str?.length || 1;
+  const fracStart = charStart / totalChars;
+  const fracWidth = charLength / totalChars;
+  return {
+    x: full.x + full.width * fracStart,
+    y: full.y,
+    width: full.width * fracWidth,
+    height: full.height,
+  };
+}

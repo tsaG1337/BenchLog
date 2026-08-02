@@ -19,8 +19,8 @@
  */
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { OcrVendorConfig } from '@/lib/ocrVendors';
-import { matchPartNumber } from './extractParts';
-import { textItemToNormalizedRect, type NormalizedRect, type PdfTextItemLike } from './pdfTextRects';
+import { matchPartNumberWithPosition } from './extractParts';
+import { textItemRangeToNormalizedRect, type NormalizedRect, type PdfTextItemLike } from './pdfTextRects';
 
 export interface PdfPartRefMatch {
   /** 1-indexed page number. */
@@ -39,13 +39,16 @@ export function scanTextItemsForPartRefs(
 ): PdfPartRefMatch[] {
   const out: PdfPartRefMatch[] = [];
   for (const item of items) {
-    const str = (item.str || '').trim();
-    if (str.length < 3) continue;
-    const partNumber = matchPartNumber(str, vendor);
-    if (!partNumber) continue;
-    const rect = textItemToNormalizedRect(item, pageWidth, pageHeight);
+    const str = item.str || '';
+    if (str.trim().length < 3) continue;
+    // Match against the untrimmed string so the resulting character
+    // offset lines up with item.width/item.str.length, which is what
+    // the rect math below scales against.
+    const match = matchPartNumberWithPosition(str, vendor);
+    if (!match) continue;
+    const rect = textItemRangeToNormalizedRect(item, pageWidth, pageHeight, match.start, match.length);
     if (!rect) continue;
-    out.push({ page: pageNumber, partNumber, rect });
+    out.push({ page: pageNumber, partNumber: match.partNumber, rect });
   }
   return out;
 }

@@ -512,8 +512,25 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   // and notifies the parent as the user scrolls between pages. We pick the
   // page with the largest visible area. Threshold steps every 25% give us
   // enough granularity without firing on every scroll pixel.
+  //
+  // Depends on `pdfDoc` (not `pdfBlobUrl`) because react-pdf's
+  // <Document> doesn't render its children (our page wrapper divs)
+  // the instant pdfBlobUrl is set — it shows its own internal
+  // `loading` placeholder until it finishes parsing, and only renders
+  // children once that completes, which is the same moment
+  // `onLoadSuccess` sets `pdfDoc`. `pdfBlobUrl` was the wrong signal:
+  // confirmed via instrumenting IntersectionObserver in a live session
+  // that with the pdfBlobUrl-based effect, an observer got created but
+  // .observe() was called on it zero times — pageRefs.current was
+  // still empty at that point because the actual page divs hadn't
+  // rendered yet. If a file's cached pageCount already happens to be
+  // correct, `numPages` never changes value after the first render, so
+  // it alone can't be relied on to re-fire the effect once the divs
+  // exist — `pdfDoc` transitions null → object exactly once, at
+  // exactly the right moment, regardless of whether numPages needed
+  // correcting.
   useEffect(() => {
-    if (!numPages || !scrollContainerRef.current) return;
+    if (!numPages || !pdfDoc || !scrollContainerRef.current) return;
     const root = scrollContainerRef.current;
     const visible = new Map<number, number>(); // page → ratio
     const observer = new IntersectionObserver(
@@ -541,7 +558,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
     );
     for (const node of pageRefs.current.values()) observer.observe(node);
     return () => observer.disconnect();
-  }, [numPages, onPageChange]);
+  }, [numPages, onPageChange, pdfDoc]);
 
   // Action buttons used in both the desktop top-toolbar and the mobile
   // bottom-dock. Extracted so we don't duplicate handlers between the

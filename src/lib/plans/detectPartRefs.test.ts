@@ -27,4 +27,19 @@ describe('scanTextItemsForPartRefs', () => {
     const refs = scanTextItemsForPartRefs(items, 1, VANS_VENDOR, 600, 800);
     expect(refs).toHaveLength(0);
   });
+
+  it('scopes the highlight to just the matched substring within a larger text run', () => {
+    // pdfjs sometimes emits an entire callout label ("F-1074 Forward Top
+    // Skin") as one text item rather than splitting the part number out.
+    const items = [ti('F-1074 Forward Top Skin', 0, 700, 12, 240)];
+    const refs = scanTextItemsForPartRefs(items, 1, VANS_VENDOR, 600, 800);
+    expect(refs).toHaveLength(1);
+    expect(refs[0].partNumber).toBe('F-1074');
+    // The full item is 240/600 = 0.4 wide; "F-1074" is only 6 of the 23
+    // characters, so the highlighted rect should be much narrower —
+    // not the whole "F-1074 Forward Top Skin" span.
+    const fullItemWidth = 240 / 600;
+    expect(refs[0].rect.width).toBeLessThan(fullItemWidth * 0.5);
+    expect(refs[0].rect.x).toBeCloseTo(0, 5);
+  });
 });
