@@ -31,6 +31,13 @@ function initMasterSchema(masterSqlite) {
       masterSqlite.exec(`ALTER TABLE tenants ADD COLUMN indexnow_key TEXT NOT NULL DEFAULT ''`);
     }
   } catch {}
+
+  masterSqlite.exec(`
+    CREATE TABLE IF NOT EXISTS platform_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
 }
 
 /**
@@ -673,6 +680,10 @@ async function initPostgresSchema(pool) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_plan_part_refs_lookup ON plan_part_refs (tenant_id, part_number)`,
     `CREATE INDEX IF NOT EXISTS idx_plan_part_refs_file ON plan_part_refs (tenant_id, file_id)`,
+    `CREATE TABLE IF NOT EXISTS platform_settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`,
   ];
 
   for (const sql of statements) {

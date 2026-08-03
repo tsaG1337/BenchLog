@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchAdminUsers, fetchAdminDbStats, createAdminUser, updateAdminUser, purgeAdminUserData, resetUserOnboarding, fetchAdminTableRows, deleteAdminTableRow, fetchAdminJobs, runAdminJob, fetchGeneralSettings, updateGeneralSettings, AdminUser, DbStat, AdminTableResult, JobInfo } from '@/lib/api';
+import { fetchAdminUsers, fetchAdminDbStats, createAdminUser, updateAdminUser, purgeAdminUserData, resetUserOnboarding, fetchAdminTableRows, deleteAdminTableRow, fetchAdminJobs, runAdminJob, fetchGeneralSettings, updateGeneralSettings, fetchLatestNewsAdmin, updateLatestNews, AdminUser, DbStat, AdminTableResult, JobInfo, LatestNews } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
-import { ArrowLeft, Plus, Pencil, Trash2, ShieldCheck, User, Database, RefreshCw, Search, ChevronLeft, ChevronRight, Eye, Activity, CheckCircle2, XCircle, Clock, Play, AlertTriangle, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, ShieldCheck, User, Database, RefreshCw, Search, ChevronLeft, ChevronRight, Eye, Activity, CheckCircle2, XCircle, Clock, Play, AlertTriangle, Sparkles, Megaphone } from 'lucide-react';
 import { toast } from 'sonner';
 
 const TABLE_LABELS: Record<string, string> = {
@@ -130,6 +130,12 @@ export default function AdminPage() {
   const [maintenanceLoading, setMaintenanceLoading] = useState(true);
   const [maintenanceToggling, setMaintenanceToggling] = useState(false);
 
+  // Latest news
+  const [latestNews, setLatestNews] = useState<LatestNews | null>(null);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsSaving, setNewsSaving] = useState(false);
+  const [newsForm, setNewsForm] = useState({ title: '', slug: '', date: '' });
+
   // Feature flags — controls which pages non-admin users can see
   type FeatureKey = 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans';
   const [featureFlags, setFeatureFlags] = useState<Partial<Record<FeatureKey, boolean>>>({});
@@ -199,6 +205,29 @@ export default function AdminPage() {
     } finally { setMaintenanceToggling(false); }
   };
 
+  const loadLatestNews = useCallback(async () => {
+    setNewsLoading(true);
+    try {
+      const { latestNews: current } = await fetchLatestNewsAdmin();
+      setLatestNews(current);
+      setNewsForm({ title: current?.title || '', slug: current?.slug || '', date: current?.date || '' });
+    } catch { /* nothing configured yet, or offline — the empty form is the right fallback */ } finally { setNewsLoading(false); }
+  }, []);
+
+  const saveLatestNews = async () => {
+    setNewsSaving(true);
+    try {
+      const { latestNews: saved } = await updateLatestNews(
+        newsForm.slug.trim() ? newsForm : {}
+      );
+      setLatestNews(saved);
+      if (!saved) setNewsForm({ title: '', slug: '', date: '' });
+      toast.success(saved ? 'Latest news updated' : 'Latest news cleared');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update latest news');
+    } finally { setNewsSaving(false); }
+  };
+
   const toggleFeature = async (key: FeatureKey, enabled: boolean) => {
     setFeatureToggling(key);
     try {
@@ -211,7 +240,7 @@ export default function AdminPage() {
     } finally { setFeatureToggling(null); }
   };
 
-  useEffect(() => { loadUsers(); loadStats(); loadJobs(); loadMaintenance(); }, [loadUsers, loadStats, loadJobs, loadMaintenance]);
+  useEffect(() => { loadUsers(); loadStats(); loadJobs(); loadMaintenance(); loadLatestNews(); }, [loadUsers, loadStats, loadJobs, loadMaintenance, loadLatestNews]);
 
   // Opens a fresh table: resets paging + search; the fetch effect below
   // observes the state change and loads page 0.
@@ -437,6 +466,48 @@ export default function AdminPage() {
                   </label>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* ── Latest News ── */}
+        {!newsLoading && (
+          <div className="rounded-lg border border-border bg-card p-4 mb-6">
+            <div className="flex items-start gap-3 mb-3">
+              <Megaphone className="w-5 h-5 shrink-0 text-muted-foreground mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Latest News</p>
+                <p className="text-xs text-muted-foreground">
+                  Fill this in right after publishing a post at benchlog.build/news — every builder who hasn't seen it yet gets a badge in their nav until they click through. Clear the slug and save to turn the badge off entirely.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+              <Input
+                placeholder="Title"
+                value={newsForm.title}
+                onChange={e => setNewsForm(f => ({ ...f, title: e.target.value }))}
+              />
+              <Input
+                placeholder="Slug (e.g. mqtt-integration)"
+                value={newsForm.slug}
+                onChange={e => setNewsForm(f => ({ ...f, slug: e.target.value }))}
+              />
+              <Input
+                placeholder="Date (YYYY-MM-DD)"
+                value={newsForm.date}
+                onChange={e => setNewsForm(f => ({ ...f, date: e.target.value }))}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={saveLatestNews} disabled={newsSaving}>
+                {newsSaving ? 'Saving…' : 'Save'}
+              </Button>
+              {latestNews && (
+                <span className="text-xs text-muted-foreground">
+                  Currently: {latestNews.title || latestNews.slug} ({latestNews.date})
+                </span>
+              )}
             </div>
           </div>
         )}

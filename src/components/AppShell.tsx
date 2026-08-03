@@ -76,7 +76,7 @@ interface AppShellProps {
 // dimmed backdrop — page content does not reflow on expansion.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function AppShell({ activePage, projectName, pageTitle, headerRight, children, fullWidth = false, compactHeaderOnMobile = false }: AppShellProps) {
-  const { isAuthenticated, demoMode, logout, role } = useAuth();
+  const { isAuthenticated, demoMode, logout, role, latestNews, hasUnseenNews, markNewsSeen } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -101,6 +101,11 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
     const flag = featureFlags?.[item.id as keyof NonNullable<GeneralSettings['featureFlags']>];
     return flag !== false;
   });
+
+  const newsUrl = latestNews ? `https://benchlog.build/news/${encodeURIComponent(latestNews.slug)}/` : null;
+  const handleNewsClick = () => {
+    if (hasUnseenNews) markNewsSeen();
+  };
 
   const handleExportClick = async () => {
     try {
@@ -179,6 +184,22 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
             );
           })}
         </nav>
+        {isAuthenticated && !demoMode && newsUrl && (
+          <a
+            href={newsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={handleNewsClick}
+            aria-label="What's New"
+            title="What's New"
+            className="relative w-10 h-10 mb-1 flex items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          >
+            <MIcon name="new_releases" />
+            {hasUnseenNews && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary" />
+            )}
+          </a>
+        )}
         <button
           onClick={() => palette.setOpen(true)}
           aria-label="Search (Ctrl+K)"
@@ -283,6 +304,23 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
                 <MIcon name="info" className="text-xl text-muted-foreground" />
                 About
               </button>
+
+              {isAuthenticated && !demoMode && newsUrl && (
+                <a
+                  href={newsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => { setSidebarOpen(false); handleNewsClick(); }}
+                  aria-label="What's New"
+                  className="relative flex items-center gap-3 px-3 py-1.5 rounded hover:opacity-80 transition-colors text-sm text-foreground"
+                >
+                  <MIcon name="new_releases" className="text-xl text-muted-foreground" />
+                  What's New
+                  {hasUnseenNews && (
+                    <span className="w-2 h-2 rounded-full bg-primary" />
+                  )}
+                </a>
+              )}
 
               <a
                 href={`mailto:bugs@benchlog.build?subject=${encodeURIComponent('[BenchLog Bug] ' + projectName)}`}
