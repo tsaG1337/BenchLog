@@ -156,7 +156,13 @@ export function PlanAnnotationsLayer({ fileId, pageNumber, width, height, mode }
   return (
     <div
       ref={overlayRef}
-      className="absolute inset-0"
+      // z-10: pdf.js's own TextLayer.css sets the selectable text layer to
+      // z-index:2, and react-pdf's Page wrapper doesn't establish a stacking
+      // context — so without an explicit z-index here, the (invisible) text
+      // layer wins hit-testing over this overlay wherever a text span covers
+      // the same pixel, silently swallowing note/stroke clicks in text-dense
+      // areas even though pointerEvents below is correctly 'auto'.
+      className="absolute inset-0 z-10"
       style={{ width, height, cursor, touchAction, pointerEvents: mode === 'view' ? 'none' : 'auto' }}
       onClick={handleClickOverlay}
       onPointerDown={handlePointerDown}

@@ -17,20 +17,27 @@ import { HarnessDeviceBlock } from '@/components/wiring/HarnessDeviceBlock';
 import { HarnessGraphView } from '@/components/wiring/HarnessBundle';
 import { HarnessGraphProvider } from '@/components/wiring/HarnessGraphContext';
 import { deriveHarness } from '@/lib/wiring/deriveHarness';
-import { harnessBlockLayout, harnessTreeOf, DEFAULT_MM_PER_UNIT, HARNESS_GRID } from '@/lib/wiring/harness';
+import { harnessBlockLayout, harnessTreeOf, DEFAULT_MM_PER_UNIT, HARNESS_GRID, computeNewBranchPointLabelAssignments } from '@/lib/wiring/harness';
 import { useWiring, getPinWorldPos } from '@/lib/wiring/store';
 import { instantiateDevice, nextDesignator, getDesignatorPrefix, DeviceTemplate, slugifyDesignator } from '@/lib/wiring/library';
 import { runLint } from '@/lib/wiring/lint';
 import { fetchGeneralSettings, fetchWiringProject, saveWiringProject } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { loadProjectLocal, saveProjectLocal } from '@/lib/wiring/persistence';
-import { downloadSheetSvg, printSheetPdf } from '@/lib/wiring/export';
+import { computeSheetRoutes } from '@/lib/wiring/sheetRoutes';
+import {
+  downloadSheetSvg, renderSheetSvg, printPdfDocument, computeExportRoutes,
+  sheetHasSchematicContent, type SheetExportData, type PdfPage,
+} from '@/lib/wiring/export';
+import { renderHarnessSvg, buildCableSummaryHtml, buildWireSummaryHtml, type CableSummarySheetInput } from '@/lib/wiring/exportHarness';
+import { WiringExportDialog, type WiringPdfExportOptions } from '@/components/wiring/WiringExportDialog';
 import { exportPinList } from '@/lib/wiring/exportPinList';
 import { Button } from '@/components/ui/button';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { Point, PlacedDevice, Orientation } from '@/lib/wiring/types';
+import type { Point, PlacedDevice, Orientation, Sheet } from '@/lib/wiring/types';
 import { previewPlacedDevice } from '@/lib/wiring/library';
 import {
   Plus, Undo2, Redo2, ChevronRight, ChevronLeft, AlertTriangle, Download, Upload, Trash2,
@@ -39,11 +46,17 @@ import {
   // gracefully on narrow viewports. Save-status badge uses Check / Loader2.
   // Harness orientation collapses to a single mirror toggle (>|<).
   Spline, ShieldHalf, Type, StickyNote, Ruler, Workflow, Cable, CornerDownRight,
-  Check, Loader2, FolderOpen, FlipHorizontal2,
+  Check, Loader2, FolderOpen, FlipHorizontal2, Lock, Unlock, RotateCcw, ChevronDown, Eye,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'error';
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'offline' | 'error' | 'conflict';
+
+const SHIELD_TERMINATION_LABELS: Record<'ground' | 'float' | 'backshell', string> = {
+  ground: 'Ground-terminated',
+  float: 'Floating',
+  backshell: 'Backshell (S)',
+};
 
 export default function WiringPage() {
   const { demoMode } = useAuth();
@@ -88,10 +101,17 @@ export default function WiringPage() {
   const mirrorHarnessNode = useWiring(s => s.mirrorHarnessNode);
   const setHarnessScale = useWiring(s => s.setHarnessScale);
   const selectedHarnessTree = useWiring(s => s.selectedHarnessTree);
+  const selectedBundleId = useWiring(s => s.selectedBundleId);
+  const selectedHarnessNodeIds = useWiring(s => s.selectedHarnessNodeIds);
+  const assignBranchPointLabels = useWiring(s => s.assignBranchPointLabels);
+  const lockHarnessEdges = useWiring(s => s.lockHarnessEdges);
+  const unlockHarnessEdges = useWiring(s => s.unlockHarnessEdges);
+  const resetHarnessLayout = useWiring(s => s.resetHarnessLayout);
 
   const [cursor, setCursor] = useState<Point | null>(null);
   const [projectName, setProjectName] = useState('Build Tracker');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
   const [editingUserDevice, setEditingUserDevice] = useState<any | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -150,6 +170,20 @@ export default function WiringPage() {
       'wire',
     );
   }, [netLabelMode, shieldMode, textMode, noteMode, junctionMode, setToolMode]);
+
+  // Auto-expand the collapsed Inspector rail whenever a new selection has
+  // something to show details for. Keyed on the selection sets/ids
+  // themselves (not a boolean), so this only fires on an actual selection
+  // CHANGE — collapsing the inspector by hand while a selection sits idle
+  // doesn't get immediately fought back open.
+  useEffect(() => {
+    const hasSelection =
+      selDevIds.size > 0 || selWireIds.size > 0 || selConnIds.size > 0 ||
+      selNetLabelIds.size > 0 || selShieldIds.size > 0 || selAnnotIds.size > 0 ||
+      selectedHarnessTree !== null || selectedBundleId !== null || selectedHarnessNodeIds.size > 0;
+    if (hasSelection) setInspectorOpen(true);
+  }, [selDevIds, selWireIds, selConnIds, selNetLabelIds, selShieldIds, selAnnotIds,
+      selectedHarnessTree, selectedBundleId, selectedHarnessNodeIds]);
 
   // Toggling either tool off also exits the other so the toolbar shows a
   // single active mode. Esc cancels both.
@@ -273,6 +307,40 @@ export default function WiringPage() {
   const skipNextSaveRef = useRef(false);
   // Toast the error ONCE per error streak, not on every debounced save attempt.
   const lastErrorToastedRef = useRef<string | null>(null);
+  // The server project's `updatedAt` as of our last load/save — the token
+  // the conflict check compares against. undefined = unknown (offline load;
+  // the server then skips the check), null = server project was empty.
+  const remoteUpdatedAtRef = useRef<string | null | undefined>(undefined);
+  // Once a 409 conflict is seen, autosaving stops until the page reloads —
+  // saving again would clobber whatever the other tab wrote.
+  const conflictRef = useRef(false);
+
+  // Harness hysteresis (2026-07) — the previous derivation's raw MST edges,
+  // kept per-sheet (a Map, not a single value) so switching sheets never
+  // lets one sheet's topology bias another's. A plain mutable ref, not
+  // state — the write must never itself trigger a re-render; it's purely
+  // "what deriveHarness produced last time," read back on the NEXT
+  // derivation. Declared up here (not in the harness section) because the
+  // undo/redo wrappers below need it in scope.
+  const previousMstEdgesRef = useRef<Map<string, ReadonlySet<string>>>(new Map());
+
+  // Undo/redo, wrapped: restoring an older state must not leave the
+  // hysteresis bias pointing at the NEWER topology — in a near-tie the tree
+  // would then refuse to visually revert with the undone positions. Clearing
+  // the ref makes the first post-undo derivation cold (exact), after which
+  // the bias warms back up on the next interaction.
+  const doUndo = useCallback(() => { previousMstEdgesRef.current.clear(); undo(); }, [undo]);
+  const doRedo = useCallback(() => { previousMstEdgesRef.current.clear(); redo(); }, [redo]);
+
+  // Drop hysteresis entries for sheets that no longer exist — without this
+  // the map grows monotonically across sheet deletions (a slow leak, and a
+  // stale-bias hazard if a sheet id were ever reused).
+  useEffect(() => {
+    const live = new Set(sheets.map(sh => sh.id));
+    for (const id of previousMstEdgesRef.current.keys()) {
+      if (!live.has(id)) previousMstEdgesRef.current.delete(id);
+    }
+  }, [sheets]);
 
   // ── Load from server on mount, falling back to localStorage if offline ────
   useEffect(() => {
@@ -282,6 +350,7 @@ export default function WiringPage() {
     (async () => {
       try {
         const remote = await fetchWiringProject();
+        remoteUpdatedAtRef.current = remote?.updatedAt ?? null;
         if (remote?.data) {
           const ok = loadFromJson(JSON.stringify(remote.data));
           if (ok) {
@@ -331,11 +400,21 @@ export default function WiringPage() {
       if (!silent) toast.info('Demo mode — changes are not saved.');
       return false;
     }
+    // A detected conflict freezes remote saves — pushing again would clobber
+    // the other tab's work. Local backup keeps running so nothing is lost.
+    if (conflictRef.current) {
+      saveProjectLocal(serialize());
+      if (!silent) {
+        toast.error('Saving is paused — the project changed in another tab. Reload to pick up the latest version.');
+      }
+      return false;
+    }
     const json = serialize();
     saveProjectLocal(json); // always persist local backup first
     try {
       const parsed = JSON.parse(json);
-      await saveWiringProject(projectName, parsed);
+      const result = await saveWiringProject(projectName, parsed, remoteUpdatedAtRef.current);
+      remoteUpdatedAtRef.current = result.updatedAt;
       setSaveStatus('saved');
       setSaveError(null);
       lastErrorToastedRef.current = null;
@@ -343,6 +422,23 @@ export default function WiringPage() {
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: number }).status;
+      // 409 — another tab/device saved since we loaded. Stop autosaving and
+      // tell the user to reload; their edits here stay in local storage.
+      if (status === 409) {
+        conflictRef.current = true;
+        setSaveStatus('conflict');
+        setSaveError(message);
+        toast.error(
+          'This wiring project was changed in another tab or on another device. '
+          + 'Saving is paused so nothing gets overwritten — reload to pick up the latest version.',
+          {
+            duration: Infinity,
+            action: { label: 'Reload', onClick: () => window.location.reload() },
+          },
+        );
+        return false;
+      }
       console.warn('[wiring] Remote save failed:', err);
       setSaveStatus('offline');
       setSaveError(message);
@@ -359,6 +455,12 @@ export default function WiringPage() {
   useEffect(() => {
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false;
+      return;
+    }
+    // Conflict → remote saving is frozen; keep the local backup fresh but
+    // don't flash "saving…" in the badge.
+    if (conflictRef.current) {
+      saveProjectLocal(serialize());
       return;
     }
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
@@ -443,6 +545,17 @@ export default function WiringPage() {
     [visibleDevices, visibleWires, visibleNetLabels]
   );
 
+  // ── Sheet-wide routing cache ─────────────────────────────────────────
+  // Every wire routed once per state change, crossings (hop arcs) computed
+  // in one pass. <Wire>, <ShieldBlock>, and the exporters all read from
+  // this single result, so the canvas and every export stay pixel-identical
+  // — and dragging no longer triggers O(n²) re-routing per frame.
+  const junctionsAll = useWiring(s => s.junctions);
+  const sheetRoutes = useMemo(
+    () => computeSheetRoutes({ placedDevices, wires, netLabels, junctions: junctionsAll, shields }),
+    [placedDevices, wires, netLabels, junctionsAll, shields]
+  );
+
   // ── Harness view state ───────────────────────────────────────────────
   const activeSheetObj = useMemo(
     () => sheets.find(s => s.id === activeSheetId),
@@ -465,15 +578,35 @@ export default function WiringPage() {
   // schematic (placed devices + wires + junctions + net labels), then the
   // override layer is applied. The HarnessGraph is never stored; re-deriving
   // keeps it in sync with edits while overrides re-apply by stable id.
-  const harnessGraph = useMemo(
-    () => deriveHarness({
+  // `previousMstEdges` feeds hysteresis so a small move doesn't reshuffle
+  // branch points / bundle routing elsewhere in the tree (2026-07 — see
+  // `deriveHarness`'s module doc for the full rationale).
+  const harnessGraph = useMemo(() => {
+    const previousMstEdges = previousMstEdgesRef.current.get(activeSheetId);
+    const graph = deriveHarness({
       placedDevices: visibleDevices,
       wires: visibleWires,
       junctions: visibleJunctions,
       netLabels: visibleNetLabels,
-    }, harnessOverrides),
-    [visibleDevices, visibleWires, visibleJunctions, visibleNetLabels, harnessOverrides]
-  );
+    }, harnessOverrides, previousMstEdges);
+    if (graph._mstEdgeKeys) previousMstEdgesRef.current.set(activeSheetId, graph._mstEdgeKeys);
+    return graph;
+  }, [visibleDevices, visibleWires, visibleJunctions, visibleNetLabels, harnessOverrides, activeSheetId]);
+
+  // Stable branch-point numbering (2026-07) — assigns a persisted `BP<n>` to
+  // any branch point seen for the first time this derivation.
+  // `deriveHarness` only ever READS `branchPointLabels`; this effect is the
+  // one place that WRITES it, so the derivation itself stays pure. Safe
+  // against loops: once assigned, those ids are no longer "unassigned" on
+  // the next pass (which this same override change triggers), so the body
+  // becomes a no-op and the effect settles after exactly one extra tick.
+  useEffect(() => {
+    const existing = activeSheetObj?.harness?.overrides?.branchPointLabels ?? {};
+    const branchPointIds = harnessGraph.nodes.filter(n => n.kind === 'branchPoint').map(n => n.id);
+    const assignments = computeNewBranchPointLabelAssignments(existing, branchPointIds);
+    if (Object.keys(assignments).length === 0) return;
+    assignBranchPointLabels(activeSheetId, assignments);
+  }, [harnessGraph, activeSheetObj, activeSheetId, assignBranchPointLabels]);
 
   // True when at least one placed device is selected. In the harness view a
   // device block selects into `selectedDeviceIds` (the shared device-selection
@@ -498,12 +631,12 @@ export default function WiringPage() {
 
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
-        if (e.shiftKey) redo(); else undo();
+        if (e.shiftKey) doRedo(); else doUndo();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
         e.preventDefault();
-        redo();
+        doRedo();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
@@ -527,7 +660,7 @@ export default function WiringPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cancelWiring, clearSelection, copySelection, pasteClipboard, removeSelected, undo, redo]);
+  }, [cancelWiring, clearSelection, copySelection, pasteClipboard, removeSelected, doUndo, doRedo]);
 
   // ── Harness view toggle + re-layout ─────────────────────────────────
   // Phase 2: the harness graph (`deriveHarness`) computes its own
@@ -807,15 +940,95 @@ export default function WiringPage() {
     toast.success('Wiring project exported');
   };
 
+  // Everything the exporters need, passed explicitly — no hidden registry
+  // state. Junctions ride along so `junction:` / `#labelId` / `#shield:`
+  // endpoints all resolve inside the export's own routing pass.
+  const exportData: SheetExportData = {
+    placedDevices, wires, netLabels, annotations, shields, junctions: junctionsAll,
+  };
+
   const exportSvg = () => {
     if (!activeSheet) return;
-    downloadSheetSvg(placedDevices, wires, netLabels, annotations, shields, activeSheet, exportMeta);
+    downloadSheetSvg(exportData, activeSheet, exportMeta);
     toast.success(`Sheet "${activeSheet.name}" exported as SVG`);
   };
 
-  const exportPdf = () => {
-    if (!activeSheet) return;
-    printSheetPdf(placedDevices, wires, netLabels, annotations, shields, activeSheet, exportMeta);
+  /** Derive one sheet's harness graph for export. The ACTIVE sheet reuses
+   *  the live `harnessGraph` (identical to what's on screen, including its
+   *  hysteresis state); other sheets derive fresh from their own data +
+   *  overrides — deterministic, and exact for anything locked or hand-laid. */
+  const harnessGraphForSheet = (sheet: Sheet) => {
+    if (sheet.id === activeSheetId) return harnessGraph;
+    return deriveHarness({
+      placedDevices: placedDevices.filter(d => d.sheetId === sheet.id),
+      wires: wires.filter(w => w.sheetId === sheet.id),
+      junctions: junctionsAll.filter(j => j.sheetId === sheet.id),
+      netLabels: netLabels.filter(n => n.sheetId === sheet.id),
+    }, sheet.harness?.overrides, previousMstEdgesRef.current.get(sheet.id));
+  };
+
+  /** Assemble + print the PDF the export dialog described: schematic and/or
+   *  harness pages per selected sheet, plus the optional cable summary. */
+  const handlePdfExport = (opts: WiringPdfExportOptions) => {
+    const targetSheets = opts.scope === 'current'
+      ? (activeSheet ? [activeSheet] : [])
+      : [...sheets].sort((a, b) => a.order - b.order);
+    const metaBase = { projectName, date: new Date().toISOString() };
+
+    const pages: PdfPage[] = [];
+    const summaryInputs: CableSummarySheetInput[] = [];
+    // One routing pass shared by every schematic page.
+    const routed = opts.includeSchematic ? computeExportRoutes(exportData) : null;
+
+    for (const sheet of targetSheets) {
+      if (opts.includeSchematic && routed && sheetHasSchematicContent(exportData, sheet.id)) {
+        pages.push({ html: renderSheetSvg(exportData, sheet, { ...metaBase, sheetName: sheet.name }, routed) });
+      }
+      if (opts.includeHarness) {
+        const graph = harnessGraphForSheet(sheet);
+        const sheetDevices = placedDevices.filter(d => d.sheetId === sheet.id);
+        const mmPerUnit = sheet.harness?.mmPerUnit ?? DEFAULT_MM_PER_UNIT;
+        const svg = renderHarnessSvg({
+          graph,
+          placedDevices: sheetDevices,
+          options: {
+            showCableNames: opts.showCableNames,
+            showConductorCounts: opts.showConductorCounts,
+            lengthsMode: opts.lengthsMode,
+            mmPerUnit,
+            connectorOrder: sheet.harness?.overrides?.connectorOrder,
+            branchPointLabels: sheet.harness?.overrides?.branchPointLabels,
+          },
+          meta: { ...metaBase, sheetName: `${sheet.name} — Harness` },
+        });
+        if (svg) {
+          pages.push({ html: svg });
+          summaryInputs.push({
+            sheetName: sheet.name,
+            graph,
+            placedDevices: sheetDevices,
+            wires: wires.filter(w => w.sheetId === sheet.id),
+            mmPerUnit,
+            branchPointLabels: sheet.harness?.overrides?.branchPointLabels,
+          });
+        }
+      }
+    }
+
+    if (opts.includeHarness && opts.includeCableSummary) {
+      const summary = buildCableSummaryHtml(summaryInputs, metaBase);
+      if (summary) pages.push({ html: summary, kind: 'flow' });
+    }
+    if (opts.includeHarness && opts.includeWireSummary) {
+      const wireSummary = buildWireSummaryHtml(summaryInputs, metaBase);
+      if (wireSummary) pages.push({ html: wireSummary, kind: 'flow' });
+    }
+
+    if (pages.length === 0) {
+      toast.error('Nothing to export — the selected sheets have no content.');
+      return;
+    }
+    printPdfDocument(`${projectName} — wiring`, pages, { pageSize: opts.pageSize });
   };
 
   const exportPinListXlsx = () => {
@@ -897,11 +1110,12 @@ export default function WiringPage() {
               <Button size="sm" variant="ghost" className="gap-1" title="Export, import, or clear the project">
                 <FolderOpen className="w-4 h-4" />
                 <span className="hidden lg:inline">File</span>
+                <ChevronDown className="w-3 h-3 opacity-60" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              <DropdownMenuItem onClick={exportPdf} className="gap-2">
-                <FileText className="w-4 h-4" /> Export current sheet → PDF
+              <DropdownMenuItem onClick={() => setExportDialogOpen(true)} className="gap-2">
+                <FileText className="w-4 h-4" /> Export PDF… (schematic / harness)
               </DropdownMenuItem>
               <DropdownMenuItem onClick={exportSvg} className="gap-2">
                 <FileImage className="w-4 h-4" /> Export current sheet → SVG
@@ -938,13 +1152,79 @@ export default function WiringPage() {
             }}
           />
 
+          {/* View menu (2026-07) — harness-only presentation settings that
+              don't belong as always-visible inline controls: Reset layout
+              (a rare, confirm-guarded action) and the auto-length scale
+              (only affects the ~estimate shown for unmeasured cables, never
+              a cable's stored length — the menu spells that out so it isn't
+              mistaken for a global unit setting). */}
+          {viewMode === 'harness' && (() => {
+            const mmPerUnit = activeSheetObj?.harness?.mmPerUnit ?? DEFAULT_MM_PER_UNIT;
+            const mmPerSquare = Math.round(mmPerUnit * HARNESS_GRID);
+            return (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="ghost" className="gap-1" title="Harness view settings">
+                    <Eye className="w-4 h-4" />
+                    <span className="hidden lg:inline">View</span>
+                    <ChevronDown className="w-3 h-3 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  <DropdownMenuItem
+                    onClick={() => {
+                      if (confirm('Reset the harness layout? Every device, splice, branch point and cable bend goes back to its automatic position. Cable lengths, names and the topology lock are kept. (Undoable with Ctrl+Z.)')) {
+                        resetHarnessLayout(activeSheetId);
+                      }
+                    }}
+                    className="gap-2"
+                  >
+                    <RotateCcw className="w-4 h-4" /> Reset layout
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuCheckboxItem
+                    checked={showLengths}
+                    onCheckedChange={(v) => setShowLengths(v === true)}
+                    className="gap-2"
+                  >
+                    <Ruler className="w-4 h-4" /> Show cable lengths
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Auto-length scale
+                  </DropdownMenuLabel>
+                  <div className="px-2 pb-2 pt-0.5" onKeyDown={(e) => e.stopPropagation()}>
+                    <p className="text-xs text-muted-foreground mb-1.5 leading-snug">
+                      Only sets the <strong className="text-foreground">~estimated</strong> length shown for
+                      cables you haven't measured yet. Cables with a length you've typed in are never affected.
+                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number" min={1}
+                        className="w-16 h-7 rounded border border-border bg-background px-1 text-xs"
+                        value={mmPerSquare}
+                        onChange={(e) => {
+                          const perSquare = Number(e.target.value);
+                          if (Number.isFinite(perSquare) && perSquare > 0) {
+                            setHarnessScale(activeSheetId, perSquare / HARNESS_GRID);
+                          }
+                        }}
+                      />
+                      <span className="text-xs text-muted-foreground">mm / grid square</span>
+                    </div>
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            );
+          })()}
+
           {/* Editing actions — Undo / Redo / Fit-to-view — grouped together
               because they're reached for in quick succession when recovering
               from a mistaken click or re-orienting after a pan/zoom. */}
-          <Button size="icon" variant="ghost" onClick={undo} disabled={past.length === 0} title="Undo (Ctrl+Z)">
+          <Button size="icon" variant="ghost" onClick={doUndo} disabled={past.length === 0} title="Undo (Ctrl+Z)">
             <Undo2 className="w-4 h-4" />
           </Button>
-          <Button size="icon" variant="ghost" onClick={redo} disabled={future.length === 0} title="Redo (Ctrl+Shift+Z)">
+          <Button size="icon" variant="ghost" onClick={doRedo} disabled={future.length === 0} title="Redo (Ctrl+Shift+Z)">
             <Redo2 className="w-4 h-4" />
           </Button>
           {/* Fit to content — frames every device, wire, shield, and
@@ -1007,18 +1287,48 @@ export default function WiringPage() {
                 <span className="hidden lg:inline">Wire</span>
               </Button>
               {/* Shield tool — drag a rectangle on the canvas to wrap every wire
-                  crossing it in a new shield.  The chosen termination applies to
-                  every shield drawn until the dropdown is changed. */}
-              <Button
-                size="sm"
-                variant={shieldMode ? 'default' : 'outline'}
-                onClick={() => shieldMode ? exitShieldMode() : enterShieldMode()}
-                className="gap-1"
-                title={shieldMode ? 'Exit shield mode (Esc)' : 'Drag across wires to add a shield'}
-              >
-                <ShieldHalf className="w-4 h-4" />
-                <span className="hidden lg:inline">Shield</span>
-              </Button>
+                  crossing it in a new shield. Picking a termination below both
+                  sets it AND arms the tool (matches the old click-to-arm
+                  button); the chosen termination applies to every shield
+                  drawn until changed again. Esc still exits shield mode. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant={shieldMode ? 'default' : 'outline'}
+                    className="gap-1"
+                    title={shieldMode ? `Shield mode — ${SHIELD_TERMINATION_LABELS[shieldTermination]} (Esc to exit)` : 'Drag across wires to add a shield'}
+                  >
+                    <ShieldHalf className="w-4 h-4" />
+                    <span className="hidden lg:inline">Shield</span>
+                    <ChevronDown className="w-3 h-3 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Termination (selecting one arms the tool)
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={shieldTermination}
+                    onValueChange={(v) => {
+                      setShieldTermination(v as 'ground' | 'float' | 'backshell');
+                      enterShieldMode();
+                    }}
+                  >
+                    <DropdownMenuRadioItem value="ground">Ground-terminated</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="float">Floating</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="backshell">Backshell (S)</DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                  {shieldMode && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={exitShieldMode} className="gap-2">
+                        <X className="w-4 h-4" /> Exit shield mode
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 size="sm"
                 variant={textMode ? 'default' : 'outline'}
@@ -1032,18 +1342,6 @@ export default function WiringPage() {
                 <Type className="w-4 h-4" />
                 <span className="hidden lg:inline">Text</span>
               </Button>
-              {shieldMode && (
-                <select
-                  value={shieldTermination}
-                  onChange={(e) => setShieldTermination(e.target.value as 'ground' | 'float' | 'backshell')}
-                  className="h-8 text-xs bg-background border border-border rounded px-2"
-                  title="Shield termination drawn on every new shield"
-                >
-                  <option value="ground">Ground-terminated</option>
-                  <option value="float">Floating</option>
-                  <option value="backshell">Backshell (S)</option>
-                </select>
-              )}
             </>
           )}
 
@@ -1063,38 +1361,6 @@ export default function WiringPage() {
                 <CornerDownRight className="w-4 h-4" />
                 <span className="hidden lg:inline">Bend</span>
               </Button>
-              <Button
-                size="sm"
-                variant={showLengths ? 'default' : 'outline'}
-                className="gap-1"
-                onClick={() => setShowLengths(v => !v)}
-                title="Show cable length labels"
-              >
-                <Ruler className="w-4 h-4" />
-                <span className="hidden lg:inline">Lengths</span>
-              </Button>
-              {(() => {
-                const mmPerUnit = activeSheetObj?.harness?.mmPerUnit ?? DEFAULT_MM_PER_UNIT;
-                const mmPerSquare = Math.round(mmPerUnit * HARNESS_GRID);
-                return (
-                  <label className="ml-1 text-xs flex items-center gap-1 text-muted-foreground"
-                         title="Harness drawing scale — millimetres of cable per grid square">
-                    Scale
-                    <input
-                      type="number" min={1}
-                      className="w-16 h-7 rounded border border-border bg-background px-1 text-xs"
-                      value={mmPerSquare}
-                      onChange={(e) => {
-                        const perSquare = Number(e.target.value);
-                        if (Number.isFinite(perSquare) && perSquare > 0) {
-                          setHarnessScale(activeSheetId, perSquare / HARNESS_GRID);
-                        }
-                      }}
-                    />
-                    <span>mm / square</span>
-                  </label>
-                );
-              })()}
               {/* Mirror — flips each selected unit between 0° and 180° so its
                   connectors face the opposite edge.  Mixed selections flip
                   per-device, not en-bloc. */}
@@ -1110,6 +1376,35 @@ export default function WiringPage() {
                 <FlipHorizontal2 className="w-4 h-4" />
                 <span className="hidden lg:inline">Mirror</span>
               </Button>
+              {/* Lock / Unlock harness layout (2026-07) — pins the current
+                  branch-point / bundle topology for the whole sheet so it
+                  stops reshuffling on every move (see deriveHarness's module
+                  doc). Locking captures the live graph's raw MST edges;
+                  unlocking clears them and the sheet reverts to
+                  fresh-MST-with-hysteresis. */}
+              {(() => {
+                const isLocked = Object.keys(activeSheetObj?.harness?.overrides?.lockedEdges ?? {}).length > 0;
+                return (
+                  <Button
+                    size="sm"
+                    variant={isLocked ? 'default' : 'outline'}
+                    className="gap-1"
+                    onClick={() => {
+                      if (isLocked) {
+                        unlockHarnessEdges(activeSheetId);
+                      } else {
+                        lockHarnessEdges(activeSheetId, Array.from(harnessGraph._mstEdgeKeys ?? []));
+                      }
+                    }}
+                    title={isLocked
+                      ? 'Unlock harness layout — topology goes back to auto-routing'
+                      : 'Lock harness layout — pin the current branch points & cable routing so moving devices never reshuffles them'}
+                  >
+                    {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                    <span className="hidden lg:inline">{isLocked ? 'Locked' : 'Lock'}</span>
+                  </Button>
+                );
+              })()}
             </>
           )}
 
@@ -1154,6 +1449,7 @@ export default function WiringPage() {
             aria-label="Save to server"
             title={
               demoMode ? 'Demo mode — changes are not saved'
+              : saveStatus === 'conflict' ? 'Changed in another tab — reload the page to continue saving'
               : saveError ? `Last error: ${saveError}`
               : saveStatus === 'saved'   ? 'All changes saved'
               : saveStatus === 'saving'  ? 'Saving…'
@@ -1180,6 +1476,21 @@ export default function WiringPage() {
               </span>
             )}
           </Button>
+
+          {/* Conflict pill — persistent, impossible to miss. Saving is
+              frozen until the user reloads to pick up the other tab's
+              version (their local edits stay in localStorage). */}
+          {saveStatus === 'conflict' && (
+            <button
+              onClick={() => window.location.reload()}
+              className="shrink-0 flex items-center gap-1 text-xs px-2 py-1 rounded bg-destructive/15 text-destructive hover:bg-destructive/25 transition-colors"
+              title="This project was changed in another tab or on another device. Click to reload and pick up the latest version."
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Changed elsewhere — reload</span>
+              <span className="lg:hidden">Reload</span>
+            </button>
+          )}
 
           {/* Demo-mode pill stays — it's a distinct conceptual mode users
               need to see at a glance, not just a transient save status. */}
@@ -1221,10 +1532,6 @@ export default function WiringPage() {
               </>
             )}
           </button>
-
-          <Button size="icon" variant="ghost" onClick={() => setInspectorOpen(v => !v)} title="Toggle inspector">
-            {inspectorOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-          </Button>
         </div>
 
         {/* Sheet tabs */}
@@ -1290,16 +1597,20 @@ export default function WiringPage() {
               >
                 {viewMode === 'schematic' ? (
                   <>
-                    {visibleWires.map(w => (
-                      <Wire
-                        key={w.id}
-                        wire={w}
-                        selected={selWireIds.has(w.id)}
-                        onSelect={(id, shift) => shift ? toggleWire(id) : selectOnly([], [id], [])}
-                        allWiresOnSheet={visibleWires}
-                        placedDevices={visibleDevices}
-                      />
-                    ))}
+                    {visibleWires.map(w => {
+                      const route = sheetRoutes.routes.get(w.id);
+                      if (!route) return null;
+                      return (
+                        <Wire
+                          key={w.id}
+                          wire={w}
+                          selected={selWireIds.has(w.id)}
+                          onSelect={(id, shift) => shift ? toggleWire(id) : selectOnly([], [id], [])}
+                          allWiresOnSheet={visibleWires}
+                          route={route}
+                        />
+                      );
+                    })}
                     {visibleDevices.map(d => (
                       <DeviceBlock
                         key={d.id}
@@ -1324,8 +1635,7 @@ export default function WiringPage() {
                       <ShieldBlock
                         key={sh.id}
                         shield={sh}
-                        wires={visibleWires}
-                        placedDevices={visibleDevices}
+                        routes={sheetRoutes.routes}
                         selected={selShieldIds.has(sh.id)}
                         onSelect={(id, shift) => shift ? toggleShield(id) : selectOnly([], [], [], [], [id])}
                       />
@@ -1474,6 +1784,7 @@ export default function WiringPage() {
                         <li>Shift+click harness nodes — multi-select, drag together</li>
                         <li>Bend tool — click a Bundle to add a bend point</li>
                         <li>Drag a bend handle — reshape · Double-click — remove</li>
+                        <li>Lock — pin branch points & routing so moves can't reshuffle them</li>
                       </>
                     ) : (
                       <li>Click pin → click pin — wire</li>
@@ -1492,13 +1803,36 @@ export default function WiringPage() {
             )}
           </div>
 
-          {inspectorOpen && (
-            <aside className="w-72 border-l border-border bg-card/30 overflow-y-auto">
-              <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Inspector
+          {/* Inspector aside — collapses to a thin rail on the far right
+              rather than disappearing outright, so there's always something
+              there to click to bring it back (2026-07: the old toggle lived
+              in the top toolbar, easy to lose track of). */}
+          {inspectorOpen ? (
+            <aside className="w-72 shrink-0 border-l border-border bg-card/30 overflow-y-auto">
+              <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Inspector</span>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6 -mr-1.5"
+                  onClick={() => setInspectorOpen(false)}
+                  title="Collapse inspector"
+                  aria-label="Collapse inspector"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
               </div>
               <Inspector />
             </aside>
+          ) : (
+            <button
+              onClick={() => setInspectorOpen(true)}
+              className="w-6 shrink-0 border-l border-border bg-card/30 hover:bg-card flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+              title="Open inspector"
+              aria-label="Open inspector"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
           )}
         </div>
         </HarnessGraphProvider>
@@ -1523,6 +1857,13 @@ export default function WiringPage() {
         onClose={() => { setCustomEditorOpen(false); setEditingUserDevice(null); }}
       />
       <NetLabelPickerDialog />
+      <WiringExportDialog
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        currentSheetName={activeSheet?.name ?? 'Sheet'}
+        sheetCount={sheets.length}
+        onExport={handlePdfExport}
+      />
     </AppShell>
   );
 }

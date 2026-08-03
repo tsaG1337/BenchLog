@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { Wrench, Lock, User, AlertTriangle, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -12,6 +14,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -44,7 +47,7 @@ export default function LoginPage() {
         await setup(password);
         toast.success('Password set successfully!');
       } else {
-        await login(password, multiTenant ? username : undefined);
+        await login(password, multiTenant ? username : undefined, rememberMe);
       }
     } catch (err: any) {
       if (err?.status === 429) {
@@ -148,6 +151,15 @@ export default function LoginPage() {
                 minLength={8}
                 autoComplete="new-password"
               />
+            </div>
+          )}
+
+          {!needsSetup && (
+            <div className="flex items-center gap-2">
+              <Checkbox id="login-remember-me" checked={rememberMe} onCheckedChange={(v) => setRememberMe(v === true)} />
+              <Label htmlFor="login-remember-me" className="text-sm text-muted-foreground cursor-pointer">
+                Remember me on this device
+              </Label>
             </div>
           )}
 

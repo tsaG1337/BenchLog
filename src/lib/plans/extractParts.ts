@@ -22,18 +22,36 @@ const STOPWORDS = new Set([
   'VAN\'S', 'AIRCRAFT', 'INC', 'TYP', 'PLACES', 'TYPICAL',
 ]);
 
-/** Run vendor regexes against one string. Returns the first match or null. */
-function firstMatch(text: string, vendor: OcrVendorConfig): string | null {
+export interface PartNumberMatch {
+  partNumber: string;
+  /** Character offset of the raw match within the input text. */
+  start: number;
+  /** Character length of the raw matched text (before uppercasing/trim). */
+  length: number;
+}
+
+/**
+ * Run vendor regexes against one string. Returns the match plus its
+ * position within `text` (every VANS_PATTERNS regex wraps its entire
+ * matched text in capture group 1, so `m.index`/`m[0].length` already
+ * describe group 1's span — no separate group-offset math needed).
+ */
+export function matchPartNumberWithPosition(text: string, vendor: OcrVendorConfig): PartNumberMatch | null {
   for (const re of vendor.partNumberPatterns) {
     re.lastIndex = 0; // safety — these are constructed with /g-less, but be defensive
     const m = re.exec(text);
     if (m && m[1]) {
       const candidate = m[1].toUpperCase().trim();
       if (STOPWORDS.has(candidate)) continue;
-      return candidate;
+      return { partNumber: candidate, start: m.index, length: m[0].length };
     }
   }
   return null;
+}
+
+/** Run vendor regexes against one string. Returns the first match or null. */
+export function matchPartNumber(text: string, vendor: OcrVendorConfig): string | null {
+  return matchPartNumberWithPosition(text, vendor)?.partNumber ?? null;
 }
 
 export function extractPartRefsFromTextItems(
@@ -45,7 +63,7 @@ export function extractPartRefsFromTextItems(
   for (let i = 0; i < items.length; i++) {
     const str = (items[i].str || '').trim();
     if (str.length < 3) continue;
-    const pn = firstMatch(str, vendor);
+    const pn = matchPartNumber(str, vendor);
     if (!pn) continue;
     // Build a small snippet from the next 2-3 items for context.
     const snippetParts: string[] = [];

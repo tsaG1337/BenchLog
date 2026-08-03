@@ -48,7 +48,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     handle403Deactivated(res, text);
     let message = res.statusText;
     try { const parsed = JSON.parse(text).error; if (parsed) message = parsed; } catch { /* not JSON */ }
-    throw new Error(message || `Request failed (${res.status})`);
+    // Attach the HTTP status so callers can branch on specific codes
+    // (e.g. 409 conflict handling) without string-matching messages.
+    const err = new Error(message || `Request failed (${res.status})`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   try {
     return JSON.parse(text);
@@ -846,10 +850,23 @@ export async function fetchWiringProject(): Promise<WiringProjectPayload> {
   return request<WiringProjectPayload>('/api/wiring');
 }
 
-export async function saveWiringProject(name: string, data: unknown): Promise<{ ok: true; updatedAt: string }> {
+/** `baseUpdatedAt` is the `updatedAt` the client last loaded or saved
+ *  (null when the project was empty at load). The server rejects the save
+ *  with 409 when the stored project has moved past it — i.e. another tab
+ *  or device saved in between. */
+export async function saveWiringProject(
+  name: string,
+  data: unknown,
+  baseUpdatedAt?: string | null,
+): Promise<{ ok: true; updatedAt: string }> {
+  // Omit the field entirely when the client doesn't know the server state
+  // (offline load) — the server then skips the conflict check.
+  const body = baseUpdatedAt === undefined
+    ? { name, data }
+    : { name, data, baseUpdatedAt };
   return request('/api/wiring', {
     method: 'PUT',
-    body: JSON.stringify({ name, data }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -1065,6 +1082,11 @@ export interface InvStock {
   locationPath?: string;
 }
 
+export interface InvPartLookup {
+  part: InvPart | null;
+  stock: InvStock[];
+}
+
 export interface InvStats {
   totalParts: number;
   totalLocations: number;
@@ -1095,7 +1117,7 @@ export const deleteInvStock      = (id: number)                          => requ
 
 // Stats & Lookup
 export const fetchInvStats       = ()                                    => request<InvStats>('/api/inventory/stats');
-export const lookupInvPart       = (partNumber: string)                  => request<InvStock[]>(`/api/inventory/lookup/${encodeURIComponent(partNumber)}`);
+export const lookupInvPart       = (partNumber: string)                  => request<InvPartLookup>(`/api/inventory/lookup/${encodeURIComponent(partNumber)}`);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  INVENTORY CHECK SESSIONS

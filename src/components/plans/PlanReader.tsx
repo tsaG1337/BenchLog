@@ -8,12 +8,12 @@
  * Annotations live in a sibling overlay (PlanAnnotationsLayer) so the
  * react-pdf canvas stays untouched.
  */
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Document, Page } from 'react-pdf';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { MIcon } from '@/components/AppShell';
-import { fetchPlanPdf, updatePlan, type PlanFile } from '@/lib/api';
+import { fetchPlanPdf, updatePlan, fetchGeneralSettings, type PlanFile, type GeneralSettings } from '@/lib/api';
 import { toast } from 'sonner';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -25,8 +25,11 @@ import { PlanSearchBar } from './PlanSearchBar';
 import { PlanSearchSidebar } from './PlanSearchSidebar';
 import { PlanSearchHighlightLayer } from './PlanSearchHighlightLayer';
 import { usePdfTextSearch } from './usePdfTextSearch';
+import { PlanPartLinkLayer } from './PlanPartLinkLayer';
+import { usePdfPartRefs } from './usePdfPartRefs';
 import { registerActivePdf, unregisterActivePdf } from './pdfSearchBridge';
 import type { ServiceBulletin, SbPlacement } from '@/lib/aircraft';
+import { getAircraft } from '@/lib/aircraft';
 import { useAuth } from '@/contexts/AuthContext';
 
 const SCALE_KEY = 'plans:zoom';
@@ -87,8 +90,22 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const latestVisiblePageRef = useRef<number>(pageNumber);
   // Used by handleFit + toolbar-disabled checks; cheap derived value.
   const pageSize = pageSizes[pageNumber] ?? null;
-  const { role } = useAuth();
+  const { role, demoMode } = useAuth();
   const isAdmin = role === 'admin';
+  // Same vendor resolution indexPlanFile() already uses for search
+  // indexing — aircraft with no configured OCR vendor simply detect no
+  // part refs (usePdfPartRefs handles a null vendor as "nothing to
+  // scan"), same silent-skip behavior the search indexer already has.
+  const vendor = useMemo(() => getAircraft(aircraftSlug)?.manufacturer.labelOcr ?? null, [aircraftSlug]);
+  const [featureFlags, setFeatureFlags] = useState<GeneralSettings['featureFlags']>(undefined);
+  useEffect(() => {
+    fetchGeneralSettings().then(s => setFeatureFlags(s.featureFlags)).catch(() => {});
+  }, []);
+  // Same admin-bypass convention as AppShell's nav gating: only a real
+  // (non-demo) admin session bypasses the flag; everyone else needs
+  // `inventory` to not be explicitly disabled. Missing key defaults to
+  // enabled.
+  const showPartLinks = (role === 'admin' && !demoMode) || featureFlags?.inventory !== false;
   // Captured (normalized) coordinates of the most recent place-sb click.
   // When non-null, the SbPlacementPicker dialog is mounted so the admin
   // can pick an SB from the catalog and stage / copy the placement.
@@ -120,6 +137,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const [searchOpen, setSearchOpen] = useState<boolean>(() => !!urlSearch);
   const [searchSidebarOpen, setSearchSidebarOpen] = useState(true);
   const search = usePdfTextSearch(pdfDoc, { initialQuery: urlSearch });
+  const partRefs = usePdfPartRefs(pdfDoc, vendor);
 
   // Track which match the user has scrolled to so we don't fight the
   // IntersectionObserver every time a new match becomes active.
@@ -494,8 +512,25 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   // and notifies the parent as the user scrolls between pages. We pick the
   // page with the largest visible area. Threshold steps every 25% give us
   // enough granularity without firing on every scroll pixel.
+  //
+  // Depends on `pdfDoc` (not `pdfBlobUrl`) because react-pdf's
+  // <Document> doesn't render its children (our page wrapper divs)
+  // the instant pdfBlobUrl is set — it shows its own internal
+  // `loading` placeholder until it finishes parsing, and only renders
+  // children once that completes, which is the same moment
+  // `onLoadSuccess` sets `pdfDoc`. `pdfBlobUrl` was the wrong signal:
+  // confirmed via instrumenting IntersectionObserver in a live session
+  // that with the pdfBlobUrl-based effect, an observer got created but
+  // .observe() was called on it zero times — pageRefs.current was
+  // still empty at that point because the actual page divs hadn't
+  // rendered yet. If a file's cached pageCount already happens to be
+  // correct, `numPages` never changes value after the first render, so
+  // it alone can't be relied on to re-fire the effect once the divs
+  // exist — `pdfDoc` transitions null → object exactly once, at
+  // exactly the right moment, regardless of whether numPages needed
+  // correcting.
   useEffect(() => {
-    if (!numPages || !scrollContainerRef.current) return;
+    if (!numPages || !pdfDoc || !scrollContainerRef.current) return;
     const root = scrollContainerRef.current;
     const visible = new Map<number, number>(); // page → ratio
     const observer = new IntersectionObserver(
@@ -523,7 +558,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
     );
     for (const node of pageRefs.current.values()) observer.observe(node);
     return () => observer.disconnect();
-  }, [numPages, onPageChange]);
+  }, [numPages, onPageChange, pdfDoc]);
 
   // Action buttons used in both the desktop top-toolbar and the mobile
   // bottom-dock. Extracted so we don't duplicate handlers between the
@@ -613,6 +648,18 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
       </button>
     </>
   );
+
+  // Raster resolution handed to pdf.js, independent from the CSS zoom
+  // level (`scale`). Native devicePixelRatio (2-3x on Retina/4K) gives
+  // full sharpness, but "N pages x high zoom x native DPR" is what used
+  // to spike canvas memory enough to kill the tab on long sections —
+  // which is why DPR was pinned to 1 everywhere. Instead of a flat cap,
+  // taper DPR down as zoom goes up so the raster budget (scale * dpr)
+  // stays bounded at the same worst case already known to be safe:
+  // scale=3 (max zoom) at dpr=1. At scale=1 (the common case) this
+  // yields full native DPR, while still degrading gracefully at high
+  // zoom on long sections.
+  const rasterDpr = Math.min(window.devicePixelRatio || 1, 3 / scale);
 
   return (
     <>
@@ -743,19 +790,11 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                     <Page
                       pageNumber={n}
                       scale={scale}
-                      // Pin pdf.js to a 1× pixel-ratio raster instead of
-                      // Retina's default 2× / 3×. On a 25-page section at
-                      // 2× zoom, that's the difference between ~50 MB of
-                      // canvas memory (safe) and ~200 MB (Safari kills
-                      // the tab). The pages look slightly less crisp at
-                      // very high zoom but everything stays readable —
-                      // builders zoom in to find a callout, not to
-                      // appreciate hairlines.
-                      devicePixelRatio={1}
+                      devicePixelRatio={rasterDpr}
                       onRenderSuccess={({ width, height }) =>
                         setPageSizes(prev => ({ ...prev, [n]: { width, height } }))
                       }
-                      renderTextLayer={false}
+                      renderTextLayer
                       renderAnnotationLayer={false}
                     />
                     {size && (
@@ -778,6 +817,12 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                       <PlanSearchHighlightLayer
                         matches={search.matchesByPage.get(n) ?? []}
                         currentIndex={search.currentIndex}
+                      />
+                    )}
+                    {size && showPartLinks && (
+                      <PlanPartLinkLayer
+                        refs={partRefs.refsByPage.get(n) ?? []}
+                        pageSize={size}
                       />
                     )}
                   </div>

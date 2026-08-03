@@ -1,23 +1,25 @@
 import { useRef, useState } from 'react';
-import type { Wire as WireModel, PlacedDevice } from '@/lib/wiring/types';
+import type { Wire as WireModel } from '@/lib/wiring/types';
 import { isJunctionKey } from '@/lib/wiring/types';
 import { useWiring } from '@/lib/wiring/store';
-import { buildWirePath, getWireEndpoints, computeEffectiveRouting, projectClickOntoWire } from '@/lib/wiring/wirePaths';
-import { routeWire, ROUTE_STUB_LENGTH } from '@/lib/wiring/routing';
+import { projectClickOntoWire } from '@/lib/wiring/wirePaths';
+import type { WireRoute } from '@/lib/wiring/sheetRoutes';
+import { ROUTE_STUB_LENGTH } from '@/lib/wiring/routing';
 
 interface Props {
   wire: WireModel;
   selected: boolean;
   onSelect: (id: string, shift: boolean) => void;
   allWiresOnSheet: WireModel[];
-  /** PlacedDevices visible on the SAME sheet as this wire. The router
-   *  resolves pin endpoints through this list. */
-  placedDevices: PlacedDevice[];
+  /** Precomputed route from the sheet-wide routing cache — geometry (with
+   *  hop arcs), endpoints, and effective handle positions. Computing this
+   *  per-wire here was O(n²) per frame; the cache does it once per change. */
+  route: WireRoute;
 }
 
 import { askForNetLabel } from './NetLabelPickerDialog';
 
-export function Wire({ wire, selected, onSelect, allWiresOnSheet, placedDevices }: Props) {
+export function Wire({ wire, selected, onSelect, allWiresOnSheet, route }: Props) {
   const wiringFromPin = useWiring(s => s.wiringFromPin);
   const finishWiringAtPoint = useWiring(s => s.finishWiringAtPoint);
   const startWiringFromWire = useWiring(s => s.startWiringFromWire);
@@ -56,16 +58,13 @@ export function Wire({ wire, selected, onSelect, allWiresOnSheet, placedDevices 
   const toJogDragRef     = useRef<{ offset: number } | null>(null);
   const labelDragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
 
-  const ends = getWireEndpoints(placedDevices, wire);
-  if (!ends) return null;
-
-  const d = buildWirePath(placedDevices, wire, allWiresOnSheet);
+  const { ends, pathD: d, eff } = route;
   if (!d) return null;
 
-  // Effective routing values. Falls back to the obstacle-avoidance Y when
-  // the auto-router deflected this wire around a device — otherwise handles
-  // would sit on the (invisible, unused) pin Y instead of the wire.
-  const eff = computeEffectiveRouting(placedDevices, wire);
+  // Effective routing values from the cache. Falls back to the
+  // obstacle-avoidance Y when the auto-router deflected this wire around a
+  // device — otherwise handles would sit on the (invisible, unused) pin Y
+  // instead of the wire.
   const effectiveMidX  = eff.midX;
   const effectiveFromY = eff.fromY;
   const effectiveToY   = eff.toY;
@@ -310,6 +309,7 @@ export function Wire({ wire, selected, onSelect, allWiresOnSheet, placedDevices 
       segments,
       hostWireId: wire.id,
       allWiresOnSheet,
+      junctions: useWiring.getState().junctions,
     });
   }
 

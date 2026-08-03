@@ -16,7 +16,7 @@ interface AuthContextType {
   slug: string | null;
   latestNews: LatestNews | null;
   hasUnseenNews: boolean;
-  login: (password: string, username?: string) => Promise<void>;
+  login: (password: string, username?: string, rememberMe?: boolean) => Promise<void>;
   setup: (password: string) => Promise<void>;
   logout: () => void;
   markNewsSeen: () => Promise<void>;
@@ -82,11 +82,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('accountDeactivated', handler);
   }, []);
 
-  const login = async (password: string, username?: string) => {
+  const login = async (password: string, username?: string, rememberMe?: boolean) => {
     const res = await fetch(`${API_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, username }),
+      body: JSON.stringify({ password, username, rememberMe }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Login failed' }));
@@ -169,7 +169,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setHasUnseenNews(false);
     try {
       await apiMarkNewsSeen();
-    } catch {}
+    } catch { /* see above — the optimistic update already stands */ }
   };
 
   return (

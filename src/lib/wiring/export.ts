@@ -1,36 +1,43 @@
-import type { PlacedDevice, Wire, Sheet, NetLabel, Point, Annotation, Shield } from './types';
+import type { PlacedDevice, Wire, Sheet, NetLabel, Point, Annotation, Shield, Junction } from './types';
 import { isJunctionKey } from './types';
 import { layoutDevice, computePinInfo } from './layout';
-import { computePinWorldPos } from './layout';
-import { computeWirePath, buildWirePath, computeEffectiveRouting, getWireEndpoints, resolveJunctionPos } from './wirePaths';
+import {
+  computeSheetRoutes, shieldSpan, SHIELD_STEM, SHIELD_PIN_DROP,
+  type SheetRoutesResult, type RouteContext,
+} from './sheetRoutes';
 import { getSymbolDef, type SymbolDef } from './symbols';
 import { colorForText } from '../../components/wiring/NetLabelView';
 import { annotationPlainText } from '../../components/wiring/AnnotationEditor';
+
+/** Everything the exporters need from the store, passed explicitly — the
+ *  export path has no hidden registry dependencies. */
+export interface SheetExportData {
+  placedDevices: PlacedDevice[];
+  wires: Wire[];
+  netLabels: NetLabel[];
+  annotations: Annotation[];
+  shields: Shield[];
+  junctions: Junction[];
+}
+
+function routeCtx(data: SheetExportData): RouteContext {
+  return {
+    placedDevices: data.placedDevices,
+    wires: data.wires,
+    netLabels: data.netLabels,
+    junctions: data.junctions,
+    shields: data.shields,
+  };
+}
 
 // ── Bounding-box computation ─────────────────────────────────────────
 interface Box { x: number; y: number; width: number; height: number; }
 
 /** Resolve a net-label's flag position to world coords. Mirrors the
- *  in-app NetLabelView logic — base anchor + drag offset, with support
- *  for pin / junction `attachedTo` keys. */
-function labelFlagPos(
-  label: NetLabel,
-  placedDevices: PlacedDevice[],
-): Point | null {
-  const key = label.attachedTo;
-  if (isJunctionKey(key)) {
-    const pos = resolveJunctionPos(key);
-    if (!pos) return null;
-    return {
-      x: pos.x + (label.offset?.dx ?? 0),
-      y: pos.y + (label.offset?.dy ?? 0),
-    };
-  }
-  const [deviceId, pinId] = key.split(':');
-  const pd = placedDevices.find(p => p.deviceId === deviceId
-    && p.connectors.some(c => c.pinIds.includes(pinId)));
-  if (!pd) return null;
-  const base = computePinWorldPos(pd, pinId);
+ *  in-app NetLabelView logic — base anchor + drag offset. All key kinds
+ *  (pin / junction) resolve through the routing cache's endpoint index. */
+function labelFlagPos(label: NetLabel, routed: SheetRoutesResult): Point | null {
+  const base = routed.resolveEndpoint(label.attachedTo);
   if (!base) return null;
   return {
     x: base.x + (label.offset?.dx ?? 0),
@@ -54,13 +61,11 @@ function labelOutwardDir(label: NetLabel, placedDevices: PlacedDevice[]): 'left'
 }
 
 export function sheetBoundingBox(
-  placedDevices: PlacedDevice[],
-  wires: Wire[],
-  netLabels: NetLabel[],
-  annotations: Annotation[],
-  shields: Shield[],
+  data: SheetExportData,
+  routed: SheetRoutesResult,
   sheetId: string,
 ): Box {
+  const { placedDevices, wires, netLabels, annotations, shields } = data;
   let minX =  Infinity, minY =  Infinity;
   let maxX = -Infinity, maxY = -Infinity;
 
@@ -81,14 +86,14 @@ export function sheetBoundingBox(
     maxY = Math.max(maxY, d.position.y + height + 20);
   }
 
-  // Wires: walk the FULL routed polyline, not just the endpoints. A wire
-  // detoured around a device (auto-avoidance) or dragged by the user can
-  // extend well past the endpoint box — endpoint-only bboxes clipped those
-  // in exports. computeWirePath also resolves junction / net-label
-  // endpoints, which the old per-pin lookup silently skipped.
+  // Wires: walk the FULL routed polyline from the cache, not just the
+  // endpoints. A wire detoured around a device (auto-avoidance) or dragged
+  // by the user can extend well past the endpoint box — endpoint-only
+  // bboxes clipped those in exports.
   for (const w of wires.filter(onSheet)) {
-    const pts = computeWirePath(placedDevices, w);
-    for (const p of pts) {
+    const r = routed.routes.get(w.id);
+    if (!r) continue;
+    for (const p of r.points) {
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
       maxX = Math.max(maxX, p.x);
@@ -97,14 +102,17 @@ export function sheetBoundingBox(
   }
 
   // Shields: stadium wraps its wires' ys at the shield's x-range, plus the
-  // termination glyph hanging below (stem 12 + glyph ~14 + padding).
+  // termination glyph hanging below (stem + glyph + padding).
   for (const sh of shields.filter(s => s.sheetId === sheetId)) {
-    const ext = shieldExtent(sh, wires, placedDevices);
-    if (!ext) continue;
+    const span = shieldSpan(sh, routed.routes);
+    if (!span) continue;
+    const glyphBottom = sh.termination === 'float'
+      ? span.bottom
+      : span.bottom + SHIELD_STEM + 14;
     minX = Math.min(minX, sh.xStart - 4);
     maxX = Math.max(maxX, sh.xEnd + 4);
-    minY = Math.min(minY, ext.top - 4);
-    maxY = Math.max(maxY, ext.glyphBottom + 4);
+    minY = Math.min(minY, span.top - 4);
+    maxY = Math.max(maxY, glyphBottom + 4);
   }
 
   // Annotations — text + note markers contribute their own footprint.
@@ -135,7 +143,7 @@ export function sheetBoundingBox(
   // A label's bbox is approximately a 100×24 rect around its anchor in the
   // outward direction; we widen by that on each side conservatively.
   for (const lbl of netLabels.filter(n => n.sheetId === sheetId)) {
-    const p = labelFlagPos(lbl, placedDevices);
+    const p = labelFlagPos(lbl, routed);
     if (!p) continue;
     minX = Math.min(minX, p.x - 110);
     minY = Math.min(minY, p.y - 20);
@@ -153,59 +161,14 @@ export function sheetBoundingBox(
   };
 }
 
-// ── Shield geometry (mirrors ShieldBlock.tsx) ────────────────────────
-
-/** Sample the wire's y at the given world x by walking its routed polyline.
- *  Port of ShieldBlock's sampleWireYAt — kept in sync so exported shields
- *  wrap the same wires at the same heights as the canvas. */
-function sampleWireYAt(path: Point[], targetX: number): number | null {
-  if (path.length < 2) return null;
-  for (let i = 0; i < path.length - 1; i++) {
-    const a = path[i], b = path[i + 1];
-    const xLo = Math.min(a.x, b.x), xHi = Math.max(a.x, b.x);
-    if (targetX < xLo || targetX > xHi) continue;
-    if (a.x === b.x) continue;
-    const t = (targetX - a.x) / (b.x - a.x);
-    return a.y + t * (b.y - a.y);
-  }
-  const first = path[0], last = path[path.length - 1];
-  return Math.abs(targetX - first.x) <= Math.abs(targetX - last.x) ? first.y : last.y;
-}
-
-const SHIELD_PAD = 12;
-const SHIELD_STEM = 12;
-
-interface ShieldExtent { top: number; bottom: number; glyphBottom: number; midX: number; }
-
-/** Vertical extent of a shield's stadium + its termination glyph. Returns
- *  null when none of the shield's wires resolve (all deleted). */
-function shieldExtent(shield: Shield, wires: Wire[], placedDevices: PlacedDevice[]): ShieldExtent | null {
-  const midX = (shield.xStart + shield.xEnd) / 2;
-  const inShield = new Set(shield.wireIds);
-  const ys: number[] = [];
-  for (const w of wires) {
-    if (!inShield.has(w.id)) continue;
-    const path = computeWirePath(placedDevices, w);
-    const y = sampleWireYAt(path, midX);
-    if (y !== null) ys.push(y);
-  }
-  if (ys.length === 0) return null;
-  const top = Math.min(...ys) - SHIELD_PAD;
-  const bottom = Math.max(...ys) + SHIELD_PAD;
-  // Glyph extends below the stem: ground = 3 bars (~6px), backshell =
-  // triangle (12px), pin = circle (r 3.5 at stem+4). Use the max.
-  const glyphBottom = shield.termination === 'float'
-    ? bottom
-    : bottom + SHIELD_STEM + 14;
-  return { top, bottom, glyphBottom, midX };
-}
+// ── Shield rendering (geometry shared with ShieldBlock via sheetRoutes) ──
 
 /** Render one shield as standalone SVG: stadium outline + stem +
  *  termination glyph. Mirrors ShieldBlock.tsx with concrete colors. */
-function renderShieldSvg(shield: Shield, wires: Wire[], placedDevices: PlacedDevice[]): string {
-  const ext = shieldExtent(shield, wires, placedDevices);
-  if (!ext) return '';
-  const { top, bottom, midX } = ext;
+function renderShieldSvg(shield: Shield, routed: SheetRoutesResult): string {
+  const span = shieldSpan(shield, routed.routes);
+  if (!span) return '';
+  const { top, bottom, midX } = span;
   const xStart = shield.xStart, xEnd = shield.xEnd;
   const width = xEnd - xStart;
   const height = bottom - top;
@@ -234,7 +197,7 @@ function renderShieldSvg(shield: Shield, wires: Wire[], placedDevices: PlacedDev
     out.push(`<path d="M ${midX - half} ${stemBottom} L ${midX + half} ${stemBottom} L ${midX} ${stemBottom + triHeight} Z" fill="#ffffff" stroke="#111" stroke-width="1"/>`);
     out.push(`<text x="${midX}" y="${stemBottom + 6}" font-size="9" font-weight="700" text-anchor="middle" fill="#111">S</text>`);
   } else if (shield.termination === 'pin') {
-    out.push(`<circle cx="${midX}" cy="${stemBottom + 4}" r="3.5" fill="#ffffff" stroke="#111" stroke-width="1"/>`);
+    out.push(`<circle cx="${midX}" cy="${stemBottom + SHIELD_PIN_DROP}" r="3.5" fill="#ffffff" stroke="#111" stroke-width="1"/>`);
   }
   return out.join('\n');
 }
@@ -244,7 +207,7 @@ function renderShieldSvg(shield: Shield, wires: Wire[], placedDevices: PlacedDev
 // browser, imported into Illustrator, or embedded elsewhere. Uses the same
 // layout algorithm the canvas uses, so output matches the screen.
 
-function escapeXml(s: string): string {
+export function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
@@ -257,15 +220,16 @@ export interface ExportMetadata {
 }
 
 export function renderSheetSvg(
-  placedDevices: PlacedDevice[],
-  wires: Wire[],
-  netLabels: NetLabel[],
-  annotations: Annotation[],
-  shields: Shield[],
+  data: SheetExportData,
   sheet: Sheet,
   meta: ExportMetadata,
+  /** Pass a precomputed routing result to share it across sheets (the
+   *  all-sheets PDF does); omitted → computed here. */
+  routedIn?: SheetRoutesResult,
 ): string {
-  const bbox = sheetBoundingBox(placedDevices, wires, netLabels, annotations, shields, sheet.id);
+  const { placedDevices, wires, netLabels, annotations, shields } = data;
+  const routed = routedIn ?? computeSheetRoutes(routeCtx(data));
+  const bbox = sheetBoundingBox(data, routed, sheet.id);
   // Add space below for the title block.
   const titleBlockHeight = 80;
   bbox.height += titleBlockHeight;
@@ -277,16 +241,16 @@ export function renderSheetSvg(
   // White background
   parts.push(`<rect x="${bbox.x}" y="${bbox.y}" width="${bbox.width}" height="${bbox.height}" fill="#ffffff"/>`);
 
-  // Wires first (render below devices). buildWirePath is the SAME path
-  // generator the on-canvas <Wire> uses — including the hop arcs where a
+  // Wires first (render below devices). The routing cache's pathD is the
+  // SAME string the on-canvas <Wire> draws — including the hop arcs where a
   // horizontal run crosses another wire's vertical (the "not connected"
-  // bumps). Using anything simpler here is what made old exports diverge
-  // from the editor.
+  // bumps). One geometry source = editor and export can't diverge.
   const wiresOnSheet = wires.filter(w => w.sheetId === sheet.id);
   const wireLabelParts: string[] = [];
   for (const w of wiresOnSheet) {
-    const d = buildWirePath(placedDevices, w, wiresOnSheet);
-    if (!d) continue;
+    const route = routed.routes.get(w.id);
+    if (!route || !route.pathD) continue;
+    const d = route.pathD;
     const stroke = w.color === 'currentColor' ? '#111' : w.color;
     parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`);
     // Stripe overlay — dashed second stroke, same as the editor.
@@ -295,20 +259,17 @@ export function renderSheetSvg(
     }
     // Junction dots — filled circles anywhere the wire terminates on a
     // junction, so T-taps read as connected (complement of the hops).
-    const ends = getWireEndpoints(placedDevices, w);
-    if (ends) {
-      if (isJunctionKey(w.fromPin)) {
-        parts.push(`<circle cx="${ends.from.x}" cy="${ends.from.y}" r="3.5" fill="#111"/>`);
-      }
-      if (isJunctionKey(w.toPin)) {
-        parts.push(`<circle cx="${ends.to.x}" cy="${ends.to.y}" r="3.5" fill="#111"/>`);
-      }
+    if (isJunctionKey(w.fromPin)) {
+      parts.push(`<circle cx="${route.ends.from.x}" cy="${route.ends.from.y}" r="3.5" fill="#111"/>`);
+    }
+    if (isJunctionKey(w.toPin)) {
+      parts.push(`<circle cx="${route.ends.to.x}" cy="${route.ends.to.y}" r="3.5" fill="#111"/>`);
     }
     if (w.label && w.showLabel) {
       // Default label position/rotation mirror Wire.tsx exactly: anchored on
-      // the middle vertical (computeEffectiveRouting), rotated 90° when that
-      // vertical is long enough and the user hasn't dragged the label.
-      const eff = computeEffectiveRouting(placedDevices, w);
+      // the middle vertical, rotated 90° when that vertical is long enough
+      // and the user hasn't dragged the label.
+      const eff = route.eff;
       const labelX = w.labelX ?? eff.midX;
       const labelY = w.labelY ?? (eff.fromY + eff.toY) / 2;
       const middleVertLength = Math.abs(eff.fromY - eff.toY);
@@ -330,7 +291,7 @@ export function renderSheetSvg(
 
   // Shields — stadium outline + termination glyph over their wire bundles.
   for (const sh of shields.filter(s => s.sheetId === sheet.id)) {
-    const svg = renderShieldSvg(sh, wires, placedDevices);
+    const svg = renderShieldSvg(sh, routed);
     if (svg) parts.push(svg);
   }
 
@@ -420,7 +381,7 @@ export function renderSheetSvg(
   // sees on the canvas.
   const labelsOnSheet = netLabels.filter(l => l.sheetId === sheet.id);
   for (const lbl of labelsOnSheet) {
-    const pos = labelFlagPos(lbl, placedDevices);
+    const pos = labelFlagPos(lbl, routed);
     if (!pos) continue;
     const dir = labelOutwardDir(lbl, placedDevices);
     const fill = lbl.color ?? colorForText(lbl.text);
@@ -500,7 +461,23 @@ export function renderSheetSvg(
     }
   }
 
-  // Title block at the bottom
+  // Title block at the bottom — shared with the harness exporter.
+  parts.push(titleBlockSvg(bbox, titleBlockHeight, meta));
+
+  parts.push(`</svg>`);
+  return parts.join('\n');
+}
+
+/** The standard drawing title block (project / sheet / date / rev), drawn
+ *  inside the bottom `titleBlockHeight` band of `bbox`. Shared by the
+ *  schematic exporter above and the harness exporter (`exportHarness.ts`)
+ *  so every page of a mixed PDF carries the identical block. */
+export function titleBlockSvg(
+  bbox: { x: number; y: number; width: number; height: number },
+  titleBlockHeight: number,
+  meta: ExportMetadata,
+): string {
+  const parts: string[] = [];
   const tbX = bbox.x + 10;
   const tbY = bbox.y + bbox.height - titleBlockHeight + 10;
   const tbW = bbox.width - 20;
@@ -520,8 +497,6 @@ export function renderSheetSvg(
 
   parts.push(`<text x="${tbX + tbW * 0.75 + 8}" y="${tbTextY}" font-size="9" fill="#666">REV</text>`);
   parts.push(`<text x="${tbX + tbW * 0.75 + 8}" y="${tbTextY + 14}" font-size="13" font-weight="700" fill="#111">${escapeXml(meta.revision ?? '—')}</text>`);
-
-  parts.push(`</svg>`);
   return parts.join('\n');
 }
 
@@ -998,52 +973,83 @@ function triggerDownload(filename: string, mime: string, body: string | Blob): v
 }
 
 export function downloadSheetSvg(
-  placedDevices: PlacedDevice[],
-  wires: Wire[],
-  netLabels: NetLabel[],
-  annotations: Annotation[],
-  shields: Shield[],
+  data: SheetExportData,
   sheet: Sheet,
   meta: ExportMetadata,
 ): void {
-  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, shields, sheet, meta);
+  const svg = renderSheetSvg(data, sheet, meta);
   const safeProj  = meta.projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const safeSheet = sheet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   triggerDownload(`${safeProj}-${safeSheet}.svg`, 'image/svg+xml', svg);
 }
 
-/**
- * "Print to PDF" via the browser's print dialog. Renders the sheet SVG into
- * a hidden same-origin iframe and prints THAT document — no pop-up window,
- * so it cannot be eaten by pop-up blockers and never leaves a stray tab.
- * No pdf libraries required — the user picks "Save as PDF" in the dialog.
- *
- * Page setup: A3 landscape (typical for wiring diagrams). The SVG fills the
- * page with preserveAspectRatio=meet semantics, so the whole sheet always
- * lands on a single page regardless of the diagram's aspect ratio.
- */
-export function printSheetPdf(
-  placedDevices: PlacedDevice[],
-  wires: Wire[],
-  netLabels: NetLabel[],
-  annotations: Annotation[],
-  shields: Shield[],
-  sheet: Sheet,
-  meta: ExportMetadata,
+/** One page of a wiring PDF. `fit` pages (the default) hold a single SVG
+ *  scaled to exactly fill one printed page; `flow` pages hold normal HTML
+ *  (the cable-summary table) that is allowed to break across as many
+ *  printed pages as it needs. */
+export interface PdfPage {
+  html: string;
+  kind?: 'fit' | 'flow';
+}
+
+export type PdfPageSize = 'A4' | 'A3';
+
+/** Shared print plumbing: renders the given pages into a hidden
+ *  same-origin iframe and opens the browser's print dialog — no pop-up
+ *  window, so it cannot be eaten by pop-up blockers and never leaves a
+ *  stray tab. The user picks "Save as PDF" as the destination. */
+export function printPdfDocument(
+  title: string,
+  pageList: PdfPage[],
+  options?: { pageSize?: PdfPageSize },
 ): void {
-  const svg = renderSheetSvg(placedDevices, wires, netLabels, annotations, shields, sheet, meta);
-  const html = `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeXml(meta.projectName)} — ${escapeXml(sheet.name)}</title>
+  const pageSize = options?.pageSize ?? 'A4';
+  // Physical landscape page size in mm, minus the @page margin on each side.
+  // `.page.fit` used to be sized with 100vw/100vh, which Chrome/Firefox
+  // resolve against the printed page box but Safari resolves against the
+  // hosting iframe's actual on-screen CSS size — and that iframe is a 1x1px
+  // hidden frame (see below), so on Mac/Safari every "fit" (schematic /
+  // harness) page collapsed to ~1px and printed blank, while "flow" pages
+  // (tables) were unaffected since they never depend on viewport units.
+  // Fixed mm sizing is unambiguous in every engine regardless of the
+  // iframe's own box size.
+  const PAGE_MM: Record<PdfPageSize, { w: number; h: number }> = {
+    A4: { w: 297, h: 210 },
+    A3: { w: 420, h: 297 },
+  };
+  const pageMargin = 8;
+  const contentW = PAGE_MM[pageSize].w - pageMargin * 2;
+  const contentH = PAGE_MM[pageSize].h - pageMargin * 2;
+  const pages = pageList
+    .map(p => `<div class="page ${p.kind === 'flow' ? 'flow' : 'fit'}">${p.html}</div>`)
+    .join('\n');
+  const html = `<!doctype html><html><head><meta charset="UTF-8"><title>${escapeXml(title)}</title>
     <style>
-      @page { size: A3 landscape; margin: 8mm; }
+      @page { size: ${pageSize} landscape; margin: ${pageMargin}mm; }
       html, body { margin: 0; padding: 0; background: white; }
-      body { width: 100vw; height: 100vh; overflow: hidden; }
-      svg { display: block; width: 100%; height: 100%; }
+      .page { break-after: page; page-break-after: always; }
+      .page:last-child { break-after: auto; page-break-after: auto; }
+      .page.fit { width: ${contentW}mm; height: ${contentH}mm; overflow: hidden; }
+      .page.fit svg { display: block; width: 100%; height: 100%; }
+      /* Flow pages (cable summary): normal document flow so a long table
+         paginates naturally instead of being clipped to one page. */
+      .page.flow { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #111; padding: 2mm 4mm; }
+      .page.flow h1 { font-size: 16px; margin: 0 0 2px 0; }
+      .page.flow .sub { font-size: 10px; color: #666; margin: 0 0 10px 0; }
+      .page.flow h2 { font-size: 12px; margin: 12px 0 4px 0; }
+      .page.flow table { border-collapse: collapse; width: 100%; font-size: 10px; }
+      .page.flow th, .page.flow td { border: 1px solid #aaa; padding: 3px 6px; text-align: left; vertical-align: top; }
+      .page.flow th { background: #f0f0f0; font-weight: 600; }
+      .page.flow tr { break-inside: avoid; page-break-inside: avoid; }
+      .page.flow td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .page.flow .muted { color: #888; }
+      .page.flow tfoot td { font-weight: 700; background: #f7f7f7; }
     </style>
-  </head><body>${svg}</body></html>`;
+  </head><body>${pages}</body></html>`;
 
   const iframe = document.createElement('iframe');
   // Keep it in-layout but invisible: display:none would prevent rendering
-  // (and thus printing) in some engines; a 0×0 off-screen frame prints fine.
+  // (and thus printing) in some engines; a tiny off-screen frame prints fine.
   iframe.style.position = 'fixed';
   iframe.style.right = '0';
   iframe.style.bottom = '0';
@@ -1076,4 +1082,24 @@ export function printSheetPdf(
   };
 
   document.body.appendChild(iframe);
+}
+
+// printSheetPdf / printProjectPdf are gone — the export dialog
+// (WiringExportDialog → WiringPage's handler) assembles its own page list
+// (schematic and/or harness per sheet, plus the cable summary) and hands it
+// to `printPdfDocument` above.
+
+/** Compute the shared schematic routing result for a whole project — the
+ *  dialog-driven export renders several sheets from ONE routing pass instead
+ *  of re-routing per page. */
+export function computeExportRoutes(data: SheetExportData): SheetRoutesResult {
+  return computeSheetRoutes(routeCtx(data));
+}
+
+/** True when the sheet has any schematic content worth a page — used by the
+ *  export flow to skip blank pages. */
+export function sheetHasSchematicContent(data: SheetExportData, sheetId: string): boolean {
+  return data.placedDevices.some(d => d.sheetId === sheetId)
+    || data.wires.some(w => w.sheetId === sheetId)
+    || data.annotations.some(a => a.sheetId === sheetId);
 }

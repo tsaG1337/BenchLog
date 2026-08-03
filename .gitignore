@@ -56,3 +56,4 @@ deploy-demo.sh
 /docs/superpowers
 public/robots.txt
 /tmp
+CHANGELOG_INTERNAL.md

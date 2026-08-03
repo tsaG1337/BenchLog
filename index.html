@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale=1, user-scalable=no: disables native pinch-zoom.
+         Without this, mobile Safari/Chrome's zoom scale doesn't reliably
+         reset across an orientation change, leaving the whole app
+         rendered oversized until a manual (and imprecise) pinch back
+         out. The one place zoom is genuinely useful — the plans PDF
+         viewer — already implements its own pinch-to-zoom independent
+         of native browser zoom (see PlanReader.tsx's touch handlers),
+         so this doesn't remove any real functionality. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>BenchLog</title>
     <meta name="description" content="Track your build project — log sessions, visualize progress, document your journey." />
     <link rel="manifest" href="/manifest.json" />

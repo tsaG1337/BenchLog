@@ -202,15 +202,12 @@ const Index = () => {
     catch (err: any) { toast.error('Failed to update session: ' + err.message); }
   };
 
-  const handleManualAdd = async (entry: { section: string; date: Date; hours: number; minutes: number; notes: string; plansPage: string; plansSection: string; plansStep: string; imageUrls: string[] }) => {
-    const durationMinutes = entry.hours * 60 + entry.minutes;
-    const startTime = new Date(entry.date);
-    startTime.setHours(12, 0, 0, 0);
-    const endTime = new Date(startTime.getTime() + durationMinutes * 60000);
+  const handleManualAdd = async (entry: { section: string; startTime: Date; endTime: Date; notes: string; plansPage: string; plansSection: string; plansStep: string; imageUrls: string[] }) => {
+    const durationMinutes = (entry.endTime.getTime() - entry.startTime.getTime()) / 60000;
     const plansRef = [entry.plansPage && `Page ${entry.plansPage}`, entry.plansSection && `Section ${entry.plansSection}`, entry.plansStep && `Step ${entry.plansStep}`].filter(Boolean).join(', ');
     const session: WorkSession = {
       id: generateId(), section: entry.section,
-      startTime: startTime.toISOString(), endTime: endTime.toISOString(),
+      startTime: entry.startTime.toISOString(), endTime: entry.endTime.toISOString(),
       durationMinutes, notes: entry.notes,
       plansReference: plansRef || undefined,
       imageUrls: entry.imageUrls.length > 0 ? entry.imageUrls : undefined,

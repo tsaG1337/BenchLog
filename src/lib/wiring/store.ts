@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { Device, Placement, PlacedDevice, Wire, Sheet, Point, PinKey, ConnectorInstance, Side, Pin, NetLabel, Shield, ShieldTermination, Annotation, HarnessView, HarnessOverrides, Junction, Orientation } from './types';
 import { isJunctionKey, makeJunctionKey, junctionIdFromKey, emptyHarnessOverrides } from './types';
 import { computePinWorldPos } from './layout';
-import { setNetLabelRegistry, setJunctionRegistry } from './wirePaths';
 import { insertWaypointAtNearestSegment } from './harness';
 import { slugifyDesignator, pinIdFor, connectorIdFor, nextDesignator } from './library/types';
 import { wiresInNet } from './nets';
@@ -441,6 +440,38 @@ interface WiringState extends Snapshot {
   /** Set the active sheet's harness drawing scale (mm of cable per canvas
    *  unit). Ignores non-finite / non-positive input. Undoable. */
   setHarnessScale: (sheetId: string, mmPerUnit: number) => void;
+  /** Assign persisted `BP<n>` numbers to branch points seen for the first
+   *  time this derivation (2026-07). Called by a sync effect in
+   *  `WiringPage`, never by `deriveHarness` itself — merges `assignments`
+   *  into `branchPointLabels`, never overwriting an id that already has a
+   *  number. Not undoable (deliberately — a display-label assignment isn't
+   *  a user action, and undoing it would just cause the effect to
+   *  re-assign the same numbers on the next render). */
+  assignBranchPointLabels: (sheetId: string, assignments: Record<string, number>) => void;
+  /** Lock the given raw MST edge keys (2026-07) — merges into
+   *  `lockedEdges`. The caller supplies `edgeKeys` computed from the live
+   *  `HarnessGraph._mstEdgeKeys` (the store has no access to the derived
+   *  graph). Undoable. */
+  lockHarnessEdges: (sheetId: string, edgeKeys: string[]) => void;
+  /** Unlock harness edges. With `edgeKeys` omitted, clears every locked
+   *  edge on the sheet ("Unlock harness layout"); with `edgeKeys`, clears
+   *  just those (a per-tree unlock). Undoable. */
+  unlockHarnessEdges: (sheetId: string, edgeKeys?: string[]) => void;
+  /** Reset the sheet's harness LAYOUT back to full auto (2026-07): clears
+   *  node positions, cable bend points, device orientations, and connector
+   *  row order. Deliberately KEEPS user data that isn't layout — bundle
+   *  lengths, bundle names, branch-point numbers, and the topology lock.
+   *  Undoable (one step). */
+  resetHarnessLayout: (sheetId: string) => void;
+  /** Release one node's position override so it returns to its derived
+   *  position — a component back to the auto-layout column, a splice back
+   *  to its neighbour centroid, a branch point back to relaxation. No-op
+   *  when the node has no override. Undoable. */
+  clearHarnessNodePosition: (sheetId: string, nodeId: string) => void;
+  /** Set a single component's harness orientation directly (the Inspector's
+   *  per-node control — `mirrorHarnessNode` is the selection-based toolbar
+   *  variant). 0° clears the entry (identity default). Undoable. */
+  setHarnessNodeOrientation: (sheetId: string, placementId: string, orientation: Orientation) => void;
   // ── Selection ─────────────────────────────────────────────────────
   selectOnly: (deviceIds?: string[], wireIds?: string[], connectorIds?: string[], netLabelIds?: string[], shieldIds?: string[], annotationIds?: string[]) => void;
   /** Select every wire in the given wire's net. */
@@ -1888,6 +1919,76 @@ export const useWiring = create<WiringState>((set, get) => {
       };
     }),
 
+    // Deliberately a plain `set` — NOT `mutate` — so this doesn't push an
+    // undo step. This is a system-assigned display label (a branch point
+    // getting its first `BP<n>` number), not a user action; if it went
+    // through undo history, hitting Ctrl+Z after any harness edit would
+    // spend a step un-assigning a label instead of undoing what the user
+    // actually did, and the sync effect would just re-assign it right back
+    // on the next render anyway.
+    assignBranchPointLabels: (sheetId, assignments) => {
+      if (Object.keys(assignments).length === 0) return;
+      set((s) => {
+        const sheet = s.sheets.find(sh => sh.id === sheetId);
+        if (!sheet || !sheet.harness) return {};
+        const current = sheet.harness.overrides ?? emptyHarnessOverrides();
+        const branchPointLabels = { ...(current.branchPointLabels ?? {}), ...assignments };
+        return {
+          sheets: s.sheets.map(sh => sh.id === sheetId
+            ? { ...sh, harness: { ...sh.harness!, overrides: { ...current, branchPointLabels } } }
+            : sh),
+        };
+      });
+    },
+
+    // Lock / unlock ARE real user actions (a toolbar / Inspector button
+    // click) — undoable, same `mutate` + `patchHarnessOverrides` discipline
+    // as every other harness override.
+    lockHarnessEdges: (sheetId, edgeKeys) => mutate((s) =>
+      patchHarnessOverrides(s, sheetId, (o) => {
+        const lockedEdges: Record<string, true> = { ...(o.lockedEdges ?? {}) };
+        for (const key of edgeKeys) lockedEdges[key] = true;
+        return { lockedEdges };
+      })),
+
+    unlockHarnessEdges: (sheetId, edgeKeys) => mutate((s) =>
+      patchHarnessOverrides(s, sheetId, (o) => {
+        if (!edgeKeys) return { lockedEdges: {} }; // no keys given — clear the whole sheet
+        const lockedEdges: Record<string, true> = { ...(o.lockedEdges ?? {}) };
+        for (const key of edgeKeys) delete lockedEdges[key];
+        return { lockedEdges };
+      })),
+
+    resetHarnessLayout: (sheetId) => mutate((s) =>
+      patchHarnessOverrides(s, sheetId, () => ({
+        // Layout fields → empty (back to auto). Everything NOT returned here
+        // (bundleLengths, bundleNames, branchPointLabels, lockedEdges) is
+        // carried over untouched by patchHarnessOverrides' merge — measured
+        // lengths and the topology lock are user data, not layout.
+        nodePositions: {},
+        bundleWaypoints: {},
+        nodeOrientations: {},
+        connectorOrder: {},
+      }))),
+
+    clearHarnessNodePosition: (sheetId, nodeId) => mutate((s) => {
+      const sheet = s.sheets.find(sh => sh.id === sheetId);
+      if (!sheet?.harness?.overrides?.nodePositions?.[nodeId]) return {}; // nothing to release
+      return patchHarnessOverrides(s, sheetId, (o) => {
+        const nodePositions = { ...o.nodePositions };
+        delete nodePositions[nodeId];
+        return { nodePositions };
+      });
+    }),
+
+    setHarnessNodeOrientation: (sheetId, placementId, orientation) => mutate((s) =>
+      patchHarnessOverrides(s, sheetId, (o) => {
+        const nodeOrientations: Record<string, Orientation> = { ...o.nodeOrientations };
+        if (orientation === 0) delete nodeOrientations[placementId]; // identity — drop the entry
+        else nodeOrientations[placementId] = orientation;
+        return { nodeOrientations };
+      })),
+
     // ── Selection ─────────────────────────────────────────────────────
     selectOnly: (deviceIds = [], wireIds = [], connectorIds = [], netLabelIds = [], shieldIds = [], annotationIds = []) => set({
       selectedDeviceIds: new Set(deviceIds),
@@ -2584,22 +2685,6 @@ export const useWiring = create<WiringState>((set, get) => {
       wiringFromPin: null,
     }),
   };
-});
-
-// Keep wirePaths' net-label + junction registries in sync with the store so
-// `#labelId` and `junction:<id>` endpoints resolve correctly during routing
-// without forcing a circular import. The arrays keep the same reference
-// between unrelated updates, so each subscriber only fires when its slice
-// actually changes.
-setNetLabelRegistry(useWiring.getState().netLabels);
-setJunctionRegistry(useWiring.getState().junctions);
-useWiring.subscribe((state, prev) => {
-  if (state.netLabels !== prev.netLabels) {
-    setNetLabelRegistry(state.netLabels);
-  }
-  if (state.junctions !== prev.junctions) {
-    setJunctionRegistry(state.junctions);
-  }
 });
 
 // Resolves any endpoint key (pin, junction, or net label) to world coords.

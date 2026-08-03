@@ -211,7 +211,7 @@ export default function AdminPage() {
       const { latestNews: current } = await fetchLatestNewsAdmin();
       setLatestNews(current);
       setNewsForm({ title: current?.title || '', slug: current?.slug || '', date: current?.date || '' });
-    } catch {} finally { setNewsLoading(false); }
+    } catch { /* nothing configured yet, or offline — the empty form is the right fallback */ } finally { setNewsLoading(false); }
   }, []);
 
   const saveLatestNews = async () => {
@@ -223,8 +223,8 @@ export default function AdminPage() {
       setLatestNews(saved);
       if (!saved) setNewsForm({ title: '', slug: '', date: '' });
       toast.success(saved ? 'Latest news updated' : 'Latest news cleared');
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update latest news');
     } finally { setNewsSaving(false); }
   };
 

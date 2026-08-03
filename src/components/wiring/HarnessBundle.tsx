@@ -3,6 +3,7 @@ import type { HarnessGraph, HarnessNode, Bundle, Point } from '@/lib/wiring/type
 import { useWiring } from '@/lib/wiring/store';
 import {
   cableCurvePath, sampleCableCurve, snapPointToGrid, harnessTreeOf,
+  tubeThickness, polylineMidpoint,
 } from '@/lib/wiring/harness';
 import { useHarnessNodeDrag, type HarnessNodeRef } from '@/lib/wiring/useHarnessNodeDrag';
 
@@ -30,7 +31,11 @@ function pointerToWorld(e: React.PointerEvent): Point {
  *     drag re-shapes the cable, double-click removes the bend.
  *   • `splice`      nodes → a ringed dot (an electrical wire-to-wire splice).
  *   • `branchPoint` nodes → a small dot (a derived fan-out — "Branch Point")
- *     labelled `BP1`, `BP2`, … in sorted order.
+ *     labelled with its persisted `node.label` (`"BP1"`, `"BP2"`, … —
+ *     assigned once on first sighting by a sync effect in `WiringPage` and
+ *     never renumbered afterwards; see `HarnessOverrides.branchPointLabels`,
+ *     2026-07). A brand-new branch point renders with no label for one tick
+ *     until the effect catches up.
  *   • `component`   nodes → drawn by `HarnessDeviceBlock` (in WiringPage).
  *
  * Phase 4 — terminology: on-canvas labels and tooltips use the normed
@@ -58,41 +63,9 @@ interface Props {
   moveGroupIds?: string[];
 }
 
-/** Visible stroke width for a cable carrying `conductorCount` conductors.
- *
- *  Square-root scaling so each added conductor adds less visual weight,
- *  clamped so empty/huge bundles still render sanely:
- *    • Min 4 px — every cable has a visible body even when carrying 0–1.
- *    • Max 24 px — past ~110 conductors the tube saturates. */
-function tubeThickness(conductorCount: number): number {
-  const n = Math.max(1, conductorCount);
-  return Math.max(4, Math.min(24, 3 + Math.sqrt(n) * 2));
-}
-
-/** Midpoint of a polyline by arclength — where the bundle labels sit. */
-function polylineMidpoint(points: Point[]): Point {
-  if (points.length === 0) return { x: 0, y: 0 };
-  if (points.length === 1) return points[0];
-  let total = 0;
-  const segLen: number[] = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    const L = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
-    segLen.push(L);
-    total += L;
-  }
-  let target = total / 2;
-  for (let i = 0; i < segLen.length; i++) {
-    if (target <= segLen[i] || i === segLen.length - 1) {
-      const t = segLen[i] > 0 ? target / segLen[i] : 0;
-      return {
-        x: points[i].x + (points[i + 1].x - points[i].x) * t,
-        y: points[i].y + (points[i + 1].y - points[i].y) * t,
-      };
-    }
-    target -= segLen[i];
-  }
-  return points[Math.floor(points.length / 2)];
-}
+// `tubeThickness` + `polylineMidpoint` moved to @/lib/wiring/harness so the
+// PDF/SVG exporter draws identical cables and label placement — one formula,
+// canvas and print can't drift.
 
 export function HarnessGraphView({ graph, bendMode = false, showLengths = false, mmPerUnit, moveGroupIds }: Props) {
   const selectedBundleId       = useWiring(s => s.selectedBundleId);
@@ -130,14 +103,6 @@ export function HarnessGraphView({ graph, bendMode = false, showLengths = false,
     if (!a || !c) return null;
     return [a.position, c.position];
   }
-
-  // Collect branchPoint nodes sorted by id for stable BP1, BP2, … labelling.
-  const branchPoints = graph.nodes
-    .filter(n => n.kind === 'branchPoint')
-    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const branchPointLabel = new Map<string, string>(
-    branchPoints.map((n, i) => [n.id, `BP${i + 1}`]),
-  );
 
   return (
     <g>
@@ -249,7 +214,7 @@ export function HarnessGraphView({ graph, bendMode = false, showLengths = false,
               selected={selectedHarnessNodeIds.has(n.id) || treeNodeIds.has(n.id)}
               allNodes={allNodeRefs}
               moveGroupIds={moveGroupIds}
-              label={branchPointLabel.get(n.id) ?? ''}
+              label={n.label ?? ''}
               onSelect={(additive) => selectHarnessNode(n.id, additive)}
             />
           );

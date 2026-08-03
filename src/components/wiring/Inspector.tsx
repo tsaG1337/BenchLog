@@ -3,7 +3,7 @@ import { useWiring } from '@/lib/wiring/store';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { Plus, EyeOff, AlertTriangle, ExternalLink, GripVertical, ChevronDown, ChevronRight, RotateCw } from 'lucide-react';
+import { Plus, EyeOff, AlertTriangle, ExternalLink, GripVertical, ChevronDown, ChevronRight, RotateCw, Lock } from 'lucide-react';
 import { getHiddenPins, getPinConnectorCount, getLogicalConnectorNames, formatPinRef } from '@/lib/wiring/layout';
 import { colorForText } from './NetLabelView';
 import { AnnotationEditor } from './AnnotationEditor';
@@ -140,6 +140,8 @@ export function Inspector() {
   const moveConnectorToPlacement = useWiring(s => s.moveConnectorToPlacement);
   const sheets = useWiring(s => s.sheets);
   const activeSheetId = useWiring(s => s.activeSheetId);
+  const setActiveSheet = useWiring(s => s.setActiveSheet);
+  const selectOnly = useWiring(s => s.selectOnly);
   const selectedBundleId = useWiring(s => s.selectedBundleId);
   const selectedHarnessNodeIds = useWiring(s => s.selectedHarnessNodeIds);
   const selectedHarnessTree = useWiring(s => s.selectedHarnessTree);
@@ -159,7 +161,7 @@ export function Inspector() {
   if (selectedHarnessTree) {
     const tree = harnessTreeOf(selectedHarnessTree, harnessGraph);
     if (tree.bundleIds.length > 0) {
-      return <HarnessTreePanel tree={tree} graph={harnessGraph} />;
+      return <HarnessTreePanel tree={tree} graph={harnessGraph} sheetId={activeSheetId} />;
     }
     // Seed bundle is gone — fall through to normal routing.
   }
@@ -176,7 +178,7 @@ export function Inspector() {
   if (selectedHarnessNodeIds.size > 0) {
     for (const id of selectedHarnessNodeIds) {
       const node = harnessGraph.nodes.find(n => n.id === id);
-      if (node) return <HarnessNodePanel node={node} graph={harnessGraph} count={selectedHarnessNodeIds.size} />;
+      if (node) return <HarnessNodePanel node={node} graph={harnessGraph} count={selectedHarnessNodeIds.size} sheetId={activeSheetId} />;
     }
   }
 
@@ -453,6 +455,48 @@ export function Inspector() {
               : 'Add another label with the same name on any pin or wire to link them on the same net.'}
           </p>
         </div>
+
+        {/* Off-sheet references — where else this net appears. Real
+            schematics use off-page connector symbols for this; the chip
+            row is the lightweight equivalent: click to jump to that sheet
+            with the sibling label selected. */}
+        {(() => {
+          const otherSheetIds = [...new Set(
+            netMembers.filter(m => m.sheetId !== label.sheetId).map(m => m.sheetId)
+          )];
+          if (otherSheetIds.length === 0) return null;
+          return (
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Also on
+              </label>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {otherSheetIds.map(sid => {
+                  const sheet = sheets.find(s => s.id === sid);
+                  const sibling = netMembers.find(m => m.sheetId === sid);
+                  return (
+                    <button
+                      key={sid}
+                      type="button"
+                      onClick={() => {
+                        setActiveSheet(sid);
+                        if (sibling) selectOnly([], [], [], [sibling.id]);
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border bg-muted/40 text-[11px] text-foreground hover:border-primary hover:text-primary transition-colors"
+                      title={`Jump to sheet "${sheet?.name ?? sid}" and select this net's label there`}
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      {sheet?.name ?? sid}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Same net name on other sheets — electrically connected across the project.
+              </p>
+            </div>
+          );
+        })()}
 
         {/* Orientation — rotates the flag in 90° steps. The 4-up grid lets
             the user pick a specific direction directly; the inline button
@@ -1186,21 +1230,40 @@ function WireList({ wireIds, emptyHint, editable }: {
 function HarnessTreePanel({
   tree,
   graph,
+  sheetId,
 }: {
   tree: { bundleIds: string[]; nodeIds: string[] };
   graph: HarnessGraph;
+  sheetId: string;
 }) {
-  // Count node kinds reachable in the tree.
+  const lockedEdges = useWiring(s => s.sheets.find(sh => sh.id === sheetId)?.harness?.overrides?.lockedEdges ?? {});
+
+  // Count node kinds reachable in the tree. One id→node map up front —
+  // a per-id `graph.nodes.find` here was O(n²) in tree size.
+  const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
   let units = 0;
   let splices = 0;
   let branchPoints = 0;
+  // Connector/splice ids only — the id universe locked edges are keyed
+  // over (raw MST edges never reference a branchPoint or component id).
+  const rawNodeIds = new Set<string>();
   for (const id of tree.nodeIds) {
-    const n = graph.nodes.find(node => node.id === id);
+    const n = nodeById.get(id);
     if (!n) continue;
     if (n.kind === 'component') units++;
-    else if (n.kind === 'splice') splices++;
+    else if (n.kind === 'splice') { splices++; rawNodeIds.add(id); }
     else if (n.kind === 'branchPoint') branchPoints++;
+    else if (n.kind === 'connector') rawNodeIds.add(id);
   }
+  // "Locked" for this tree = any locked edge has both endpoints inside it.
+  // (2026-07 — see `HarnessOverrides.lockedEdges` / deriveHarness's module
+  // doc. Read-only here; locking/unlocking is the toolbar's whole-sheet
+  // action for now — see the Lock button next to Mirror.)
+  const isLocked = Object.keys(lockedEdges).some(key => {
+    const sep = key.indexOf('|');
+    if (sep < 0) return false;
+    return rawNodeIds.has(key.slice(0, sep)) && rawNodeIds.has(key.slice(sep + 1));
+  });
 
   // Build a lookup of bundle id → bundle for conductor union.
   const bundleMap = new Map<string, Bundle>();
@@ -1215,8 +1278,16 @@ function HarnessTreePanel({
 
   return (
     <div className="p-4 space-y-3 text-xs">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
         Harness
+        {isLocked && (
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary/15 text-primary normal-case tracking-normal font-medium"
+            title="This harness's topology is locked — moving devices won't change which connectors get branch points or how cables route. Unlock from the toolbar's Lock button."
+          >
+            <Lock className="w-2.5 h-2.5" /> Locked
+          </span>
+        )}
       </div>
       <p className="text-[10px] text-muted-foreground">
         Every cable and node electrically connected through the double-clicked bundle.
@@ -1370,10 +1441,17 @@ function HarnessBundlePanel({ bundle, sheetId }: { bundle: Bundle; sheetId: stri
  * `count` is how many harness nodes are currently selected — surfaced so a
  * multi-select shows the user the rest of the selection moves together.
  */
-function HarnessNodePanel({ node, graph, count = 1 }: { node: HarnessNode; graph: HarnessGraph; count?: number }) {
+function HarnessNodePanel({ node, graph, count = 1, sheetId }: { node: HarnessNode; graph: HarnessGraph; count?: number; sheetId: string }) {
   const devices = useWiring(s => s.devices);
   const placements = useWiring(s => s.placements);
   const wires = useWiring(s => s.wires);
+  const clearHarnessNodePosition = useWiring(s => s.clearHarnessNodePosition);
+  const setHarnessNodeOrientation = useWiring(s => s.setHarnessNodeOrientation);
+  // Whether THIS node's position is pinned by an override — drives the
+  // "Reset position" affordance below. (Connector nodes are never
+  // overridable, so the entry can only exist for the other three kinds.)
+  const hasPositionOverride = useWiring(s =>
+    !!s.sheets.find(sh => sh.id === sheetId)?.harness?.overrides?.nodePositions?.[node.id]);
 
   // Bundles incident on this node.
   const incident = graph.bundles.filter(
@@ -1388,7 +1466,9 @@ function HarnessNodePanel({ node, graph, count = 1 }: { node: HarnessNode; graph
         ? 'Connector'
         : 'Component';
 
-  // For a component node, resolve the device for a friendly heading.
+  // For a component node, resolve the device for a friendly heading. A
+  // branch point leads with its persisted BP number — the pill the user
+  // sees on the canvas — rather than the internal `bp:<connector>` id.
   let heading = node.id;
   if (node.kind === 'component') {
     const placement = placements.find(p => p.id === node.refId);
@@ -1396,6 +1476,8 @@ function HarnessNodePanel({ node, graph, count = 1 }: { node: HarnessNode; graph
     if (dev) heading = dev.name;
   } else if (node.kind === 'splice') {
     heading = node.refId ?? node.id;
+  } else if (node.kind === 'branchPoint' && node.label) {
+    heading = node.label;
   }
 
   // For a splice node, "Conductors meeting here" = only the wires that
@@ -1439,10 +1521,44 @@ function HarnessNodePanel({ node, graph, count = 1 }: { node: HarnessNode; graph
               ? "A Connector — a device's harness termination point."
               : 'A placed Component — a vertex of this harness tree.'}
       </p>
-      {node.kind === 'component' && (
-        <div className="text-[10px] text-muted-foreground">
-          Orientation: {node.orientation ?? 0}°
+      {node.kind === 'component' && node.refId && (
+        <div>
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Connectors face
+          </label>
+          {/* Same left/right-only model as the toolbar Mirror button, but
+              addressed at THIS node instead of the whole selection. */}
+          <div className="flex gap-1 mt-1">
+            {([['left', 0], ['right', 180]] as const).map(([side, deg]) => (
+              <button
+                key={side}
+                type="button"
+                onClick={() => setHarnessNodeOrientation(sheetId, node.refId!, deg)}
+                className={`flex-1 px-2 py-1 rounded border text-[11px] capitalize transition-colors ${
+                  (node.orientation ?? 0) === deg
+                    ? 'bg-primary/15 border-primary text-primary font-medium'
+                    : 'bg-muted/40 border-border text-muted-foreground hover:border-muted-foreground/50'
+                }`}
+              >
+                {side}
+              </button>
+            ))}
+          </div>
         </div>
+      )}
+      {/* Release a hand-placed node back to its derived position — the
+          counterpart of dragging it (which pins it forever otherwise). */}
+      {hasPositionOverride && (
+        <button
+          type="button"
+          onClick={() => clearHarnessNodePosition(sheetId, node.id)}
+          className="w-full px-2 py-1.5 rounded border border-border bg-muted/40 text-[11px] text-muted-foreground hover:border-primary hover:text-primary transition-colors text-left"
+          title={node.kind === 'component'
+            ? 'Remove the manual position — the device returns to the automatic layout column'
+            : 'Remove the manual position — the node goes back to following its neighbours automatically'}
+        >
+          Reset position to automatic
+        </button>
       )}
       <div>
         <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
