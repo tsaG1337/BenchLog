@@ -336,6 +336,26 @@
   --bl-inverse-surface: #E8EEF7;
 }
 
+/* Plans reader — page boxes are sized from `naturalPageSize × scale`
+   (see PlanReader.tsx) so the scroll layout is final the instant a new
+   zoom level commits, instead of only once pdf.js has finished
+   re-rasterizing each canvas (async, and not in page order). These
+   overrides make react-pdf's own boxes follow that wrapper rather than
+   the stale canvas bitmap they would otherwise size themselves to.
+   `min-width/min-height: min-content` are react-pdf's inline defaults;
+   left alone they'd pin the page at the OLD canvas size when zooming
+   out, which is exactly the case that drifted worst. */
+.plan-page-box > .react-pdf__Page {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+.plan-page-box .react-pdf__Page__canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 

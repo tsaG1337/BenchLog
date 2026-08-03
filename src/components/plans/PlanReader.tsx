@@ -8,7 +8,7 @@
  * Annotations live in a sibling overlay (PlanAnnotationsLayer) so the
  * react-pdf canvas stays untouched.
  */
-import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Document, Page } from 'react-pdf';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
@@ -33,6 +33,15 @@ import { getAircraft } from '@/lib/aircraft';
 import { useAuth } from '@/contexts/AuthContext';
 
 const SCALE_KEY = 'plans:zoom';
+
+/**
+ * Round a "fit" zoom level DOWN to the 2 decimals the zoom state keeps.
+ * Rounding to nearest can land just above the true fit — e.g. a 0.895
+ * fit becoming 0.90 renders the sheet 360px wide in 358px of space,
+ * leaving a couple of pixels of horizontal scroll on something the user
+ * asked to be exactly fitted.
+ */
+const floorScale = (v: number) => Math.floor(v * 100) / 100;
 
 interface Props {
   file: PlanFile;
@@ -72,9 +81,19 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   useEffect(() => { scaleRef.current = scale; }, [scale]);
   const [mode, setMode] = useState<AnnotationMode>('view');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // One entry per rendered page. Pages can have different orientations, so
-  // we can't share a single pageSize across them.
-  const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>({});
+  // Unzoomed (scale-1) dimensions per page, read straight from pdf.js as
+  // soon as the document loads. Pages can have different orientations, so
+  // we can't share one size across them.
+  //
+  // This is the linchpin of the zoom behaviour: knowing the natural size
+  // lets every page's box be sized as `natural x scale` — a pure function
+  // of React state — so the whole stack's layout is correct the moment a
+  // new zoom level commits. Previously the boxes took their size from
+  // whatever canvas pdf.js had most recently rasterized, which lands
+  // asynchronously and not in page order, so for a while after a zoom the
+  // stack was a mix of old and new sizes. See the zoom-anchoring layout
+  // effect below for why that mattered.
+  const [naturalSizes, setNaturalSizes] = useState<Record<number, { width: number; height: number }>>({});
   // DOM refs per page wrapper, for scrollIntoView when pageNumber changes
   // externally (URL deep-link, arrow buttons).
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -88,8 +107,90 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   // in a ref so the scroll-to-page effect can compare without re-running
   // whenever the visible page shifts.
   const latestVisiblePageRef = useRef<number>(pageNumber);
+  // On-screen size of each page at the current zoom. Floor to match the
+  // integer pixel size react-pdf gives its own canvas
+  // (`Math.floor(viewport.width)`), so the box and the raster agree.
+  const pageDisplaySizes = useMemo(() => {
+    const out: Record<number, { width: number; height: number }> = {};
+    for (const key of Object.keys(naturalSizes)) {
+      const n = Number(key);
+      const nat = naturalSizes[n];
+      out[n] = { width: Math.floor(nat.width * scale), height: Math.floor(nat.height * scale) };
+    }
+    return out;
+  }, [naturalSizes, scale]);
   // Used by handleFit + toolbar-disabled checks; cheap derived value.
-  const pageSize = pageSizes[pageNumber] ?? null;
+  const pageSize = pageDisplaySizes[pageNumber] ?? null;
+
+  // ─── Render windowing ─────────────────────────────────────────
+  // Only pages near the viewport get a real <Page>; the rest are
+  // correctly-sized blank boxes. Rasterizing every page of a long
+  // section is what made opening one slow and memory-hungry — a 40-page
+  // sheet meant 40 pdf.js render() calls and 40 live canvases.
+  //
+  // This is only safe because a page box's size comes from
+  // `naturalSize x scale` rather than from its canvas. An earlier
+  // attempt at windowing (before that change) collapsed unrendered
+  // pages to zero height, which broke scroll position, the page
+  // indicator, and deep links. With state-driven sizing, an unrendered
+  // page still occupies exactly the space it will occupy once drawn, so
+  // scrolling, IntersectionObserver tracking and zoom anchoring are all
+  // unaffected by what happens to be rasterized.
+  const OVERSCAN_SCREENS = 1;
+  const [renderRange, setRenderRange] = useState<[number, number]>([1, 1]);
+
+  // Each page's top offset within the stack, derived rather than
+  // measured — same formula the render uses, so it needs no DOM reads
+  // and stays correct even for pages that have never been rasterized.
+  const pageTops = useMemo(() => {
+    const tops: number[] = [];
+    let y = 0;
+    for (let n = 1; n <= numPages; n++) {
+      tops[n] = y;
+      y += (pageDisplaySizes[n]?.height ?? 0) + 16 * scale;
+    }
+    return tops;
+  }, [numPages, pageDisplaySizes, scale]);
+
+  const recomputeRenderRange = useCallback(() => {
+    const c = scrollContainerRef.current;
+    const wrapper = stackWrapperRef.current;
+    if (!c || !wrapper || !numPages || !pageDisplaySizes[1]) return;
+    // Where the stack starts inside the scrollable content. One rect
+    // pair per recompute (rAF-throttled), rather than one per page.
+    const stackTop = wrapper.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop;
+    const viewTop = c.scrollTop - stackTop - c.clientHeight * OVERSCAN_SCREENS;
+    const viewBottom = c.scrollTop - stackTop + c.clientHeight * (1 + OVERSCAN_SCREENS);
+    let first = 0;
+    let last = 0;
+    for (let n = 1; n <= numPages; n++) {
+      const h = pageDisplaySizes[n]?.height ?? 0;
+      if (pageTops[n] + h >= viewTop && pageTops[n] <= viewBottom) {
+        if (!first) first = n;
+        last = n;
+      }
+    }
+    if (!first) return;
+    setRenderRange(prev => (prev[0] === first && prev[1] === last ? prev : [first, last]));
+  }, [numPages, pageDisplaySizes, pageTops]);
+
+  useEffect(() => {
+    const c = scrollContainerRef.current;
+    if (!c) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; recomputeRenderRange(); });
+    };
+    c.addEventListener('scroll', onScroll, { passive: true });
+    // Also runs on mount and whenever zoom or page sizes change, which
+    // is when the set of pages covering the viewport shifts.
+    recomputeRenderRange();
+    return () => {
+      c.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [recomputeRenderRange]);
   const { role, demoMode } = useAuth();
   const isAdmin = role === 'admin';
   // Same vendor resolution indexPlanFile() already uses for search
@@ -248,13 +349,40 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
     return () => unregisterActivePdf(file.id);
   }, [pdfDoc, file.id, file.originalName, file.sectionId, file.sectionTitle]);
 
+  // Read every page's unzoomed size once the document loads. getPage() is
+  // cheap here — pdf.js has the page dictionaries in memory already and
+  // caches the proxies, which the search indexer and part-ref scanner
+  // then reuse. Collected into one setState so the stack doesn't reflow
+  // page by page.
+  useEffect(() => {
+    if (!pdfDoc) return;
+    let cancelled = false;
+    setNaturalSizes({});
+    (async () => {
+      const sizes: Record<number, { width: number; height: number }> = {};
+      for (let n = 1; n <= pdfDoc.numPages; n++) {
+        try {
+          const page = await pdfDoc.getPage(n);
+          if (cancelled) return;
+          const vp = page.getViewport({ scale: 1 });
+          sizes[n] = { width: vp.width, height: vp.height };
+        } catch {
+          // Leave this page out — it falls back to canvas-driven sizing,
+          // i.e. exactly the old behaviour, rather than failing outright.
+        }
+      }
+      if (!cancelled) setNaturalSizes(sizes);
+    })();
+    return () => { cancelled = true; };
+  }, [pdfDoc]);
+
   // Click handler attached to each page wrapper. `page` is the 1-indexed
   // page number captured at mount time so the picker gets the right
   // coordinates even if the user scrolled to a different page than the
   // toolbar shows.
   const handlePageClick = (e: React.MouseEvent<HTMLDivElement>, page: number) => {
     if (mode !== 'place-sb') return;
-    if (!pageSizes[page]) return;
+    if (!naturalSizes[page]) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
@@ -282,74 +410,234 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const liveZoomRef = useRef(1);
   useEffect(() => { liveZoomRef.current = liveZoom; }, [liveZoom]);
   // transform-origin pinned to the pinch midpoint so the spot under the
-  // user's fingers stays put visually. Resets when the gesture ends.
+  // user's fingers stays put visually. Only used as a fallback for the
+  // brief window before page sizes are known — see previewShift.
   const [pinchOrigin, setPinchOrigin] = useState<string | undefined>(undefined);
-  // Snapshot taken at touchstart so the post-commit scroll target can be
-  // computed in useLayoutEffect once the new layout is realised. We store
-  // the input parameters (not a pre-computed scroll position) because the
-  // wrapper's offset within the scroll container may shift between old
-  // and new scale due to flex centering and padding.
-  const pendingScrollRef = useRef<{
-    actualZ: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-    midpointX: number;
-    midpointY: number;
-    oldOffsetLeft: number;
-    oldOffsetTop: number;
-  } | null>(null);
+  // Translation applied to the page stack alongside the live pinch
+  // scale, so the preview reproduces EXACTLY where the committed layout
+  // will land — scroll clamping at the document ends included.
+  //
+  // Without it, the CSS transform cheerfully scales content past the top
+  // of the scroller, i.e. it shows a position that scrollTop = 0 can
+  // never reproduce; releasing then snapped by the difference. Measured
+  // at 245px (enough to put a different page under your fingers) when
+  // zooming out near the start of a document. With it, preview and
+  // commit agree by construction, so release is seamless everywhere —
+  // including the ends, where the view legitimately can't follow your
+  // fingers and now simply shows that while you pinch.
+  const [previewShift, setPreviewShift] = useState<{ dx: number; dy: number } | null>(null);
+  // The touch handlers are attached once, so they read these through
+  // refs rather than capturing a render's values.
+  const naturalSizesRef = useRef(naturalSizes);
+  useEffect(() => { naturalSizesRef.current = naturalSizes; }, [naturalSizes]);
+  const numPagesRef = useRef(numPages);
+  useEffect(() => { numPagesRef.current = numPages; }, [numPages]);
+  // ─── Zoom anchoring ───────────────────────────────────────────
+  // What should stay put across the next `scale` change: the point at
+  // (fracX, fracY) within page `page` should still sit at (ax, ay),
+  // measured from the scroll container's top-left corner. Consumed by
+  // the layout effect below, exactly once per scale change.
+  const pendingZoomAnchorRef = useRef<{ page: number; fracX: number; fracY: number; ax: number; ay: number } | null>(null);
+  // Page the next fit action should bring back into frame. Takes
+  // precedence over the anchor above: "fit" means re-frame, not "hold
+  // whatever was under the middle of the screen".
+  const pendingFitRef = useRef<number | null>(null);
+
+  // Snapshot what's currently under a screen point, for the next zoom to
+  // restore. MUST be called before setScale, while the DOM still shows
+  // the old zoom level. Coordinates default to the middle of the visible
+  // area, which is what the toolbar's zoom buttons want.
+  const computeZoomAnchor = (clientX?: number, clientY?: number) => {
+    const container = scrollContainerRef.current;
+    if (!container) return null;
+    const cRect = container.getBoundingClientRect();
+    const px = clientX ?? cRect.left + container.clientWidth / 2;
+    const py = clientY ?? cRect.top + container.clientHeight / 2;
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+    // Prefer the page the point actually lands on. If it fell in the gap
+    // between two pages (or off the ends of the stack), anchor to the
+    // vertically nearest page with clamped fractions — a near-miss
+    // anchor still holds the view steady, whereas no anchor at all is
+    // the drift we're fixing.
+    let best: { page: number; fracX: number; fracY: number } | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const [n, node] of pageRefs.current) {
+      const r = node.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const dist = py < r.top ? r.top - py : py > r.bottom ? py - r.bottom : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { page: n, fracX: clamp01((px - r.left) / r.width), fracY: clamp01((py - r.top) / r.height) };
+      }
+      if (dist === 0) break;
+    }
+    if (!best) return null;
+    return { ...best, ax: px - cRect.left, ay: py - cRect.top };
+  };
+
+  // Apply the anchor synchronously after React commits the new page-box
+  // sizes but before the browser paints — so the correction is never
+  // visible as a jump, and there is nothing to wait for or debounce.
+  //
+  // This only works because a page box's size is `natural x scale`, pure
+  // state, and so is final at commit time. The previous implementations
+  // measured after pdf.js re-rasterized (onRenderSuccess), which is
+  // async, arrives per page, and isn't ordered top-to-bottom — so the
+  // anchored page's position was read off a stack that was still part
+  // old-size, part new-size. That's why release landed somewhere else,
+  // and why it got worse the bigger the zoom change (more pages
+  // mid-resize at once) — zooming way out being the extreme case.
+  // Scroll a fit target back into frame: its top edge just inside the
+  // container's top padding, horizontal scroll reset (at any fit level
+  // the sheet is no wider than the viewport, so 0 is where it belongs).
+  const frameFitPage = () => {
+    const page = pendingFitRef.current;
+    if (page === null) return;
+    pendingFitRef.current = null;
+    const c = scrollContainerRef.current;
+    const node = pageRefs.current.get(page);
+    if (!c || !node) return;
+    const padTop = parseFloat(getComputedStyle(c).paddingTop) || 0;
+    const top = c.scrollTop + node.getBoundingClientRect().top - c.getBoundingClientRect().top - padTop;
+    c.scrollTop = Math.max(0, Math.min(c.scrollHeight - c.clientHeight, top));
+    c.scrollLeft = 0;
+  };
 
   useLayoutEffect(() => {
-    if (!pendingScrollRef.current) return;
+    // A pending fit wins over the centre-anchor a zoom would normally
+    // preserve — the whole point of pressing Fit is to reset the framing.
+    if (pendingFitRef.current !== null) {
+      pendingZoomAnchorRef.current = null;
+      frameFitPage();
+      return;
+    }
+    const anchor = pendingZoomAnchorRef.current;
+    if (!anchor) return;
+    pendingZoomAnchorRef.current = null;
     const container = scrollContainerRef.current;
-    const wrapper = stackWrapperRef.current;
-    if (!container || !wrapper) return;
-    const p = pendingScrollRef.current;
-    pendingScrollRef.current = null;
-
-    // Read the wrapper's NEW offset within the scroll container. After
-    // the scale commit, the wrapper has grown / shrunk and the flex
-    // centering may have shifted it left or right relative to the old
-    // position. Computed from getBoundingClientRect so we don't depend
-    // on offsetParent chains.
-    const containerRect = container.getBoundingClientRect();
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const newOffsetLeft = wrapperRect.left - containerRect.left + container.scrollLeft;
-    const newOffsetTop = wrapperRect.top - containerRect.top + container.scrollTop;
-
-    // The midpoint's wrapper-local position at the OLD scale. Content
-    // there scales linearly with actualZ to its new wrapper-local
-    // position. Re-projecting via the new wrapper offset gives us the
-    // scroll position that keeps that same content under the same
-    // viewport pixel the user pinched at.
-    const oldWrapperLocalX = p.startScrollLeft + p.midpointX - p.oldOffsetLeft;
-    const oldWrapperLocalY = p.startScrollTop + p.midpointY - p.oldOffsetTop;
-    const newScrollLeft = newOffsetLeft + oldWrapperLocalX * p.actualZ - p.midpointX;
-    const newScrollTop = newOffsetTop + oldWrapperLocalY * p.actualZ - p.midpointY;
-
-    container.scrollLeft = Math.max(0, Math.min(container.scrollWidth - container.clientWidth, newScrollLeft));
-    container.scrollTop = Math.max(0, Math.min(container.scrollHeight - container.clientHeight, newScrollTop));
+    const node = pageRefs.current.get(anchor.page);
+    if (!container || !node) return;
+    const cRect = container.getBoundingClientRect();
+    const pRect = node.getBoundingClientRect();
+    const dx = pRect.left + anchor.fracX * pRect.width - (cRect.left + anchor.ax);
+    const dy = pRect.top + anchor.fracY * pRect.height - (cRect.top + anchor.ay);
+    container.scrollLeft = Math.max(0, Math.min(container.scrollWidth - container.clientWidth, container.scrollLeft + dx));
+    container.scrollTop = Math.max(0, Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + dy));
   }, [scale]);
+
+  // Zoom to an explicit level, holding `anchor` in place. Defaults to
+  // the middle of the view, so repeated toolbar taps don't let the sheet
+  // crawl away from you. Reads scaleRef rather than `scale` so the touch
+  // handlers — attached once, with a first-render closure — can call it.
+  // Returns whether the zoom level actually changed — callers that also
+  // need to move the scroll position have to do it themselves when it
+  // didn't, because no re-render (and so no layout effect) will follow.
+  const zoomTo = (next: number, anchor?: ReturnType<typeof computeZoomAnchor>) => {
+    const clamped = +Math.max(0.25, Math.min(3, next)).toFixed(2);
+    if (clamped === scaleRef.current) return false;
+    pendingZoomAnchorRef.current = anchor !== undefined ? anchor : computeZoomAnchor();
+    setScale(clamped);
+    return true;
+  };
+
+  // The zoom at which `page` exactly fills the usable width. This is the
+  // level you actually want for reading a plan sheet: fit-to-page has to
+  // honour the height too, which on a landscape sheet held in portrait
+  // shrinks the text to nothing.
+  const fitWidthScaleFor = (page: number) => {
+    const nat = naturalSizesRef.current[page];
+    const c = scrollContainerRef.current;
+    if (!nat || !c) return null;
+    const cs = getComputedStyle(c);
+    const avail = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    return floorScale(Math.max(0.25, Math.min(3, avail / nat.width)));
+  };
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     let startDistance = 0;
     let startScale = 1;
-    let startScrollLeft = 0;
-    let startScrollTop = 0;
-    // Pinch midpoint in scroll-container viewport coords (i.e., 0..clientWidth).
-    let midpointX = 0;
-    let midpointY = 0;
-    // Page-stack wrapper's offset within the scroll container at gesture
-    // start — needed because flex justify-center + container padding
-    // mean the wrapper does NOT start at (0, 0), and its offset shifts
-    // as the wrapper grows past the container width on zoom-in.
-    let oldOffsetLeft = 0;
-    let oldOffsetTop = 0;
     let rafPending = false;
     let pendingZoom = 1;
+    // What was under the fingers when the gesture began. Captured now,
+    // while liveZoom is still 1 and the DOM therefore untransformed;
+    // handed to the anchoring layout effect on release.
+    let gestureAnchor: ReturnType<typeof computeZoomAnchor> = null;
+    // ─── Double-tap to zoom ─────────────────────────────────────
+    // Toggles between fit-width and a comfortable reading zoom, centred
+    // on what you tapped. The browser's own double-tap zoom is already
+    // off here (touch-action excludes it), so there's nothing to fight.
+    const DOUBLE_TAP_MS = 300;   // max gap between the two taps
+    const DOUBLE_TAP_SLOP = 30;  // max distance between them
+    const TAP_MAX_MS = 250;      // longer than this is a press, not a tap
+    const TAP_MOVE_SLOP = 10;    // further than this is a drag, not a tap
+    let tapStart: { x: number; y: number; t: number; interactive: boolean } | null = null;
+    let tapMoved = false;
+    let sawSecondFinger = false;
+    let lastTap: { x: number; y: number; t: number } | null = null;
+
+    const onDoubleTap = (x: number, y: number) => {
+      const anchor = computeZoomAnchor(x, y);
+      if (!anchor) return;
+      const fit = fitWidthScaleFor(anchor.page);
+      if (fit === null) return;
+      // Anything above fit-width counts as "zoomed in", so a double-tap
+      // there pulls back out to the whole width — matching how every
+      // other viewer behaves. The 5% tolerance stops a rounded-off
+      // fit-width from reading as zoomed-in and doing nothing.
+      const zoomedIn = scaleRef.current > fit * 1.05;
+      zoomTo(zoomedIn ? fit : Math.min(3, fit * 2.5), anchor);
+    };
+    // Geometry snapshot taken at gesture start, in the coordinate space
+    // the whole prediction below works in. Null between gestures.
+    let g: {
+      startScale: number;
+      padTop: number; padBottom: number; padLeft: number; padRight: number;
+      clientW: number; clientH: number;
+      containerLeft: number; containerTop: number;
+      wrapperLeft: number; wrapperTop: number;
+      cx0: number; cy0: number; ax: number; ay: number;
+    } | null = null;
     const dist = (a: Touch, b: Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+
+    // Where the committed layout WILL put the stack for a live ratio of
+    // `z`, expressed as the translation the preview needs so it matches.
+    // Mirrors the render exactly: page boxes are floor(natural x scale),
+    // the gap is 16 x scale, and the scroll offset is clamped to the
+    // scrollable range. Returns null while page sizes are still
+    // unknown, in which case the caller falls back to a plain
+    // scale-about-the-midpoint preview.
+    const predictShift = (z: number) => {
+      if (!g) return null;
+      const nat = naturalSizesRef.current;
+      const N = numPagesRef.current;
+      if (!N || !nat[1]) return null;
+      const s1 = g.startScale * z;
+      let contentH = 0;
+      let contentW = 0;
+      for (let n = 1; n <= N; n++) {
+        const p = nat[n];
+        if (!p) return null;
+        contentH += Math.floor(p.height * s1);
+        contentW = Math.max(contentW, Math.floor(p.width * s1));
+      }
+      contentH += (N - 1) * 16 * s1;
+      const maxTop = Math.max(0, contentH + g.padTop + g.padBottom - g.clientH);
+      const maxLeft = Math.max(0, contentW + g.padLeft + g.padRight - g.clientW);
+      // Where the stack's top-left will sit within the scrollable
+      // content. Vertically that's just the padding; horizontally the
+      // stack is centred while it still fits.
+      const oy = g.padTop;
+      const ox = g.padLeft + Math.max(0, (g.clientW - g.padLeft - g.padRight - contentW) / 2);
+      const clamp = (v: number, hi: number) => Math.max(0, Math.min(hi, v));
+      const top1 = clamp(oy + g.cy0 * z - g.ay, maxTop);
+      const left1 = clamp(ox + g.cx0 * z - g.ax, maxLeft);
+      return {
+        dx: g.containerLeft + ox - left1 - g.wrapperLeft,
+        dy: g.containerTop + oy - top1 - g.wrapperTop,
+      };
+    };
 
     const flush = () => {
       rafPending = false;
@@ -357,36 +645,74 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
       // simultaneous gesture cleanup) sees the freshest value without
       // waiting for the post-render useEffect to apply.
       liveZoomRef.current = pendingZoom;
+      setPreviewShift(predictShift(pendingZoom));
       setLiveZoom(pendingZoom);
     };
 
     const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        // Don't hijack a double-tap aimed at a part link, an SB marker
+        // or an annotation — those own their own taps.
+        const el = e.target as HTMLElement | null;
+        tapStart = {
+          x: t.clientX, y: t.clientY, t: Date.now(),
+          interactive: !!el?.closest?.('button, a, input, textarea, [role="button"]'),
+        };
+        tapMoved = false;
+        sawSecondFinger = false;
+      } else {
+        // A pinch is not a tap, and it cancels any half-finished one.
+        sawSecondFinger = true;
+        lastTap = null;
+      }
       if (e.touches.length === 2) {
         const wrapper = stackWrapperRef.current;
         if (!wrapper) return;
+        // Drop any anchor a previous gesture left behind (it can only
+        // survive if that gesture ended without changing scale), so it
+        // can't be picked up by this one.
+        pendingZoomAnchorRef.current = null;
         startDistance = dist(e.touches[0], e.touches[1]);
         startScale = scaleRef.current;
-        startScrollLeft = el.scrollLeft;
-        startScrollTop = el.scrollTop;
-        const containerRect = el.getBoundingClientRect();
         const wrapperRect = wrapper.getBoundingClientRect();
-        midpointX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - containerRect.left;
-        midpointY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - containerRect.top;
-        // Wrapper position within scrollable content (invariant to
-        // scroll offset — purely the layout origin of the wrapper
-        // inside the scroll container's content box).
-        oldOffsetLeft = wrapperRect.left - containerRect.left + startScrollLeft;
-        oldOffsetTop = wrapperRect.top - containerRect.top + startScrollTop;
-        // transform-origin in wrapper-local coords. Picking the local
-        // coord of midpoint means the content under the user's fingers
-        // stays visually pinned during the gesture.
-        const localX = startScrollLeft + midpointX - oldOffsetLeft;
-        const localY = startScrollTop + midpointY - oldOffsetTop;
-        setPinchOrigin(`${localX}px ${localY}px`);
+        const containerRect = el.getBoundingClientRect();
+        const touchMidClientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const touchMidClientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        gestureAnchor = computeZoomAnchor(touchMidClientX, touchMidClientY);
+
+        // Snapshot everything predictShift needs. Paddings are read from
+        // the live element rather than hard-coded because the scroll
+        // area's bottom padding differs between the mobile dock layout
+        // (pb-14) and desktop (pb-4).
+        const cs = getComputedStyle(el);
+        g = {
+          startScale,
+          padTop: parseFloat(cs.paddingTop), padBottom: parseFloat(cs.paddingBottom),
+          padLeft: parseFloat(cs.paddingLeft), padRight: parseFloat(cs.paddingRight),
+          clientW: el.clientWidth, clientH: el.clientHeight,
+          containerLeft: containerRect.left, containerTop: containerRect.top,
+          wrapperLeft: wrapperRect.left, wrapperTop: wrapperRect.top,
+          // The midpoint's offset from the stack's top-left, in the
+          // stack's own (untransformed) pixels.
+          cx0: touchMidClientX - wrapperRect.left,
+          cy0: touchMidClientY - wrapperRect.top,
+          ax: touchMidClientX - containerRect.left,
+          ay: touchMidClientY - containerRect.top,
+        };
+        // Fallback origin for the (brief) case where page sizes aren't
+        // known yet and predictShift can't run: scale about the pinch
+        // midpoint, which at least keeps that spot visually pinned.
+        setPinchOrigin(`${g.cx0}px ${g.cy0}px`);
+        setPreviewShift(predictShift(1));
         pendingZoom = 1;
       }
     };
     const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 1 && tapStart && !tapMoved) {
+        const t = e.touches[0];
+        if (Math.hypot(t.clientX - tapStart.x, t.clientY - tapStart.y) > TAP_MOVE_SLOP) tapMoved = true;
+      }
       if (e.touches.length === 2 && startDistance > 0) {
         e.preventDefault();
         const newDist = dist(e.touches[0], e.touches[1]);
@@ -407,30 +733,43 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
         // synced after the React render, which means commit could use
         // a stale ratio and you'd see a small "snap" on release.
         const z = pendingZoom;
-        const next = Math.max(0.25, Math.min(3, startScale * z));
-        // actualZ accounts for the clamp — if the user pinched past the
-        // 3× ceiling, the visual went up to 3× but the underlying scale
-        // also stops there, and the scroll math must use the realised
-        // multiplier, not the raw finger-distance ratio.
-        const actualZ = next / startScale;
-        pendingScrollRef.current = {
-          actualZ,
-          startScrollLeft,
-          startScrollTop,
-          midpointX,
-          midpointY,
-          oldOffsetLeft,
-          oldOffsetTop,
-        };
+        const next = +Math.max(0.25, Math.min(3, startScale * z)).toFixed(3);
+        // Compare the value we're actually committing: if it rounds back
+        // to the scale we started at, React bails out of the re-render,
+        // the layout effect never runs, and an anchor set here would sit
+        // around unconsumed until some later, unrelated zoom.
+        if (next !== startScale) pendingZoomAnchorRef.current = gestureAnchor;
         // Commit and snap back to identity transform in the same render
-        // tick. React batches both updates so the canvas re-rasters at
-        // the new resolution as the CSS scale unwinds — minimal flash.
-        // The pending-scroll useLayoutEffect then aligns scroll position
-        // to the new bounds before paint.
-        setScale(+next.toFixed(3));
+        // tick. React batches both updates, so the page boxes take their
+        // new size and the anchoring layout effect restores the scroll
+        // position in that same commit — the CSS transform unwinds onto
+        // an already-corrected view rather than into a visible jump.
+        setScale(next);
         setLiveZoom(1);
         setPinchOrigin(undefined);
+        setPreviewShift(null);
         startDistance = 0;
+        gestureAnchor = null;
+        g = null;
+      }
+
+      // Tap bookkeeping — only once every finger is off the glass.
+      if (e.touches.length === 0) {
+        const tap = tapStart;
+        tapStart = null;
+        if (!tap || tapMoved || sawSecondFinger || tap.interactive) return;
+        const now = Date.now();
+        if (now - tap.t > TAP_MAX_MS) { lastTap = null; return; }
+        if (
+          lastTap &&
+          now - lastTap.t < DOUBLE_TAP_MS &&
+          Math.hypot(tap.x - lastTap.x, tap.y - lastTap.y) < DOUBLE_TAP_SLOP
+        ) {
+          lastTap = null;
+          onDoubleTap(tap.x, tap.y);
+        } else {
+          lastTap = { x: tap.x, y: tap.y, t: now };
+        }
       }
     };
 
@@ -444,23 +783,35 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
       el.removeEventListener('touchend', onTouchEnd);
       el.removeEventListener('touchcancel', onTouchEnd);
     };
+    // Attached once, on purpose: re-binding touch listeners mid-gesture
+    // would drop the in-flight pinch state held in this closure.
+    // computeZoomAnchor, zoomTo and fitWidthScaleFor all read refs and
+    // setState only, so the first-render closure never goes stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fit the current page to the visible scroll area. Uses whichever of
   // width/height is the tighter constraint so the whole page is visible
   // without scrolling — matching what most PDF viewers call "fit page".
-  // pageSize is the rendered size at the current scale; divide it out to
-  // recover the natural page dimensions before computing the new scale.
+  //
+  // Always re-frames the page, even when the zoom level it computes is
+  // the one already applied. Pressing Fit after scrolling around used to
+  // do nothing at all in that case: every page of a section usually has
+  // the same dimensions, so the fit level was unchanged, `zoomTo` bailed
+  // out, and no scrolling happened either.
   const handleFit = () => {
-    if (!pageSize || !scrollContainerRef.current) return;
+    const nat = naturalSizes[pageNumber];
     const c = scrollContainerRef.current;
-    const padding = 32; // p-4 → 16px each side
-    const availW = c.clientWidth - padding;
-    const availH = c.clientHeight - padding;
-    const naturalW = pageSize.width / scale;
-    const naturalH = pageSize.height / scale;
-    const newScale = Math.min(availW / naturalW, availH / naturalH);
-    setScale(Math.max(0.25, Math.min(3, newScale)));
+    if (!nat || !c) return;
+    // Read the real padding rather than assuming 16px all round: the
+    // mobile layout uses pb-14 (56px) to clear the bottom dock, so a
+    // hard-coded 32px total overestimated the usable height by 40px and
+    // fit-page came out slightly too large to actually fit.
+    const cs = getComputedStyle(c);
+    const availW = c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const availH = c.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    pendingFitRef.current = pageNumber;
+    if (!zoomTo(floorScale(Math.min(availW / nat.width, availH / nat.height)), null)) frameFitPage();
   };
 
   // Load the PDF when the file changes. Convert ArrayBuffer → Blob → object URL.
@@ -622,7 +973,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
   const zoom = (
     <>
       <button
-        onClick={() => setScale(s => Math.max(0.25, +(s - 0.1).toFixed(2)))}
+        onClick={() => zoomTo(scale - 0.1)}
         className="min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 flex items-center justify-center rounded hover:bg-muted active:bg-muted transition"
         title="Zoom out (10%)"
       >
@@ -632,7 +983,7 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
         {Math.round(scale * 100)}%
       </span>
       <button
-        onClick={() => setScale(s => Math.min(3, +(s + 0.1).toFixed(2)))}
+        onClick={() => zoomTo(scale + 0.1)}
         className="min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:p-1.5 flex items-center justify-center rounded hover:bg-muted active:bg-muted transition"
         title="Zoom in (10%)"
       >
@@ -651,14 +1002,17 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
 
   // Raster resolution handed to pdf.js, independent from the CSS zoom
   // level (`scale`). Native devicePixelRatio (2-3x on Retina/4K) gives
-  // full sharpness, but "N pages x high zoom x native DPR" is what used
-  // to spike canvas memory enough to kill the tab on long sections —
-  // which is why DPR was pinned to 1 everywhere. Instead of a flat cap,
-  // taper DPR down as zoom goes up so the raster budget (scale * dpr)
-  // stays bounded at the same worst case already known to be safe:
-  // scale=3 (max zoom) at dpr=1. At scale=1 (the common case) this
-  // yields full native DPR, while still degrading gracefully at high
-  // zoom on long sections.
+  // full sharpness, but "pages x high zoom x native DPR" is what used to
+  // spike canvas memory enough to kill the tab on long sections. Taper
+  // DPR down as zoom goes up so the raster budget (scale * dpr) stays
+  // bounded at a worst case known to be safe: scale=3 at dpr=1. At
+  // scale=1 (the common case) this yields full native DPR.
+  //
+  // Render windowing now bounds the number of live canvases too, so the
+  // per-page cap could likely be relaxed for sharper text at high zoom —
+  // but Van's sheets are physically large (a 34x22" plan at scale 3 is
+  // already ~35M pixels per canvas), so that wants measuring on a real
+  // device before loosening rather than guessing.
   const rasterDpr = Math.min(window.devicePixelRatio || 1, 3 / scale);
 
   return (
@@ -742,7 +1096,13 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
       )}
       <div
         ref={scrollContainerRef}
-        className="absolute inset-0 overflow-auto p-4 pb-14 md:pb-4 flex justify-center"
+        // Not `flex justify-center`: once a sheet is zoomed wider than
+        // the screen, a centred flex item overflows in BOTH directions
+        // and its left edge becomes unreachable by scrolling. The page
+        // stack centres itself with `w-fit mx-auto` instead, which
+        // degrades to left-aligned-and-scrollable when it outgrows the
+        // viewport. predictShift's `ox` mirrors this rule.
+        className="absolute inset-0 overflow-auto p-4 pb-14 md:pb-4"
         // touch-action: pan-x pan-y lets single-finger scroll keep working
         // but tells the browser NOT to claim the pinch gesture — the
         // useEffect-attached TouchEvent listeners pick it up instead and
@@ -750,31 +1110,54 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
         style={{ touchAction: 'pan-x pan-y' }}
       >
         {loadError ? (
-          <div className="text-sm text-destructive p-8">{loadError}</div>
+          <div className="text-sm text-destructive p-8 w-fit mx-auto">{loadError}</div>
         ) : !pdfBlobUrl ? (
-          <div className="text-sm text-muted-foreground p-8">Loading PDF…</div>
+          <div className="text-sm text-muted-foreground p-8 w-fit mx-auto">Loading PDF…</div>
         ) : (
           <Document
             file={pdfBlobUrl}
+            className="w-fit mx-auto"
             onLoadSuccess={pdf => { setNumPages(pdf.numPages); setPdfDoc(pdf); }}
             onLoadError={err => { console.error('PDF load error', err); setLoadError('Failed to render PDF'); toast.error('Failed to render PDF'); }}
             loading={<div className="p-8 text-sm text-muted-foreground">Rendering…</div>}
           >
             <div
               ref={stackWrapperRef}
-              className="flex flex-col items-center gap-4"
+              className="flex flex-col items-center"
               style={{
-                transform: liveZoom !== 1 ? `scale(${liveZoom})` : undefined,
-                // Anchor at the pinch midpoint during a gesture (set by
-                // touchstart). Falls back to `center top` for any other
-                // transforms — keeps the pages visually centred.
-                transformOrigin: pinchOrigin ?? 'center top',
+                // Scales with `scale` (not a fixed Tailwind gap-4) so the
+                // inter-page spacing grows/shrinks proportionally with
+                // zoom, same as everything else in the stack. This used
+                // to be a fixed 16px regardless of zoom level, which the
+                // live pinch (a CSS transform on the whole wrapper, gaps
+                // included) visually scaled anyway — so on release, once
+                // the real re-render landed with that gap back at a flat
+                // 16px, anything below the first page ended up in a
+                // different spot than what the pinch had just shown, and
+                // the post-pinch scroll-position math (which assumes
+                // every pixel between the wrapper's origin and the pinch
+                // point scales uniformly) inherited the same wrong
+                // assumption.
+                gap: `${16 * scale}px`,
+                // With a predicted shift the transform is expressed from
+                // the stack's own top-left, because that's the corner
+                // predictShift positions. Only the (rare) no-prediction
+                // fallback scales about the pinch midpoint.
+                transform: previewShift
+                  ? `translate(${previewShift.dx}px, ${previewShift.dy}px) scale(${liveZoom})`
+                  : liveZoom !== 1 ? `scale(${liveZoom})` : undefined,
+                transformOrigin: previewShift ? '0 0' : pinchOrigin ?? 'center top',
                 willChange: liveZoom !== 1 ? 'transform' : undefined,
               }}
             >
               {Array.from({ length: numPages }, (_, i) => {
                 const n = i + 1;
-                const size = pageSizes[n] ?? null;
+                const size = pageDisplaySizes[n] ?? null;
+                // Windowing needs page sizes to know what covers the
+                // viewport. If they're unavailable (pdf.js couldn't hand
+                // us a viewport), fall back to rendering everything
+                // rather than silently showing only page 1.
+                const rendered = !pageDisplaySizes[1] || (n >= renderRange[0] && n <= renderRange[1]);
                 return (
                   <div
                     key={n}
@@ -783,20 +1166,45 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                       if (el) pageRefs.current.set(n, el);
                       else pageRefs.current.delete(n);
                     }}
-                    className="relative inline-block shadow-md"
+                    // `plan-page-box` (src/index.css) makes react-pdf's
+                    // own boxes fill this one instead of sizing to the
+                    // canvas. Only applied once we know the natural size
+                    // — without an explicit size here it would collapse.
+                    // bg-white so a page that isn't rasterized yet still
+                    // reads as a blank sheet rather than a hole — the
+                    // same background react-pdf's own <Page> paints.
+                    className={`relative inline-block shadow-md bg-white${size ? ' plan-page-box' : ''}`}
                     onClick={e => handlePageClick(e, n)}
-                    style={{ cursor: mode === 'place-sb' ? 'crosshair' : undefined }}
+                    style={{
+                      cursor: mode === 'place-sb' ? 'crosshair' : undefined,
+                      // Sized from state, not from the rasterized canvas,
+                      // so the stack's layout is correct the instant a
+                      // zoom commits. See the zoom-anchoring layout
+                      // effect. Also stops pages collapsing to nothing
+                      // (and the scroll position lurching) while pdf.js
+                      // re-renders them.
+                      width: size?.width,
+                      height: size?.height,
+                    }}
                   >
-                    <Page
-                      pageNumber={n}
-                      scale={scale}
-                      devicePixelRatio={rasterDpr}
-                      onRenderSuccess={({ width, height }) =>
-                        setPageSizes(prev => ({ ...prev, [n]: { width, height } }))
-                      }
-                      renderTextLayer
-                      renderAnnotationLayer={false}
-                    />
+                    {rendered ? (
+                      <Page
+                        pageNumber={n}
+                        scale={scale}
+                        devicePixelRatio={rasterDpr}
+                        renderTextLayer
+                        renderAnnotationLayer={false}
+                      />
+                    ) : (
+                      <span className="absolute inset-0 flex items-center justify-center text-sm text-black/20 select-none">
+                        {n}
+                      </span>
+                    )}
+                    {/* Not gated on the window: this fetches the file's
+                        whole annotation list on mount, so unmounting it
+                        while scrolling would re-request on every pass.
+                        It's a couple of DOM nodes when a page has no
+                        annotations — the canvas is the expensive part. */}
                     {size && (
                       <PlanAnnotationsLayer
                         fileId={file.id}
@@ -806,20 +1214,27 @@ export function PlanReader({ file, pageNumber, onPageChange, onOpenLibrary, airc
                         mode={mode}
                       />
                     )}
-                    <SbMarkerLayer
-                      aircraftSlug={aircraftSlug}
-                      sectionId={file.sectionId}
-                      pageNumber={n}
-                      pageSize={size}
-                      stagedPlacements={stagedSbPlacements}
-                    />
-                    {size && (
+                    {/* The rest are pure render off already-loaded data,
+                        so gating them costs nothing and saves real DOM —
+                        a busy sheet can carry a hundred part links, and
+                        there's no point building them for a page that
+                        isn't drawn. */}
+                    {rendered && (
+                      <SbMarkerLayer
+                        aircraftSlug={aircraftSlug}
+                        sectionId={file.sectionId}
+                        pageNumber={n}
+                        pageSize={size}
+                        stagedPlacements={stagedSbPlacements}
+                      />
+                    )}
+                    {rendered && size && (
                       <PlanSearchHighlightLayer
                         matches={search.matchesByPage.get(n) ?? []}
                         currentIndex={search.currentIndex}
                       />
                     )}
-                    {size && showPartLinks && (
+                    {rendered && size && showPartLinks && (
                       <PlanPartLinkLayer
                         refs={partRefs.refsByPage.get(n) ?? []}
                         pageSize={size}
