@@ -20,6 +20,10 @@ interface AuthContextType {
   setup: (password: string) => Promise<void>;
   logout: () => void;
   markNewsSeen: () => Promise<void>;
+  /** Re-pull /api/auth/status. Needed after something changes state the
+   *  status endpoint reports — setting the latest news item, for one:
+   *  without it the What's New badge only appears after a full reload. */
+  refreshAuth: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -173,7 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, maintenanceMode, multiTenant, tenantNotFound, isDeactivated, role, slug, latestNews, hasUnseenNews, login, setup, logout, markNewsSeen }}>
+    <AuthContext.Provider value={{ token, isAuthenticated, isLoading, needsSetup, demoMode, maintenanceMode, multiTenant, tenantNotFound, isDeactivated, role, slug, latestNews, hasUnseenNews, login, setup, logout, markNewsSeen, refreshAuth: checkAuth }}>
       {children}
     </AuthContext.Provider>
   );

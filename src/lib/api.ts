@@ -185,7 +185,11 @@ export interface GeneralSettings {
   aircraftType?: string;
   /** Per-tenant feature flags. Admin-controlled. Missing keys default to true.
    *  When a flag is false, the page is hidden from non-admin users. */
-  featureFlags?: Partial<Record<'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans', boolean>>;
+  // Every key but `harness` names a page and gates both its nav entry and
+  // its API namespace. `harness` is the odd one out: it's a view *inside*
+  // the wiring page, derived client-side from the schematic with no API
+  // of its own, so it only hides UI — schematic editing is unaffected.
+  featureFlags?: Partial<Record<'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans' | 'harness', boolean>>;
 }
 
 let _generalSettingsPromise: Promise<GeneralSettings> | null = null;
@@ -1018,7 +1022,14 @@ export interface LatestNews {
   slug: string;
   title: string;
   date: string;
+  /** One-line lead shown under the heading in the announcement dialog. */
+  intro?: string;
+  /** One bullet per line. A leading "Label - rest of line" renders the
+   *  label in bold; lines without that shape render as plain text. */
+  body?: string;
 }
+
+export type LatestNewsInput = Pick<LatestNews, 'slug' | 'title' | 'date' | 'intro' | 'body'>;
 
 export async function markNewsSeen(): Promise<void> {
   await request('/api/news/seen', { method: 'POST' });
@@ -1028,7 +1039,7 @@ export function fetchLatestNewsAdmin(): Promise<{ latestNews: LatestNews | null 
   return request('/api/admin/news');
 }
 
-export function updateLatestNews(data: { slug: string; title: string; date: string } | Record<string, never>): Promise<{ ok: boolean; latestNews: LatestNews | null }> {
+export function updateLatestNews(data: LatestNewsInput | Record<string, never>): Promise<{ ok: boolean; latestNews: LatestNews | null }> {
   return request('/api/admin/news', {
     method: 'PUT',
     body: JSON.stringify(data),
