@@ -59,7 +59,13 @@ const SHIELD_TERMINATION_LABELS: Record<'ground' | 'float' | 'backshell', string
 };
 
 export default function WiringPage() {
-  const { demoMode } = useAuth();
+  const { demoMode, role } = useAuth();
+  // Harness view can be held back independently of the wiring page while
+  // it's still settling. Schematic editing is never affected. Defaults to
+  // on so a failed settings fetch doesn't hide a working feature; a real
+  // (non-demo) admin always keeps it, same bypass the page flags use.
+  const [harnessFlag, setHarnessFlag] = useState(true);
+  const harnessEnabled = (role === 'admin' && !demoMode) || harnessFlag;
   const devices       = useWiring(s => s.devices);
   const placements    = useWiring(s => s.placements);
   const wires         = useWiring(s => s.wires);
@@ -381,10 +387,13 @@ export default function WiringPage() {
     })();
   }, [loadFromJson]);
 
-  // ── Project name from general settings ─────────────────────────────────
+  // ── Project name + feature flags from general settings ─────────────────
   useEffect(() => {
     fetchGeneralSettings()
-      .then(s => { if (s?.projectName) setProjectName(s.projectName); })
+      .then(s => {
+        if (s?.projectName) setProjectName(s.projectName);
+        setHarnessFlag(s?.featureFlags?.harness !== false);
+      })
       .catch(() => {});
   }, []);
 
@@ -561,7 +570,10 @@ export default function WiringPage() {
     () => sheets.find(s => s.id === activeSheetId),
     [sheets, activeSheetId]
   );
-  const viewMode = activeSheetObj?.harness?.viewMode ?? 'schematic';
+  // Forced back to schematic when the harness view is held back, so a
+  // project last saved in harness mode still opens — and every
+  // harness-only tool downstream keys off this one value.
+  const viewMode = harnessEnabled ? (activeSheetObj?.harness?.viewMode ?? 'schematic') : 'schematic';
   const junctions = useWiring(s => s.junctions);
   const visibleJunctions = useMemo(
     () => junctions.filter(j => j.sheetId === activeSheetId),
@@ -1088,18 +1100,20 @@ export default function WiringPage() {
               <Workflow className="w-4 h-4" />
               <span className="hidden lg:inline">Schematic</span>
             </Button>
-            <Button
-              size="sm"
-              variant={viewMode === 'harness' ? 'default' : 'ghost'}
-              className="rounded-none px-2 lg:px-3 py-1 text-sm gap-1"
-              onClick={() => onToggle('harness')}
-              title="Harness view"
-              aria-label="Harness view"
-              aria-pressed={viewMode === 'harness'}
-            >
-              <Cable className="w-4 h-4" />
-              <span className="hidden lg:inline">Harness</span>
-            </Button>
+            {harnessEnabled && (
+              <Button
+                size="sm"
+                variant={viewMode === 'harness' ? 'default' : 'ghost'}
+                className="rounded-none px-2 lg:px-3 py-1 text-sm gap-1"
+                onClick={() => onToggle('harness')}
+                title="Harness view"
+                aria-label="Harness view"
+                aria-pressed={viewMode === 'harness'}
+              >
+                <Cable className="w-4 h-4" />
+                <span className="hidden lg:inline">Harness</span>
+              </Button>
+            )}
           </div>
 
           {/* Unified File menu — Export variants + Import + Clear all sit
@@ -1862,6 +1876,7 @@ export default function WiringPage() {
         onOpenChange={setExportDialogOpen}
         currentSheetName={activeSheet?.name ?? 'Sheet'}
         sheetCount={sheets.length}
+        allowHarness={harnessEnabled}
         onExport={handlePdfExport}
       />
     </AppShell>

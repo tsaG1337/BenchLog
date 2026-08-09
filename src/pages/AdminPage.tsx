@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { fetchAdminUsers, fetchAdminDbStats, createAdminUser, updateAdminUser, purgeAdminUserData, resetUserOnboarding, fetchAdminTableRows, deleteAdminTableRow, fetchAdminJobs, runAdminJob, fetchGeneralSettings, updateGeneralSettings, fetchLatestNewsAdmin, updateLatestNews, AdminUser, DbStat, AdminTableResult, JobInfo, LatestNews } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -106,7 +107,7 @@ function truncateId(id: string): string {
 }
 
 export default function AdminPage() {
-  const { role: myRole } = useAuth();
+  const { role: myRole, refreshAuth } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [stats, setStats] = useState<DbStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,10 +135,12 @@ export default function AdminPage() {
   const [latestNews, setLatestNews] = useState<LatestNews | null>(null);
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsSaving, setNewsSaving] = useState(false);
-  const [newsForm, setNewsForm] = useState({ title: '', slug: '', date: '' });
+  const [newsForm, setNewsForm] = useState({ title: '', slug: '', date: '', intro: '', body: '' });
 
   // Feature flags — controls which pages non-admin users can see
-  type FeatureKey = 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans';
+  // 'harness' isn't in FEATURE_LABELS: it's a view inside the wiring
+  // page rather than a page, so it renders as its own row below the grid.
+  type FeatureKey = 'dashboard' | 'blog' | 'tracker' | 'expenses' | 'inventory' | 'inspections' | 'wiring' | 'plans' | 'harness';
   const [featureFlags, setFeatureFlags] = useState<Partial<Record<FeatureKey, boolean>>>({});
   const [featureToggling, setFeatureToggling] = useState<FeatureKey | null>(null);
 
@@ -210,7 +213,7 @@ export default function AdminPage() {
     try {
       const { latestNews: current } = await fetchLatestNewsAdmin();
       setLatestNews(current);
-      setNewsForm({ title: current?.title || '', slug: current?.slug || '', date: current?.date || '' });
+      setNewsForm({ title: current?.title || '', slug: current?.slug || '', date: current?.date || '', intro: current?.intro || '', body: current?.body || '' });
     } catch { /* nothing configured yet, or offline — the empty form is the right fallback */ } finally { setNewsLoading(false); }
   }, []);
 
@@ -221,7 +224,12 @@ export default function AdminPage() {
         newsForm.slug.trim() ? newsForm : {}
       );
       setLatestNews(saved);
-      if (!saved) setNewsForm({ title: '', slug: '', date: '' });
+      if (!saved) setNewsForm({ title: '', slug: '', date: '', intro: '', body: '' });
+      // The badge is driven by /api/auth/status, which AuthContext only
+      // reads on mount — so without this the admin who just set the news
+      // wouldn't see their own badge until a full page reload, which
+      // reads as "it didn't work".
+      await refreshAuth();
       toast.success(saved ? 'Latest news updated' : 'Latest news cleared');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to update latest news');
@@ -234,7 +242,9 @@ export default function AdminPage() {
       const next = { ...featureFlags, [key]: enabled };
       await updateGeneralSettings({ featureFlags: next });
       setFeatureFlags(next);
-      toast.success(`${FEATURE_LABELS[key]} ${enabled ? 'enabled' : 'hidden from non-admins'}`);
+      // FEATURE_LABELS only covers pages; 'harness' isn't one of them.
+      const label = key === 'harness' ? 'Harness view' : FEATURE_LABELS[key];
+      toast.success(`${label} ${enabled ? 'enabled' : 'hidden from non-admins'}`);
     } catch (e: any) {
       toast.error(e.message);
     } finally { setFeatureToggling(null); }
@@ -467,6 +477,28 @@ export default function AdminPage() {
                 );
               })}
             </div>
+
+            {/* Not part of the grid above: the harness is a view inside the
+                Wiring page, not a page of its own, so it needs its own line
+                to say what turning it off actually does. */}
+            <div className="mt-4 pt-4 border-t border-border">
+              <p className="text-xs text-muted-foreground mb-2">
+                Parts of a page can be held back separately. Schematic editing stays available either way.
+              </p>
+              <label className="flex items-center justify-between gap-3 px-3 py-2 rounded border border-border bg-background">
+                <span className="text-sm text-foreground">
+                  Harness view
+                  <span className="block text-xs text-muted-foreground">
+                    The bundle view and its exports, inside Wiring Diagrams
+                  </span>
+                </span>
+                <Switch
+                  checked={featureFlags.harness !== false}
+                  onCheckedChange={(v) => toggleFeature('harness', v)}
+                  disabled={featureToggling === 'harness'}
+                />
+              </label>
+            </div>
           </div>
         )}
 
@@ -478,11 +510,11 @@ export default function AdminPage() {
               <div>
                 <p className="text-sm font-medium text-foreground">Latest News</p>
                 <p className="text-xs text-muted-foreground">
-                  Fill this in right after publishing a post at benchlog.build/news — every builder who hasn't seen it yet gets a badge in their nav until they click through. Clear the slug and save to turn the badge off entirely.
+                  Fill this in right after publishing a post at benchlog.build/news — every builder who hasn't seen it yet gets a badge on the What's New item until they click through. That includes you, but the badge lives in the main navigation, which this page doesn't show: leave the admin panel to see it. Clear the slug and save to turn it off entirely.
                 </p>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
               <Input
                 placeholder="Title"
                 value={newsForm.title}
@@ -499,13 +531,42 @@ export default function AdminPage() {
                 onChange={e => setNewsForm(f => ({ ...f, date: e.target.value }))}
               />
             </div>
+            <Input
+              className="mb-2"
+              placeholder="Intro — one line under the heading (optional)"
+              value={newsForm.intro}
+              onChange={e => setNewsForm(f => ({ ...f, intro: e.target.value }))}
+            />
+            <Textarea
+              className="mb-1 min-h-[88px]"
+              placeholder={'Highlights — one per line, e.g.\nPart numbers - Tap one on a plan sheet to see stock and location.\nZoom - Pinch and double-tap now land where you expect.'}
+              value={newsForm.body}
+              onChange={e => setNewsForm(f => ({ ...f, body: e.target.value }))}
+            />
+            <p className="text-xs text-muted-foreground mb-3">
+              One highlight per line. Start a line with a short label followed by
+              “ - ” to render the label in bold. Leave both this and the intro empty
+              to show only the nav badge, with no pop-up.
+            </p>
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={saveLatestNews} disabled={newsSaving}>
                 {newsSaving ? 'Saving…' : 'Save'}
               </Button>
               {latestNews && (
                 <span className="text-xs text-muted-foreground">
-                  Currently: {latestNews.title || latestNews.slug} ({latestNews.date})
+                  {/* Linked so a typo'd slug is caught here rather than by
+                      every builder landing on a 404. Nothing verifies the
+                      post exists — this is the check. */}
+                  Points at{' '}
+                  <a
+                    href={`https://benchlog.build/news/${encodeURIComponent(latestNews.slug)}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-foreground"
+                  >
+                    {latestNews.title || latestNews.slug}
+                  </a>
+                  {latestNews.date ? ` (${latestNews.date})` : ''}
                 </span>
               )}
             </div>

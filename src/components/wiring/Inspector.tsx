@@ -12,7 +12,7 @@ import { findTemplateById, getManualLinks } from '@/lib/wiring/library';
 import { logicalConnectorsOf, harnessTreeOf, bundleGeometricLengthMm, DEFAULT_MM_PER_UNIT } from '@/lib/wiring/harness';
 import { useHarnessGraph } from './HarnessGraphContext';
 import { wiresInNet } from '@/lib/wiring/nets';
-import type { Side, Device, Pin, Placement, PlacedDevice, ConnectorGender, ConnectorType, Bundle, HarnessNode, HarnessGraph } from '@/lib/wiring/types';
+import type { Side, Device, Pin, Placement, PlacedDevice, ConnectorGender, ConnectorType, Bundle, HarnessNode, HarnessGraph, LogicalConductor } from '@/lib/wiring/types';
 import { mergePlacement, isJunctionKey, CONNECTOR_TYPE_LABELS, harnessGender, harnessRoleLabel } from '@/lib/wiring/types';
 
 // "Top" intentionally omitted — top-side connectors collide with the device
@@ -1135,8 +1135,13 @@ function Empty() {
  * existing setHoveredWireId hook so the user can match list rows to physical
  * wires when the bundle is dense.
  */
-function WireList({ wireIds, emptyHint, editable }: {
+function WireList({ wireIds, conductors, emptyHint, editable }: {
   wireIds: string[];
+  /** When given, rows are PHYSICAL conductors rather than schematic wires:
+   *  a two-point net label collapses to one row reading pin → pin instead
+   *  of two rows each ending at a `#netlabel`. `wireIds` is still used for
+   *  the fallback and for anything keyed off the representative wire. */
+  conductors?: LogicalConductor[];
   emptyHint?: string;
   editable?: boolean;
 }) {
@@ -1145,7 +1150,13 @@ function WireList({ wireIds, emptyHint, editable }: {
   const setHoveredWireId = useWiring(s => s.setHoveredWireId);
   const updateWire = useWiring(s => s.updateWire);
 
-  if (wireIds.length === 0) {
+  // One row per physical conductor when the caller supplied them, else one
+  // row per schematic wire (nodes still list wires).
+  const rows = conductors
+    ? conductors.map(c => ({ key: c.id, wid: c.id, from: c.from, to: c.to }))
+    : wireIds.map(wid => ({ key: wid, wid, from: undefined as string | undefined, to: undefined as string | undefined }));
+
+  if (rows.length === 0) {
     return (
       <div className="border border-border rounded p-3 text-[10px] text-muted-foreground italic">
         {emptyHint ?? 'No wires.'}
@@ -1155,10 +1166,12 @@ function WireList({ wireIds, emptyHint, editable }: {
 
   return (
     <div className="border border-border rounded max-h-64 overflow-y-auto">
-      {wireIds.map(wid => {
+      {rows.map(({ key, wid, from, to }) => {
         const w = wires.find(x => x.id === wid);
-        const endpoints = w
-          ? `${formatPinRef(devices, w.fromPin, wires)} → ${formatPinRef(devices, w.toPin, wires)}`
+        const fromKey = from ?? w?.fromPin;
+        const toKey = to ?? w?.toPin;
+        const endpoints = fromKey && toKey
+          ? `${formatPinRef(devices, fromKey, wires)} → ${formatPinRef(devices, toKey, wires)}`
           : '(missing wire)';
         // A wire whose color is the schematic-default 'currentColor' has no
         // user-chosen colour yet — it falls back to black, the default
@@ -1170,7 +1183,7 @@ function WireList({ wireIds, emptyHint, editable }: {
         const wireName = w?.label?.trim();
         return (
           <div
-            key={wid}
+            key={key}
             className="px-2 py-1 text-[11px] border-b border-border/40 last:border-b-0 hover:bg-accent/40"
             onMouseEnter={() => setHoveredWireId(wid)}
             onMouseLeave={() => setHoveredWireId(null)}
@@ -1356,7 +1369,7 @@ function HarnessBundlePanel({ bundle, sheetId }: { bundle: Bundle; sheetId: stri
         Bundle
       </div>
       <div className="text-[10px] text-muted-foreground">
-        {bundle.conductorIds.length} conductor{bundle.conductorIds.length === 1 ? '' : 's'} —
+        {bundle.conductors.length} conductor{bundle.conductors.length === 1 ? '' : 's'} —
         a physical cable carrying the conductors of every net whose route crosses it.
       </div>
       <div>
@@ -1417,11 +1430,12 @@ function HarnessBundlePanel({ bundle, sheetId }: { bundle: Bundle; sheetId: stri
       </div>
       <div>
         <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Conductors in this Bundle ({bundle.conductorIds.length})
+          Conductors in this Bundle ({bundle.conductors.length})
         </label>
         <div className="mt-1">
           <WireList
             wireIds={bundle.conductorIds}
+            conductors={bundle.conductors}
             emptyHint="No conductors routed through this Bundle."
             editable
           />

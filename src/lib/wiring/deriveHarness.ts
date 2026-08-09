@@ -593,17 +593,45 @@ export function deriveHarness(
   //                 The conductor belongs to a multi-point label net and is
   //                 routed onto the minimal subtree spanning every member
   //                 device node (a power rail runs the full trunk length).
+  //  - `internal` — both endpoints land on the SAME connector node: a jumper
+  //                 such as a transponder's loopback between D25 pins 1 and
+  //                 2. It never leaves the connector, so it is carried by no
+  //                 bundle at all.
   // The `uf` root for grouping nodes into trees is taken from either real
   // endpoint or the `label:<text>` virtual node.
   interface RoutedWire {
     wireId: string;
-    kind: 'pair' | 'labelNet';
+    kind: 'pair' | 'labelNet' | 'internal';
     /** A node id in the wire's tree — used to find which tree it belongs to. */
     treeAnchor: string;
     /** kind 'pair' — the two endpoint nodes. */
     a?: string;
     b?: string;
+    /** kind 'labelNet' — the wire's ELECTRICAL net root (see `netUf`).
+     *  Grouping on this rather than on the tree root is what keeps one
+     *  label net's conductors off cables belonging to another's. */
+    netKey?: string;
   }
+  // Electrical-net identity, deliberately SEPARATE from the `uf` above.
+  // `uf` answers "which harness tree is this in", and since every wire
+  // unions its endpoints there, a connected harness collapses to a single
+  // root — useless for telling one net from another. Same rules as
+  // nets.ts's `wiresInNet`: a wire unions its two endpoint keys, a label
+  // unions its virtual key with what it is attached to, and labels sharing
+  // text union together. Keyed on PINS, so two different nets landing on
+  // the same connector stay distinct.
+  const wireById = new Map(wires.map(w => [w.id, w]));
+  const netUf = new UnionFind();
+  for (const w of wires) netUf.union(w.fromPin, w.toPin);
+  for (const nl of netLabels) netUf.union('#' + nl.id, nl.attachedTo);
+  const firstLabelOfText = new Map<string, string>();
+  for (const nl of netLabels) {
+    const key = '#' + nl.id;
+    const first = firstLabelOfText.get(nl.text);
+    if (first === undefined) firstLabelOfText.set(nl.text, key);
+    else netUf.union(first, key);
+  }
+
   const routedWires: RoutedWire[] = [];
   const routedById = new Map<string, RoutedWire>();
   for (const w of wires) {
@@ -616,10 +644,17 @@ export function deriveHarness(
     let rw: RoutedWire | null = null;
     if (ga && gb && ga !== gb) {
       rw = { wireId: w.id, kind: 'pair', treeAnchor: ga, a: ga, b: gb };
+    } else if (ga && gb) {
+      // Both ends on one connector — a jumper that never enters the harness.
+      rw = { wireId: w.id, kind: 'internal', treeAnchor: ga };
     } else if (ga || gb) {
-      // One real node, the other a label (or a self-loop collapsing to one
-      // node) — a label-net member.
-      rw = { wireId: w.id, kind: 'labelNet', treeAnchor: (ga ?? gb)! };
+      // One real node, the other a net label — a label-net member.
+      rw = {
+        wireId: w.id,
+        kind: 'labelNet',
+        treeAnchor: (ga ?? gb)!,
+        netKey: netUf.find(w.fromPin),
+      };
     }
     if (rw) { routedWires.push(rw); routedById.set(w.id, rw); }
   }
@@ -762,6 +797,7 @@ export function deriveHarness(
         id,
         endpoints: [a, b],
         conductorIds: [],
+        conductors: [],
         length: bundleLengthOverrides[id],
         // Phase 4 — cable bend points + name re-applied by stable id, the
         // same way `length` is. A defensive copy of the waypoint array so a
@@ -929,6 +965,23 @@ export function deriveHarness(
       if (!b.conductorIds.includes(wid)) b.conductorIds.push(wid);
     };
 
+    /** Nodes reachable from `start` without crossing `without` — i.e. one
+     *  side of the tree once that cable is cut. Used to work out which of a
+     *  net's members sit at each end of a given segment. */
+    const nodesOnSideOf = (without: Bundle, start: string): Set<string> => {
+      const seen = new Set<string>([start]);
+      const q = [start];
+      while (q.length) {
+        const cur = q.shift()!;
+        for (const e of (finalAdj.get(cur) ?? [])) {
+          if (e.bundle === without || seen.has(e.node)) continue;
+          seen.add(e.node);
+          q.push(e.node);
+        }
+      }
+      return seen;
+    };
+
     // 6a. `pair` wires — route along the unique tree-path between the two
     //     endpoint nodes (handles direct wires, junction wires, and the
     //     cycle case: the MST dropped the cycle-closing edge, the wire still
@@ -936,23 +989,50 @@ export function deriveHarness(
     for (const wid of tree.wireIds) {
       const rw = routedById.get(wid);
       if (!rw || rw.kind !== 'pair' || !rw.a || !rw.b) continue;
-      for (const b of pathBetween(rw.a, rw.b)) addConductor(b, wid);
+      const w = wireById.get(wid);
+      for (const b of pathBetween(rw.a, rw.b)) {
+        addConductor(b, wid);
+        // A plain wire is already one physical conductor between two real
+        // pins — nothing to resolve.
+        if (w) b.conductors.push({ id: wid, wireIds: [wid], from: w.fromPin, to: w.toPin });
+      }
     }
 
     // 6b. `labelNet` wires — a label-net has no two distinguished endpoints,
     //     so its conductors run the minimal subtree spanning every member
     //     device node (a power rail runs the full harness length). All member
-    //     wires of one label net share that same bundle set. Group by the
-    //     net's union-find root.
-    const labelNetMembers = new Map<string, { wireIds: string[]; nodes: Set<string> }>();
+    //     wires of one label net share that same bundle set.
+    //
+    //     Grouped by ELECTRICAL net (`netKey`). This used to group by
+    //     `uf.find(treeAnchor)` — the harness-tree root — which is the same
+    //     value for every wire in a connected harness, so every net-label
+    //     wire in the project ended up in one aggregate and was routed onto
+    //     the subtree spanning all of them. A 2-pin resistor on a spur then
+    //     reported the conductors of power rails it never touched.
+    const labelNetMembers = new Map<string, {
+      wireIds: string[];
+      nodes: Set<string>;
+      /** Node id → the real pin keys this net lands on there. Needed to
+       *  report a conductor's ends as pins rather than as the label stub
+       *  the schematic drew. */
+      pinsByNode: Map<string, string[]>;
+    }>();
     for (const wid of tree.wireIds) {
       const rw = routedById.get(wid);
       if (!rw || rw.kind !== 'labelNet') continue;
-      const root = uf.find(rw.treeAnchor);
+      const root = rw.netKey ?? uf.find(rw.treeAnchor);
       let agg = labelNetMembers.get(root);
-      if (!agg) { agg = { wireIds: [], nodes: new Set() }; labelNetMembers.set(root, agg); }
+      if (!agg) { agg = { wireIds: [], nodes: new Set(), pinsByNode: new Map() }; labelNetMembers.set(root, agg); }
       agg.wireIds.push(wid);
       agg.nodes.add(rw.treeAnchor);
+      const w = wireById.get(wid);
+      if (w) {
+        // Whichever end isn't the label is the pin this leg terminates on.
+        const realPin = w.fromPin.startsWith('#') ? w.toPin : w.fromPin;
+        const list = agg.pinsByNode.get(rw.treeAnchor) ?? [];
+        if (!list.includes(realPin)) list.push(realPin);
+        agg.pinsByNode.set(rw.treeAnchor, list);
+      }
     }
     for (const agg of labelNetMembers.values()) {
       const memberNodes = Array.from(agg.nodes).sort();
@@ -964,6 +1044,31 @@ export function deriveHarness(
       }
       for (const wid of agg.wireIds) {
         for (const b of subtree) addConductor(b, wid);
+      }
+      // One physical conductor per segment, with the labels resolved away:
+      // cutting this cable puts some of the net's pins on one side and the
+      // rest on the other, and the wire in this cable joins them. For a
+      // two-point net that's exactly `pinA → pinB`. For a bigger net it
+      // names one member per side — honest, though such a net really wants
+      // a splice node, which the harness doesn't derive yet.
+      for (const b of subtree) {
+        const sideA = nodesOnSideOf(b, b.endpoints[0]);
+        const pinsA: string[] = [];
+        const pinsB: string[] = [];
+        for (const node of memberNodes) {
+          const pins = agg.pinsByNode.get(node) ?? [];
+          (sideA.has(node) ? pinsA : pinsB).push(...pins);
+        }
+        // A segment inside the spanning subtree always has members on both
+        // sides; skip rather than invent an endpoint if that ever fails.
+        if (pinsA.length === 0 || pinsB.length === 0) continue;
+        pinsA.sort(); pinsB.sort();
+        b.conductors.push({
+          id: agg.wireIds[0],
+          wireIds: [...agg.wireIds],
+          from: pinsA[0],
+          to: pinsB[0],
+        });
       }
     }
   }

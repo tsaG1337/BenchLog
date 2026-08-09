@@ -129,7 +129,8 @@ export function HarnessGraphView({ graph, bendMode = false, showLengths = false,
         // insertion (via addBundleWaypoint → insertWaypointAtNearestSegment).
         const curvePolyline = sampleCableCurve(eps[0], eps[1], waypoints);
         const isSelected = selectedBundleId === b.id || treeBundleIds.has(b.id);
-        const thickness = tubeThickness(b.conductorIds.length);
+        // Physical conductors, so a two-point net label counts once.
+        const thickness = tubeThickness(b.conductors.length);
         const stroke = isSelected
           ? 'hsl(var(--primary))'
           : 'hsl(var(--muted-foreground) / 0.6)';
@@ -320,7 +321,7 @@ function BundleLabels({ bundle, curvePolyline, showLengths, mmPerUnit }: { bundl
   const rows: { text: string; kind: 'name' | 'count' | 'length'; muted?: boolean }[] = [];
   if (bundle.name) rows.push({ text: bundle.name, kind: 'name' });
   rows.push({
-    text: `${bundle.conductorIds.length}`,
+    text: `${bundle.conductors.length}`,
     kind: 'count',
   });
   if (showLengths) {

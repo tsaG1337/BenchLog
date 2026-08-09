@@ -59,17 +59,23 @@ interface Props {
   currentSheetName: string;
   /** Total sheet count — the "All sheets" option only shows when > 1. */
   sheetCount: number;
+  /** False when the harness view is held back by the admin feature flag:
+   *  every harness page and label option disappears, so the export can't
+   *  be used as a back door to output the user can't otherwise reach. */
+  allowHarness?: boolean;
   onExport: (options: WiringPdfExportOptions) => void;
 }
 
-export function WiringExportDialog({ open, onOpenChange, currentSheetName, sheetCount, onExport }: Props) {
+export function WiringExportDialog({ open, onOpenChange, currentSheetName, sheetCount, allowHarness = true, onExport }: Props) {
   const [opts, setOpts] = useState<WiringPdfExportOptions>(DEFAULT_OPTIONS);
 
   // Re-load the remembered options each time the dialog opens (not just on
   // mount) so a second export in the same session starts from the last run.
+  // Harness stays off when it isn't allowed — the remembered options may
+  // predate the flag being turned off, or come from an admin session.
   useEffect(() => {
-    if (open) setOpts(loadSavedOptions());
-  }, [open]);
+    if (open) setOpts({ ...loadSavedOptions(), ...(allowHarness ? {} : { includeHarness: false }) });
+  }, [open, allowHarness]);
 
   const patch = (p: Partial<WiringPdfExportOptions>) => setOpts(o => ({ ...o, ...p }));
 
@@ -126,20 +132,25 @@ export function WiringExportDialog({ open, onOpenChange, currentSheetName, sheet
                 />
                 <span>Schematic</span>
               </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox
-                  checked={opts.includeHarness}
-                  onCheckedChange={(v) => patch({ includeHarness: v === true })}
-                />
-                <span>Harness</span>
-              </label>
+              {allowHarness && (
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={opts.includeHarness}
+                    onCheckedChange={(v) => patch({ includeHarness: v === true })}
+                  />
+                  <span>Harness</span>
+                </label>
+              )}
             </div>
             {nothingSelected && (
-              <p className="text-xs text-destructive mt-1.5">Select at least one of Schematic / Harness.</p>
+              <p className="text-xs text-destructive mt-1.5">
+                {allowHarness ? 'Select at least one of Schematic / Harness.' : 'Select Schematic to export.'}
+              </p>
             )}
           </div>
 
           {/* ── Harness options ── */}
+          {allowHarness && (
           <div className={harnessDisabled ? 'opacity-40 pointer-events-none select-none' : ''}>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Harness labels</div>
             <div className="space-y-2">
@@ -185,6 +196,7 @@ export function WiringExportDialog({ open, onOpenChange, currentSheetName, sheet
               </label>
             </div>
           </div>
+          )}
 
           {/* ── Paper ── */}
           <div>

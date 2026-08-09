@@ -7,6 +7,7 @@ import { SettingsDialog } from '@/components/SettingsDialog';
 import { ExportDialog } from '@/components/ExportDialog';
 import { CommandPalette, useCommandPalette } from '@/components/CommandPalette';
 import { TourController } from '@/components/onboarding/TourController';
+import { NewsAnnouncementDialog } from '@/components/NewsAnnouncementDialog';
 import { fetchSessions, fetchGeneralSettings } from '@/lib/api';
 import type { WorkSession } from '@/lib/types';
 import type { GeneralSettings } from '@/lib/api';
@@ -437,6 +438,11 @@ export function AppShell({ activePage, projectName, pageTitle, headerRight, chil
           driver.js instance internally. Safe to mount everywhere
           AppShell is mounted — the controller gates itself. */}
       <TourController />
+      {/* Mounted here rather than in App.tsx's route tree so it can't
+          appear over the admin panel — /admin renders outside AppShell,
+          which means whoever is setting the news item doesn't get their
+          own announcement thrown at them mid-edit. Gates itself. */}
+      <NewsAnnouncementDialog />
     </div>
   );
 }

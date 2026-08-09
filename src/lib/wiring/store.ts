@@ -2365,7 +2365,34 @@ export const useWiring = create<WiringState>((set, get) => {
               }
             }
           }
-          return { nodePositions, bundleLengths, bundleWaypoints, bundleNames, nodeOrientations, connectorOrder };
+          // 2026-07 — branch-point display numbers and locked topology.
+          // Both were added to HarnessOverrides without being taught to
+          // this loader, so they serialised out fine and were silently
+          // dropped on the way back in: "Lock harness layout" survived
+          // until reload and no further, and branch-point numbers were
+          // reassigned from scratch each load — the exact instability
+          // branchPointLabels exists to prevent. Optional in the type, so
+          // only emitted when actually present, keeping "no lock" and "an
+          // empty lock" distinguishable.
+          const branchPointLabels: Record<string, number> = {};
+          if (raw.branchPointLabels && typeof raw.branchPointLabels === 'object') {
+            for (const [k, v] of Object.entries(raw.branchPointLabels as Record<string, any>)) {
+              if (typeof v === 'number' && Number.isInteger(v) && v > 0) branchPointLabels[k] = v;
+            }
+          }
+          const lockedEdges: Record<string, true> = {};
+          let hasLock = false;
+          if (raw.lockedEdges && typeof raw.lockedEdges === 'object') {
+            hasLock = true;
+            for (const [k, v] of Object.entries(raw.lockedEdges as Record<string, any>)) {
+              if (v === true && k) lockedEdges[k] = true;
+            }
+          }
+          return {
+            nodePositions, bundleLengths, bundleWaypoints, bundleNames, nodeOrientations, connectorOrder,
+            ...(Object.keys(branchPointLabels).length > 0 ? { branchPointLabels } : {}),
+            ...(hasLock ? { lockedEdges } : {}),
+          };
         };
         const resolvedSheets: Sheet[] = rawSheets.map((sh: any) => {
           if (!sh || typeof sh !== 'object' || !sh.harness) return sh as Sheet;

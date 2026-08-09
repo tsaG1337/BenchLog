@@ -592,6 +592,30 @@ export interface HarnessNode {
  * so wires that run together share ONE bundle (and a thicker cable). Cable
  * thickness = `conductorIds.length`.
  */
+/**
+ * One physical wire running through a cable segment.
+ *
+ * A net label is a drawing convenience, not hardware: `R1:R-P2 → #Pitot_Heat_STS`
+ * and `U1:D37-P8 → #Pitot_Heat_STS` are two schematic stubs describing ONE
+ * wire between R1 and U1. Those legs collapse into a single conductor here,
+ * with the labels resolved to the real pins on either side of the segment.
+ *
+ * Nets with three or more endpoints need a physical joint (a butt splice, or
+ * a bus/ground block) that the harness doesn't yet materialise — for those,
+ * `from`/`to` name one member from each side of this segment rather than a
+ * splice. Two-point nets, which is nearly all signal wiring, are exact.
+ */
+export interface LogicalConductor {
+  /** Representative schematic wire id — colour, gauge and hover come from it. */
+  id: string;
+  /** Every schematic wire making up this conductor: one for a plain wire,
+   *  two or more for the legs of a label net. */
+  wireIds: string[];
+  /** Real pin key at each end, never a `#label`. */
+  from: string;
+  to: string;
+}
+
 export interface Bundle {
   /** Stable id — the two endpoint node ids sorted, joined `<a>|<b>`. Stable
    *  because the node ids are; used to key a `HarnessOverrides.bundleLengths`
@@ -599,8 +623,15 @@ export interface Bundle {
   id: string;
   /** The two `HarnessNode` ids this segment connects. */
   endpoints: [string, string];
-  /** Every wire (conductor) whose route crosses this segment. */
+  /** Every schematic wire whose route crosses this segment. A two-point
+   *  label net contributes TWO ids for one physical wire — the wire-summary
+   *  export lists what you cut and terminate, which is per schematic wire,
+   *  so both legs stay. Use `conductors` for the physical view. */
   conductorIds: string[];
+  /** The PHYSICAL conductors in this cable — one per electrical net crossing
+   *  it, net labels resolved away. This is what the canvas badge, the
+   *  Inspector and the cable summary count. */
+  conductors: LogicalConductor[];
   /** User-set physical cable length in mm, from `HarnessOverrides`. Undefined
    *  when the user hasn't set one — purely a presentation/physical attribute,
    *  never affects topology or routing. */

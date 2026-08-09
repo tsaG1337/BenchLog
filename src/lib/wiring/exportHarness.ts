@@ -193,7 +193,7 @@ export function renderHarnessSvg(input: HarnessSheetRenderInput): string | null 
     if (!a || !c) continue;
     const waypoints = b.waypoints ?? [];
     const pathD = cableCurvePath(a.position, c.position, waypoints);
-    const thickness = tubeThickness(b.conductorIds.length);
+    const thickness = tubeThickness(b.conductors.length);
     parts.push(`<path d="${pathD}" fill="none" stroke="${CABLE}" stroke-width="${thickness}" stroke-linecap="round"/>`);
 
     // Label pills at the curve midpoint — same stacking as BundleLabels.
@@ -211,7 +211,7 @@ export function renderHarnessSvg(input: HarnessSheetRenderInput): string | null 
       if (kind === 'name') {
         labelParts.push(pillSvg(mid.x, cy, b.name!, { bold: true, dark: true }));
       } else if (kind === 'count') {
-        labelParts.push(pillSvg(mid.x, cy, `${b.conductorIds.length}`));
+        labelParts.push(pillSvg(mid.x, cy, `${b.conductors.length}`));
       } else {
         const mm = hasDefined ? b.length! : geometricLengthMm(polyline, options.mmPerUnit);
         labelParts.push(pillSvg(mid.x, cy, `${hasDefined ? '' : '~'}${Math.round(mm)} mm`, { muted: !hasDefined }));
@@ -325,14 +325,16 @@ export function buildCableSummaryHtml(
       const hasDefined = b.length !== undefined;
       const mm = hasDefined ? b.length! : geometricLengthMm(polyline, sheet.mmPerUnit);
       sheetTotalMm += mm;
-      const wireLabels = b.conductorIds
-        .map(id => wireById.get(id)?.label)
-        .filter((l): l is string => !!l);
+      // Physical conductors: a two-point net label is one wire, listed
+      // once, counted once — matching the canvas badge and the Inspector.
+      const wireLabels = [...new Set(b.conductors
+        .map(c => wireById.get(c.id)?.label)
+        .filter((l): l is string => !!l))];
       rows.push(`<tr>
         <td>${b.name ? escapeXml(b.name) : '<span class="muted">—</span>'}</td>
         <td>${escapeXml(endpointName(b.endpoints[0], nodeById, placementById, bpLabels))}</td>
         <td>${escapeXml(endpointName(b.endpoints[1], nodeById, placementById, bpLabels))}</td>
-        <td class="num">${b.conductorIds.length}</td>
+        <td class="num">${b.conductors.length}</td>
         <td>${wireLabels.length > 0 ? escapeXml(wireLabels.join(', ')) : '<span class="muted">—</span>'}</td>
         <td class="num">${hasDefined ? `${Math.round(mm)} mm` : `<span class="muted">~${Math.round(mm)} mm</span>`}</td>
       </tr>`);

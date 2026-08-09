@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { uploadImages, deleteImage } from '@/lib/api';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { MIcon } from '@/components/AppShell';
 import { toast } from 'sonner';
 import { thumbUrl, imageUrl } from '@/lib/utils';
+import { moveItem, canMove } from '@/lib/reorder';
 
 interface SessionImagesProps {
   sessionId: string;
@@ -13,6 +14,14 @@ interface SessionImagesProps {
   demoMode?: boolean;
 }
 
+/** Hold this long on a touchscreen before a drag begins, so an ordinary
+ *  swipe still scrolls the dialog. Matches the feel of iOS Photos. */
+const LONG_PRESS_MS = 300;
+/** Finger travel that cancels a pending long-press — that's a scroll. */
+const SCROLL_CANCEL_PX = 10;
+/** Mouse travel that starts a drag, so a plain click still opens the lightbox. */
+const MOUSE_DRAG_PX = 5;
+
 export function SessionImages({ sessionId, imageUrls, onImagesChange, editable = true, demoMode = false }: SessionImagesProps) {
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -20,6 +29,138 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange, editable =
   // Track latest imageUrls to avoid stale closure in async upload handler
   const imageUrlsRef = useRef(imageUrls);
   imageUrlsRef.current = imageUrls;
+
+  // ─── Drag to reorder ────────────────────────────────────────────
+  // Pointer events rather than HTML5 drag-and-drop: the latter never
+  // fires on touch, and this grid is used on a tablet at the bench.
+  //
+  // While a drag is live the order is held locally and only handed to
+  // onImagesChange on drop — the parents autosave, and reordering
+  // through them on every pointer move would fire a save per frame.
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  const [draggingUrl, setDraggingUrl] = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const tileRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Set between pointerdown and either activation or cancellation. */
+  const pending = useRef<{ url: string; x: number; y: number; pointerType: string } | null>(null);
+  /** Suppresses the lightbox click that would otherwise follow a drag. */
+  const didDrag = useRef(false);
+  // Read by pointermove without re-binding the handler every reorder.
+  const dragOrderRef = useRef<string[] | null>(null);
+  dragOrderRef.current = dragOrder;
+
+  const list = dragOrder ?? imageUrls;
+
+  const clearPending = () => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+    pending.current = null;
+  };
+
+  const beginDrag = useCallback((url: string) => {
+    clearPending();
+    didDrag.current = true;
+    setDragOrder([...imageUrlsRef.current]);
+    setDraggingUrl(url);
+  }, []);
+
+  const endDrag = useCallback((commit: boolean) => {
+    const finalOrder = dragOrderRef.current;
+    setDraggingUrl(null);
+    setDragOrder(null);
+    clearPending();
+    if (commit && finalOrder) {
+      const before = imageUrlsRef.current;
+      const changed = finalOrder.length !== before.length || finalOrder.some((u, i) => u !== before[i]);
+      if (changed) onImagesChange(finalOrder);
+    }
+  }, [onImagesChange]);
+
+  /** Which tile index the pointer is currently over, or -1. */
+  const indexUnderPoint = (x: number, y: number): number => {
+    const current = dragOrderRef.current;
+    if (!current) return -1;
+    for (let i = 0; i < current.length; i++) {
+      const node = tileRefs.current.get(current[i]);
+      if (!node) continue;
+      const r = node.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return i;
+    }
+    return -1;
+  };
+
+  // Global listeners while a drag (or a pending long-press) is live, so
+  // the gesture survives the pointer leaving the tile it started on.
+  useEffect(() => {
+    if (!editable) return;
+
+    const onPointerMove = (e: PointerEvent) => {
+      // Still deciding whether this is a drag or a scroll/click.
+      const p = pending.current;
+      if (p) {
+        const dist = Math.hypot(e.clientX - p.x, e.clientY - p.y);
+        if (p.pointerType === 'mouse') {
+          if (dist > MOUSE_DRAG_PX) beginDrag(p.url);
+        } else if (dist > SCROLL_CANCEL_PX) {
+          // Moved before the hold completed — they're scrolling, not sorting.
+          clearPending();
+        }
+        return;
+      }
+      if (!draggingUrl) return;
+      const current = dragOrderRef.current;
+      if (!current) return;
+      const from = current.indexOf(draggingUrl);
+      const to = indexUnderPoint(e.clientX, e.clientY);
+      if (to === -1 || !canMove(current.length, from, to)) return;
+      setDragOrder(moveItem(current, from, to) as string[]);
+    };
+
+    const onPointerUp = () => {
+      if (draggingUrl) endDrag(true);
+      else clearPending();
+    };
+    const onPointerCancel = () => {
+      if (draggingUrl) endDrag(false);
+      else clearPending();
+    };
+    // Non-passive so the page can't scroll out from under a live drag.
+    // React's own onTouchMove is registered passively, which is why this
+    // is attached natively instead.
+    const onTouchMove = (e: TouchEvent) => { if (draggingUrl) e.preventDefault(); };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [editable, draggingUrl, beginDrag, endDrag]);
+
+  useEffect(() => () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }, []);
+
+  const handlePointerDown = (e: React.PointerEvent, url: string) => {
+    if (!editable || imageUrls.length < 2) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    didDrag.current = false;
+    pending.current = { url, x: e.clientX, y: e.clientY, pointerType: e.pointerType };
+    if (e.pointerType !== 'mouse') {
+      longPressTimer.current = setTimeout(() => beginDrag(url), LONG_PRESS_MS);
+    }
+  };
+
+  /** Move-left / move-right buttons — the keyboard and gloves-on path,
+   *  and the only way to reorder without a pointer at all. */
+  const nudge = (url: string, delta: number) => {
+    const from = imageUrls.indexOf(url);
+    const to = from + delta;
+    if (!canMove(imageUrls.length, from, to)) return;
+    onImagesChange(moveItem(imageUrls, from, to) as string[]);
+  };
 
   const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
@@ -57,31 +198,89 @@ export function SessionImages({ sessionId, imageUrls, onImagesChange, editable =
 
   if (!editable && imageUrls.length === 0) return null;
 
+  const reorderable = editable && imageUrls.length > 1;
+
   return (
     <div>
-      <div className="grid grid-cols-2 gap-2">
-        {imageUrls.map((url) => (
-          <div key={url} className="aspect-square rounded-lg overflow-hidden relative group bg-muted">
-            <img
-              src={thumbUrl(url)}
-              onError={(e) => { e.currentTarget.src = imageUrl(url); }}
-              alt="Session photo"
-              className="w-full h-full object-cover cursor-pointer"
-              onClick={() => setPreviewUrl(imageUrl(url))}
-            />
-            <div className="absolute inset-0 bg-primary/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-              <MIcon name="zoom_in" className="text-white text-2xl" />
+      {reorderable && (
+        <p className="text-[11px] text-muted-foreground mb-1.5">
+          Hold and drag a photo to reorder. The first one is used as the cover.
+        </p>
+      )}
+      <div
+        ref={gridRef}
+        className="grid grid-cols-2 gap-2"
+        // Stops the browser claiming the gesture mid-drag on touch.
+        style={draggingUrl ? { touchAction: 'none' } : undefined}
+      >
+        {list.map((url, index) => {
+          const isDragging = draggingUrl === url;
+          return (
+            <div
+              key={url}
+              ref={el => { if (el) tileRefs.current.set(url, el); else tileRefs.current.delete(url); }}
+              onPointerDown={e => handlePointerDown(e, url)}
+              className={`aspect-square rounded-lg overflow-hidden relative group bg-muted transition-shadow ${
+                isDragging
+                  ? 'ring-2 ring-primary shadow-lg opacity-80 z-10'
+                  : draggingUrl ? 'opacity-60' : ''
+              } ${reorderable ? 'select-none' : ''}`}
+            >
+              <img
+                src={thumbUrl(url)}
+                onError={(e) => { e.currentTarget.src = imageUrl(url); }}
+                alt="Session photo"
+                draggable={false}
+                className="w-full h-full object-cover cursor-pointer"
+                onClick={() => {
+                  // A drag ends with a click on most browsers — don't open
+                  // the lightbox on top of a reorder the user just made.
+                  if (didDrag.current) { didDrag.current = false; return; }
+                  setPreviewUrl(imageUrl(url));
+                }}
+              />
+              {index === 0 && imageUrls.length > 1 && (
+                <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] font-medium pointer-events-none">
+                  Cover
+                </span>
+              )}
+              {!draggingUrl && (
+                <div className="absolute inset-0 bg-primary/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                  <MIcon name="zoom_in" className="text-white text-2xl" />
+                </div>
+              )}
+              {editable && !draggingUrl && (
+                <button
+                  onClick={() => handleRemove(url)}
+                  aria-label="Remove photo"
+                  className="absolute top-1.5 right-1.5 w-6 h-6 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {reorderable && !draggingUrl && (
+                <div className="absolute bottom-1.5 left-1.5 right-1.5 flex justify-between opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => nudge(url, -1)}
+                    disabled={index === 0}
+                    aria-label="Move photo earlier"
+                    className="w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center disabled:opacity-30"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => nudge(url, 1)}
+                    disabled={index === list.length - 1}
+                    aria-label="Move photo later"
+                    className="w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center disabled:opacity-30"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
-            {editable && (
-              <button
-                onClick={() => handleRemove(url)}
-                className="absolute top-1.5 right-1.5 w-6 h-6 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        ))}
+          );
+        })}
 
         {editable && (
           <button

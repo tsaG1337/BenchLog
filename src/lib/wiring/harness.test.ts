@@ -469,9 +469,9 @@ describe('harnessTreeOf', () => {
       { id: 'y', kind: 'connector', position: { x: 0, y: 0 } } as HarnessNode,
     ],
     bundles: [
-      { id: 'B-ab', endpoints: ['a', 'b'], conductorIds: [] },
-      { id: 'B-bc', endpoints: ['b', 'c'], conductorIds: [] },
-      { id: 'B-xy', endpoints: ['x', 'y'], conductorIds: [] },
+      { id: 'B-ab', endpoints: ['a', 'b'], conductorIds: [], conductors: [] },
+      { id: 'B-bc', endpoints: ['b', 'c'], conductorIds: [], conductors: [] },
+      { id: 'B-xy', endpoints: ['x', 'y'], conductorIds: [], conductors: [] },
     ],
   };
 
@@ -516,9 +516,9 @@ describe('harnessTreeOf', () => {
         { id: 'U2A',     kind: 'component',   position: { x: 0, y: 0 } } as HarnessNode,
       ],
       bundles: [
-        { id: 'B-main', endpoints: ['U1A:C1', 'J:sp1'],  conductorIds: [] },
-        { id: 'B-leg',  endpoints: ['J:sp1',  'bp:bp1'], conductorIds: [] },
-        { id: 'B-end',  endpoints: ['bp:bp1', 'U2A:C1'], conductorIds: [] },
+        { id: 'B-main', endpoints: ['U1A:C1', 'J:sp1'],  conductorIds: [], conductors: [] },
+        { id: 'B-leg',  endpoints: ['J:sp1',  'bp:bp1'], conductorIds: [], conductors: [] },
+        { id: 'B-end',  endpoints: ['bp:bp1', 'U2A:C1'], conductorIds: [], conductors: [] },
       ],
     };
 
@@ -542,7 +542,7 @@ describe('bundleGeometricLengthMm', () => {
     ],
     bundles: [],
   };
-  const bundle = { id: 'a|b', endpoints: ['a', 'b'] as [string, string], conductorIds: [] };
+  const bundle = { id: 'a|b', endpoints: ['a', 'b'] as [string, string], conductorIds: [], conductors: [] };
 
   it('straight cable × scale', () => {
     const len = bundleGeometricLengthMm(bundle, graph, 10);
@@ -555,7 +555,7 @@ describe('bundleGeometricLengthMm', () => {
     expect(len).toBeLessThan(101);
   });
   it('missing endpoint node → 0', () => {
-    const orphan = { id: 'a|z', endpoints: ['a', 'z'] as [string, string], conductorIds: [] };
+    const orphan = { id: 'a|z', endpoints: ['a', 'z'] as [string, string], conductorIds: [], conductors: [] };
     expect(bundleGeometricLengthMm(orphan, graph, 10)).toBe(0);
   });
 });

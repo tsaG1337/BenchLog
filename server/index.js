@@ -4043,21 +4043,31 @@ const NEWS_SLUG_RE = /^[a-z0-9-]+$/i;
 
 app.put('/api/admin/news', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { slug, title, date } = req.body || {};
-    if (slug !== undefined && slug !== null && typeof slug !== 'string') {
-      return res.status(400).json({ error: 'slug must be a string' });
-    }
-    if (title !== undefined && title !== null && typeof title !== 'string') {
-      return res.status(400).json({ error: 'title must be a string' });
-    }
-    if (date !== undefined && date !== null && typeof date !== 'string') {
-      return res.status(400).json({ error: 'date must be a string' });
+    const { slug, title, date, intro, body } = req.body || {};
+    // `intro` and `body` feed the announcement dialog. Capped because
+    // this lands in a single settings row and is rendered into a modal —
+    // neither wants an unbounded blob.
+    const strFields = { slug, title, date, intro, body };
+    for (const [key, val] of Object.entries(strFields)) {
+      if (val !== undefined && val !== null && typeof val !== 'string') {
+        return res.status(400).json({ error: `${key} must be a string` });
+      }
     }
     const trimmedSlug = typeof slug === 'string' ? slug.trim() : '';
     if (trimmedSlug && !NEWS_SLUG_RE.test(trimmedSlug)) {
       return res.status(400).json({ error: 'slug must contain only letters, numbers, and hyphens' });
     }
-    const value = trimmedSlug ? { slug: trimmedSlug, title: title || '', date: date || '' } : null;
+    const trimmedIntro = typeof intro === 'string' ? intro.trim() : '';
+    const trimmedBody = typeof body === 'string' ? body.trim() : '';
+    if (trimmedIntro.length > 300) {
+      return res.status(400).json({ error: 'intro must be 300 characters or fewer' });
+    }
+    if (trimmedBody.length > 2000) {
+      return res.status(400).json({ error: 'body must be 2000 characters or fewer' });
+    }
+    const value = trimmedSlug
+      ? { slug: trimmedSlug, title: title || '', date: date || '', intro: trimmedIntro, body: trimmedBody }
+      : null;
     await setPlatformSetting('latestNews', value);
     res.json({ ok: true, latestNews: value });
   } catch (err) {

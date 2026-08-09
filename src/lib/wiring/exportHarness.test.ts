@@ -42,6 +42,10 @@ function simpleGraph(bundleOverrides: Partial<HarnessGraph['bundles'][number]> =
       id: 'U1:C1|U2:C1',
       endpoints: ['U1:C1', 'U2:C1'],
       conductorIds: ['w1', 'w2'],
+      conductors: [
+        { id: 'w1', wireIds: ['w1'], from: 'U1:C1-P1', to: 'U2:C1-P1' },
+        { id: 'w2', wireIds: ['w2'], from: 'U1:C1-P2', to: 'U2:C1-P2' },
+      ],
       ...bundleOverrides,
     }],
   };
@@ -216,8 +220,8 @@ describe('buildWireSummaryHtml', () => {
         { id: 'U2:C1', kind: 'connector', position: { x: 400, y: 40 }, refId: 'U2:C1' },
       ],
       bundles: [
-        { id: 'U1:C1|J:s1', endpoints: ['U1:C1', 'J:s1'], conductorIds: ['w1'], name: 'LOOM-A' },
-        { id: 'J:s1|U2:C1', endpoints: ['J:s1', 'U2:C1'], conductorIds: ['w1'], name: 'LOOM-B' },
+        { id: 'U1:C1|J:s1', endpoints: ['U1:C1', 'J:s1'], conductorIds: ['w1'], conductors: [{ id: 'w1', wireIds: ['w1'], from: 'U1:C1-P1', to: 'U2:C1-P1' }], name: 'LOOM-A' },
+        { id: 'J:s1|U2:C1', endpoints: ['J:s1', 'U2:C1'], conductorIds: ['w1'], conductors: [{ id: 'w1', wireIds: ['w1'], from: 'U1:C1-P1', to: 'U2:C1-P1' }], name: 'LOOM-B' },
       ],
     };
     const html = buildWireSummaryHtml([{
